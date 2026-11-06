@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 import zipfile
 from pathlib import Path
 from urllib.parse import quote
@@ -17,7 +18,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import chunks, security, storage
+from . import backup, chunks, security, storage
 from .config import Settings
 from .db import Database, iso_in, now_iso
 from .notify import notify_admin
@@ -45,6 +46,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     chunk_store.cleanup()
     limiter = security.LoginLimiter()
     _bootstrap_admin(db, settings)
+    if settings.backup_dir and os.environ.get("BSK_BACKUP_SCHEDULER", "1") == "1":
+        backup.start_scheduler(settings, db)
 
     app = FastAPI(title=settings.site_name, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
@@ -430,7 +433,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             " (SELECT COALESCE(SUM(size), 0) FROM backup_files b WHERE b.device_id = d.id) AS total_size"
             " FROM devices d ORDER BY d.active DESC, d.name"
         )
-        return render(request, "admin_home.html", clients=clients, recent=recent, devices=devices)
+        return render(request, "admin_home.html", clients=clients, recent=recent, devices=devices,
+                      backup_status=backup.last_status(settings), backup_running=backup_lock.locked())
+
+    backup_lock = threading.Lock()
+
+    @app.post("/admin/backup/run")
+    def backup_now(request: Request, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        if not settings.backup_dir:
+            raise HTTPException(400, "Kopia nie jest skonfigurowana (BSK_BACKUP_DIR).")
+        if backup_lock.acquire(blocking=False):
+            def job():
+                try:
+                    backup.run_backup(settings, db)
+                except Exception as exc:  # noqa: BLE001
+                    db.log(None, "backup_failed", str(exc)[:300])
+                finally:
+                    backup_lock.release()
+            threading.Thread(target=job, daemon=True).start()
+            db.log(admin["id"], "backup_started")
+            flash(request, "Kopia uruchomiona — odśwież stronę za chwilę, aby zobaczyć wynik.")
+        else:
+            flash(request, "Kopia już trwa.", "warn")
+        return RedirectResponse("/admin", 303)
 
     @app.get("/admin/clients/new", response_class=HTMLResponse)
     def new_client_form(request: Request):

@@ -389,3 +389,36 @@ def test_agent_chunked_upload(app, admin):
     # cudze urządzenie nie dopisze do wysyłki
     assert api.put(f"/api/agent/uploads/{b['id']}", params={"offset": 0}, content=b"x",
                    headers={"Authorization": "Bearer zly"}).status_code == 401
+
+
+def test_backup_to_second_disk(tmp_path):
+    import json
+    import sqlite3
+    from app import backup
+    s = Settings(data_dir=tmp_path / "hdd", db_dir=tmp_path / "ssd", backup_dir=tmp_path / "ssd2",
+                 secret_key="x" * 40, cookie_secure=False, admin_username="admin", admin_password=ADMIN_PW)
+    app = create_app(s)
+    (s.clients_dir / "jan").mkdir(parents=True)
+    (s.clients_dir / "jan" / "logo.ai").write_bytes(b"AI")
+    (s.shared_dir / "film.mp4").write_bytes(b"MP4")
+    (s.backups_dir / "pc" ).mkdir(parents=True)
+    (s.backups_dir / "pc" / "duzy.bin").write_bytes(b"x")
+    r = backup.run_backup(s, app.state.db)
+    assert r["copied_files"] == 2
+    assert (s.backup_dir / "klienci" / "jan" / "logo.ai").read_bytes() == b"AI"
+    assert (s.backup_dir / "udostepnione" / "film.mp4").exists()
+    assert not (s.backup_dir / "kopie-pracownikow").exists()
+    snap = next((s.backup_dir / "baza").glob("bskcloud-*.db"))
+    assert sqlite3.connect(snap).execute("SELECT username FROM users").fetchone()[0] == "admin"
+    # druga kopia: nic nowego; usunięty plik zostaje w kopii
+    (s.clients_dir / "jan" / "logo.ai").unlink()
+    assert backup.run_backup(s, app.state.db)["copied_files"] == 0
+    assert (s.backup_dir / "klienci" / "jan" / "logo.ai").exists()
+    assert json.loads((s.backup_dir / "ostatnia-kopia.json").read_text())["error"] == ""
+    # panel admina pokazuje stan i pozwala uruchomić kopię
+    c = TestClient(app)
+    login(c, "admin", ADMIN_PW)
+    page = c.get("/admin").text
+    assert "Kopia na drugi dysk" in page and "Ostatnia kopia" in page
+    tok = csrf_of(c, "/admin")
+    assert "Kopia uruchomiona" in c.post("/admin/backup/run", data={"csrf": tok}).text

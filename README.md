@@ -61,7 +61,8 @@ w menedżerze plików UGOS i przez SMB:
 ## Krok 1. Przygotuj NAS (ok. 10 min)
 1. W UGOS (**Files → Shared Folder → +**) utwórz dwa foldery współdzielone:
    - `bsk-cloud` na woluminie z **SSD** (portal i baza),
-   - `bsk-dane` na woluminie z **HDD** (pliki).
+   - `bsk-dane` na woluminie z **HDD** (pliki),
+   - `bsk-kopie` na drugim dysku, np. **SSD 1 TB** (codzienna kopia bazy i plików klientów).
    Jeśli na HDD nie ma jeszcze woluminu, utwórz go w **Storage**.
 2. **App Center** → zainstaluj **Docker**.
 3. **Panel sterowania → Terminal** → włącz **SSH**.
@@ -94,6 +95,7 @@ sudo nano .env
   min. 10 znaków, małe i wielkie litery oraz cyfrę.
 - `BSK_DATA_FOLDER`: folder na HDD, np. `/volume2/bsk-dane`.
 - `BSK_DB_FOLDER`: folder na bazę na SSD, np. `/volume1/bsk-cloud/baza`.
+- `BSK_BACKUP_FOLDER`: folder na kopię na drugim dysku, np. `/volume2/bsk-kopie`.
 - `PUID` i `PGID`: liczby z polecenia `ls -ln` w wierszu folderu `bsk-dane`
   (kolumna 3 to UID, kolumna 4 to GID).
 - `BSK_LAN_URL`: adres portalu w sieci biurowej, np. `http://192.168.50.42:8090`. BSK Backup na komputerach
@@ -230,6 +232,15 @@ Zakładka **Dziennik** pokazuje logowania (także nieudane), wysłane i usunięt
 linkami i instalatora oraz zmiany kont.
 
 ---
+
+# Kopia na drugi dysk
+Portal codziennie kopiuje do `BSK_BACKUP_FOLDER`:
+- **bazę danych**: spójną migawkę, 14 ostatnich dni,
+- **pliki klientów** i **pliki do linków**: tylko nowe i zmienione. Pliki usunięte w portalu zostają w kopii.
+
+Kopie komputerów pracowników są pomijane, bo to już są kopie. Stan ostatniej kopii, wolne miejsce
+i przycisk **Zrób kopię teraz** znajdziesz w panelu admina. Odtworzenie bazy polega na zatrzymaniu portalu
+i skopiowaniu wybranego `bsk-kopie/baza/bskcloud-RRRR-MM-DD.db` jako `bsk-cloud/baza/bskcloud.db`.
 
 # Bezpieczeństwo i utrzymanie
 - Ruch jest szyfrowany (HTTPS). Hasła są zapisane jako bcrypt, a po wielu błędnych logowaniach

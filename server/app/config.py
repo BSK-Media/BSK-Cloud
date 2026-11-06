@@ -23,6 +23,7 @@ class Settings:
     data_dir: Path
     secret_key: str
     db_dir: Path | None = None
+    backup_dir: Path | None = None
     site_name: str = "BSK Media Cloud"
     cookie_secure: bool = True
     session_hours: int = 12
@@ -79,6 +80,7 @@ class Settings:
         return cls(
             data_dir=Path(os.environ.get("BSK_DATA_DIR", "/data")),
             db_dir=Path(os.environ["BSK_DB_DIR"]) if os.environ.get("BSK_DB_DIR") else None,
+            backup_dir=Path(os.environ["BSK_BACKUP_DIR"]) if os.environ.get("BSK_BACKUP_DIR") else None,
             secret_key=secret,
             site_name=os.environ.get("BSK_SITE_NAME", "BSK Media Cloud"),
             cookie_secure=_bool("BSK_COOKIE_SECURE", True),
