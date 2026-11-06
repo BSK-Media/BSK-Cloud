@@ -5,18 +5,29 @@
   {% if not device.active %}<span class="tag danger">wyłączony</span>{% endif %}
 </div>
 
-{% if token %}
-<div class="flash warn">
-  <b>Token urządzenia</b> — skopiuj teraz, później nie będzie widoczny:<br>
-  <code class="token">{{ token }}</code><br>
-  Instalacja na komputerze pracownika (PowerShell jako administrator, w folderze z programem):<br>
-  <code>.\install-windows.ps1 -Server "{{ public_url }}" -Token "{{ token }}"</code>
+{% if install_link %}
+<div class="flash ok">
+  <b>Link instalacyjny dla pracownika</b> (ważny do {{ install_link.expires_at|dt }}, pobrań: {{ install_link.downloads }}/5).
+  Wyślij go pracownikowi — otwiera go na komputerze, który ma być kopiowany:
+  <div class="copyrow"><input readonly value="{{ public_url }}/instaluj/{{ install_link.code }}" data-copy-source><button type="button" data-copy>Kopiuj</button></div>
+  {% if not installer_ready %}<p class="small"><b>Uwaga:</b> na NAS nie ma jeszcze plików programu w folderze <code>instalator/</code> — zobacz README, punkt „Instalator”.</p>{% endif %}
 </div>
 {% endif %}
+{% if token %}
+<details class="card">
+  <summary>Instalacja ręczna (token)</summary>
+  <p class="small">Token jest widoczny tylko teraz:</p>
+  <code class="token">{{ token }}</code>
+  <p class="small">W folderze z programem: <code>powershell -ExecutionPolicy Bypass -File .\install-windows.ps1 -Server "{{ public_url }}" -Token "{{ token }}"</code></p>
+</details>
+{% endif %}
 
-<p class="muted">W kopii: <b>{{ stats.n }}</b> plików, {{ stats.total|size }} · ostatni kontakt: {{ device.last_seen|dt or 'nigdy' }}{% if device.last_ip %} ({{ device.last_ip }}){% endif %} · folder na NAS: <code>kopie-pracownikow/{{ device.folder_name }}</code></p>
+<p class="muted">W kopii: <b>{{ stats.n }}</b> plików, {{ stats.total|size }}{% if device.quota_mb %} z limitu {{ (device.quota_mb * 1048576)|size }}{% endif %} · ostatni kontakt: {{ device.last_seen|dt or 'nigdy' }}{% if device.last_ip %} ({{ device.last_ip }}){% endif %} · folder na NAS: <code>kopie-pracownikow/{{ device.folder_name }}</code></p>
 
 <div class="row left">
+  <form method="post" action="/admin/devices/{{ device.id }}/install-link" data-confirm="Utworzyć nowy link instalacyjny? Obecny token tego komputera przestanie działać (np. przy reinstalacji lub nowym komputerze).">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><button class="primary">Nowy link instalacyjny</button>
+  </form>
   <form method="post" action="/admin/devices/{{ device.id }}/token" data-confirm="Wygenerować nowy token? Stary przestanie działać i trzeba będzie go podmienić na komputerze.">
     <input type="hidden" name="csrf" value="{{ csrf }}"><button>Nowy token</button>
   </form>
@@ -25,6 +36,16 @@
     <button class="{{ 'danger' if device.active else '' }}">{{ 'Wyłącz urządzenie' if device.active else 'Włącz urządzenie' }}</button>
   </form>
 </div>
+
+<details class="card">
+  <summary>Ustawienia komputera</summary>
+  <form method="post" action="/admin/devices/{{ device.id }}/settings" class="stack narrow-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Pracownik <input name="employee" value="{{ device.employee }}"></label>
+    <label>Limit miejsca na kopie (MB, 0 = bez limitu) <input name="quota_mb" type="number" min="0" step="1024" value="{{ device.quota_mb }}"></label>
+    <button>Zapisz</button>
+  </form>
+</details>
 
 <section class="card">
   <form method="get" class="row left">

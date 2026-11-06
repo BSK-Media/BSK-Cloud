@@ -60,3 +60,14 @@ document.querySelectorAll("form[data-upload]").forEach((form) => {
     xhr.send(new FormData(form));
   });
 });
+
+// Kopiowanie linków do schowka
+document.querySelectorAll("[data-copy]").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    const input = btn.parentElement.querySelector("[data-copy-source]");
+    input.select();
+    try { await navigator.clipboard.writeText(input.value); } catch (_) { document.execCommand("copy"); }
+    btn.textContent = "Skopiowano";
+    setTimeout(() => { btn.textContent = "Kopiuj"; }, 2000);
+  });
+});

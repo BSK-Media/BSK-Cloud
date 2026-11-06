@@ -174,3 +174,115 @@ def test_safe_paths():
     with pytest.raises(ValueError):
         storage.safe_rel_path("a/../../b")
     assert storage.safe_rel_path(".wersje/a") == "_.wersje/a"
+
+
+def change_pw(c, old, new="NoweHaslo123"):
+    tok = csrf_of(c, "/account")
+    c.post("/account/password", data={"current": old, "new": new, "repeat": new, "csrf": tok})
+
+
+def test_client_quota(app, admin):
+    tok = csrf_of(admin, "/admin/clients/new")
+    admin.post("/admin/clients/new", data={"username": "maly", "password": "KlientHaslo1", "quota_mb": 1, "csrf": tok})
+    c = TestClient(app)
+    login(c, "maly", "KlientHaslo1")
+    change_pw(c, "KlientHaslo1")
+    tok = csrf_of(c, "/files")
+    r = c.post("/files/upload", data={"csrf": tok}, files=[("files", ("a.bin", b"0" * 700_000))])
+    assert "Wysłano plików: 1" in r.text and "Wykorzystane miejsce" in r.text
+    r = c.post("/files/upload", data={"csrf": tok}, files=[("files", ("b.bin", b"0" * 700_000))])
+    assert r.status_code == 413 and "Brak miejsca" in r.text
+    assert not (app.state.settings.clients_dir / "maly" / "b.bin").exists()
+    # pliki od admina nie zabierają klientowi miejsca
+    tok = csrf_of(admin, "/admin/clients/2")
+    admin.post("/admin/clients/2/upload", data={"csrf": tok}, files=[("files", ("od-nas.bin", b"0" * 900_000))])
+    tok = csrf_of(c, "/files")
+    r = c.post("/files/upload", data={"csrf": tok}, files=[("files", ("c.bin", b"0" * 100_000))])
+    assert r.status_code == 200
+    # admin zmienia limit na 0 = bez limitu
+    tok = csrf_of(admin, "/admin/clients/2")
+    admin.post("/admin/clients/2/edit", data={"display_name": "", "company": "", "email": "", "quota_mb": 0, "csrf": tok})
+    tok = csrf_of(c, "/files")
+    r = c.post("/files/upload", data={"csrf": tok}, files=[("files", ("d.bin", b"0" * 700_000))])
+    assert r.status_code == 200
+
+
+def test_share_link_upload_password_and_range(app, admin):
+    tok = csrf_of(admin, "/admin/shares")
+    r = admin.post("/admin/shares/upload", data={"csrf": tok, "expires_days": 7, "max_downloads": 2, "password": "tajne"},
+                   files=[("files", ("grafika.tif", b"0123456789" * 1000))])
+    path = "/s/" + re.search(r'/s/([A-Za-z0-9_-]+)"', r.text).group(1)
+    anon = TestClient(app)
+    page = anon.get(path)
+    assert "grafika.tif" in page.text and "Hasło do pliku" in page.text
+    assert anon.get(path + "/pobierz", follow_redirects=False).status_code == 303  # bez hasła
+    tok = csrf_of(anon, path)
+    anon.post(path, data={"password": "zle", "csrf": tok})
+    anon.post(path, data={"password": "tajne", "csrf": tok})
+    r = anon.get(path + "/pobierz")
+    assert r.status_code == 200 and len(r.content) == 10000
+    # wznowienie pobierania (Range) nie zużywa limitu
+    r = anon.get(path + "/pobierz", headers={"Range": "bytes=5000-"})
+    assert r.status_code == 206 and len(r.content) == 5000
+    assert anon.get(path + "/pobierz").status_code == 200
+    assert anon.get(path).status_code == 404  # limit 2 pobrań wykorzystany
+
+
+def test_share_existing_nas_file_and_revoke(app, admin):
+    shared = app.state.settings.shared_dir / "Kampania"
+    shared.mkdir(parents=True)
+    (shared / "film.mp4").write_bytes(b"MP4")
+    page = admin.get("/admin/shares").text
+    assert "Kampania/film.mp4" in page
+    tok = csrf_of(admin, "/admin/shares")
+    r = admin.post("/admin/shares/new", data={"csrf": tok, "kind": "shared", "rel_path": "Kampania/film.mp4", "expires_days": 0})
+    token = re.search(r'/s/([A-Za-z0-9_-]+)"', r.text).group(1)
+    anon = TestClient(app)
+    assert anon.get(f"/s/{token}/pobierz").content == b"MP4"
+    r = admin.post("/admin/shares/new", data={"csrf": tok, "kind": "shared", "rel_path": "../app/bskcloud.db"})
+    assert r.status_code in (400, 404)
+    tok = csrf_of(admin, "/admin/shares")
+    admin.post("/admin/shares/1/revoke", data={"csrf": tok})
+    assert anon.get(f"/s/{token}/pobierz").status_code == 404
+
+
+def test_share_client_file(app, admin):
+    create_client_account(admin)
+    tok = csrf_of(admin, "/admin/clients/2")
+    admin.post("/admin/clients/2/upload", data={"csrf": tok}, files=[("files", ("logo.ai", b"AI"))])
+    tok = csrf_of(admin, "/admin/clients/2")
+    r = admin.post("/admin/shares/new", data={"csrf": tok, "kind": "file", "file_id": 1, "expires_days": 7,
+                                              "back": "/admin/clients/2"})
+    assert "Link do pobrania gotowy" in r.text
+    token = re.search(r'/s/([A-Za-z0-9_-]+)"', r.text).group(1)
+    assert TestClient(app).get(f"/s/{token}/pobierz").content == b"AI"
+
+
+def test_install_link_and_device_quota(app, admin):
+    import io
+    import zipfile
+    tok = csrf_of(admin, "/admin/devices/new")
+    r = admin.post("/admin/devices/new", data={"name": "PC-1", "employee": "Ola", "quota_mb": 1, "csrf": tok})
+    code = re.search(r'/instaluj/([A-Za-z0-9_-]+)"', r.text).group(1)
+    token = re.search(r'class="token">([^<]+)<', r.text).group(1)
+    anon = TestClient(app)
+    assert "nie jest jeszcze dostępny" in anon.get(f"/instaluj/{code}").text
+    for f in ("bsk-backup.exe", "bsk-backup-agent.exe", "install-windows.ps1", "uninstall-windows.ps1"):
+        (app.state.settings.installer_dir / f).write_bytes(b"x")
+    assert "ZAINSTALUJ.cmd" in anon.get(f"/instaluj/{code}").text
+    z = zipfile.ZipFile(io.BytesIO(anon.get(f"/instaluj/{code}/BSK-Backup.zip").content))
+    cmd = z.read("BSK-Backup/ZAINSTALUJ.cmd").decode()
+    assert token in cmd and "install-windows.ps1" in cmd
+    assert not list(app.state.settings.tmp_dir.glob("installer-*"))  # plik tymczasowy sprzątnięty
+
+    h = {"Authorization": f"Bearer {token}"}
+    big = b"0" * 800_000
+    r = anon.put("/api/agent/files", params={"path": "a/1.bin", "sha256": hashlib.sha256(big).hexdigest()}, content=big, headers=h)
+    assert r.status_code == 200
+    r = anon.put("/api/agent/files", params={"path": "a/2.bin", "sha256": hashlib.sha256(big).hexdigest()}, content=big, headers=h)
+    assert r.status_code == 507
+    # nowy link instalacyjny unieważnia stary token
+    tok = csrf_of(admin, "/admin/devices/1")
+    admin.post("/admin/devices/1/install-link", data={"csrf": tok})
+    assert anon.get("/api/agent/ping", headers=h).status_code == 401
+    assert anon.get(f"/instaluj/{code}").status_code == 404

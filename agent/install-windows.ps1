@@ -23,6 +23,9 @@ foreach ($exe in "bsk-backup.exe", "bsk-backup-agent.exe") {
   if (-not (Test-Path (Join-Path $src $exe))) { throw "Brak pliku $exe obok skryptu — najpierw zbuduj program (build-windows.bat)." }
 }
 
+# pliki pobrane z internetu mają znacznik „Mark of the Web” — zdejmij go, żeby Windows nie blokował programu
+Get-ChildItem -Path $src -File | Unblock-File -ErrorAction SilentlyContinue
+
 # zatrzymaj starą wersję, jeśli działa
 Get-Process -Name "bsk-backup-agent" -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1

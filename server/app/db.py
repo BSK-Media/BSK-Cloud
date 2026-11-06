@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 SCHEMA = """
@@ -71,11 +71,48 @@ CREATE TABLE IF NOT EXISTS events (
     detail TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+CREATE TABLE IF NOT EXISTS share_links (
+    id INTEGER PRIMARY KEY,
+    token TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL CHECK (kind IN ('file', 'shared')),
+    file_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
+    rel_path TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    size INTEGER NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL DEFAULT '',
+    expires_at TEXT,
+    max_downloads INTEGER NOT NULL DEFAULT 0,
+    downloads INTEGER NOT NULL DEFAULT 0,
+    revoked INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    last_download TEXT
+);
+CREATE TABLE IF NOT EXISTS install_links (
+    id INTEGER PRIMARY KEY,
+    code TEXT NOT NULL UNIQUE,
+    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    token TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    downloads INTEGER NOT NULL DEFAULT 0
+);
 """
+
+# Kolumny dodane po pierwszej wersji — dokładane do istniejącej bazy przy starcie.
+MIGRATIONS = [
+    ("users", "quota_mb", "INTEGER NOT NULL DEFAULT 0"),
+    ("devices", "quota_mb", "INTEGER NOT NULL DEFAULT 0"),
+]
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def iso_in(days: float) -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=days)).replace(microsecond=0).isoformat()
 
 
 class Database:
@@ -83,8 +120,12 @@ class Database:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
-        with self.conn() as c:
-            c.executescript(SCHEMA)
+        c = self.conn()
+        c.executescript(SCHEMA)
+        for table, column, ddl in MIGRATIONS:
+            cols = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
+            if column not in cols:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def conn(self) -> sqlite3.Connection:
         c = getattr(self._local, "conn", None)

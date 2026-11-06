@@ -1,0 +1,11 @@
+<div class="row left opts">
+  <label>Ważny przez
+    <select name="expires_days">
+      <option value="1">1 dzień</option><option value="3">3 dni</option><option value="7" selected>7 dni</option>
+      <option value="14">14 dni</option><option value="30">30 dni</option><option value="90">90 dni</option>
+      <option value="0">bezterminowo</option>
+    </select></label>
+  <label>Limit pobrań <input name="max_downloads" type="number" min="0" value="0" title="0 = bez limitu"></label>
+  <label>Hasło (opcjonalnie) <input name="password" type="text" autocomplete="off"></label>
+</div>
+<label>Notatka (widzi ją odbiorca) <input name="note" maxlength="300" placeholder="np. Finalne pliki kampanii — wersja do druku"></label>

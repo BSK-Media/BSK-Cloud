@@ -344,6 +344,9 @@ class Agent:
             log.info("%s: %s (%d B)", "Bez zmian" if result.get("status") == "unchanged" else "Wysłano", remote, st.st_size)
         elif resp.status_code == 409:
             self.state.reschedule(raw, self.cfg.settle_seconds, "plik zmienił się w trakcie wysyłki")
+        elif resp.status_code == 507:
+            self.pause(3600, "przekroczony limit miejsca na kopie tego komputera — skontaktuj się z administratorem")
+            self.state.reschedule(raw, 0, "brak miejsca (limit)")
         elif resp.status_code == 413:
             log.warning("Serwer odrzucił (za duży): %s", remote)
             self.state.drop(raw)

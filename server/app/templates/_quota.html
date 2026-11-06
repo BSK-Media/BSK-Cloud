@@ -1,0 +1,6 @@
+{% if quota and quota.limit %}
+<div class="quota">
+  <div class="small">Wykorzystane miejsce: <b>{{ quota.used|size }}</b> z {{ quota.limit|size }}</div>
+  <div class="bar"><span class="{{ 'full' if quota.percent >= 90 else '' }} w{{ (quota.percent // 5) * 5 }}"></span></div>
+</div>
+{% endif %}

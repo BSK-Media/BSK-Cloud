@@ -28,6 +28,7 @@ class Settings:
     max_upload_mb: int = 5120
     max_backup_file_mb: int = 20480
     backup_keep_versions: int = 10
+    default_quota_mb: int = 0
     admin_username: str = ""
     admin_password: str = ""
     smtp_host: str = ""
@@ -52,6 +53,16 @@ class Settings:
         return self.data_dir / "kopie-pracownikow"
 
     @property
+    def shared_dir(self) -> Path:
+        """Folder na NAS z plikami do udostępniania linkiem (wrzucasz tu pliki np. przez SMB)."""
+        return self.data_dir / "udostepnione"
+
+    @property
+    def installer_dir(self) -> Path:
+        """Folder na NAS z plikami programu BSK Backup (zawartość dist/ z builda)."""
+        return self.data_dir / "instalator"
+
+    @property
     def tmp_dir(self) -> Path:
         return self.data_dir / "app" / "tmp"
 
@@ -71,6 +82,7 @@ class Settings:
             max_upload_mb=_int("BSK_MAX_UPLOAD_MB", 5120),
             max_backup_file_mb=_int("BSK_MAX_BACKUP_FILE_MB", 20480),
             backup_keep_versions=_int("BSK_BACKUP_KEEP_VERSIONS", 10),
+            default_quota_mb=_int("BSK_DEFAULT_QUOTA_MB", 0),
             admin_username=os.environ.get("BSK_ADMIN_USERNAME", ""),
             admin_password=os.environ.get("BSK_ADMIN_PASSWORD", ""),
             smtp_host=os.environ.get("BSK_SMTP_HOST", ""),

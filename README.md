@@ -1,162 +1,239 @@
-# BSK Media Cloud — portal plików dla klientów + kopie komputerów pracowników
+# BSK Media Cloud
 
-Dwa programy, które razem działają na Twoim **Ugreen NAS DXP4800 Plus**:
+Własna „chmura” firmy BSK Media działająca na **Ugreen NAS DXP4800 Plus** pod adresem
+**https://cloud.bskmedia.pl**:
 
-| Część | Gdzie działa | Co robi |
-|---|---|---|
-| **Portal `cloud.bskmedia.pl`** (`server/`) | Docker na NAS | Klienci logują się na konta założone przez Ciebie, wysyłają pliki robocze, piszą wiadomości/komentarze i pobierają pliki, które im udostępnisz. Ty jako admin zarządzasz kontami i widzisz wszystko w jednym panelu. |
-| **BSK Backup** (`agent/`) | komputery pracowników (Windows; macOS/Linux też) | Działa w tle, wykrywa każdy nowo utworzony lub zapisany plik w Pulpicie/Dokumentach (lub wskazanych folderach) i wysyła go na NAS. Bez internetu pliki czekają w kolejce i wychodzą, gdy połączenie wróci. Starsze wersje plików są zachowywane. |
+- **Portal dla klientów.** Klienci logują się na konta, które dla nich zakładasz. Wysyłają pliki
+  robocze, piszą wiadomości i pobierają pliki od Was.
+- **Linki do pobrania.** Wysyłasz komuś np. grafikę 1 GB, a odbiorca pobiera ją prosto z NAS,
+  bez logowania. Możesz ustawić termin ważności, limit pobrań i hasło.
+- **BSK Backup.** Program na komputery pracowników. Każdy nowy lub zapisany plik trafia
+  automatycznie na NAS, także po okresie bez internetu.
 
-Pliki lądują na NAS w zwykłych folderach — widać je też w menedżerze plików UGOS:
+```
+                 Internet                                     Biuro (NAS)
+ klient ──► https://cloud.bskmedia.pl ──► router ──► Caddy (HTTPS) ──► portal BSK Cloud ──► /volume1/bsk-cloud
+ pracownik (BSK Backup) ───────────────────────────────────────────────┘
+```
+
+## Gdzie to działa i dlaczego na NAS, a nie na Vercelu
+
+Całość działa na Twoim NAS w Dockerze. **Vercel się tu nie nadaje**, bo:
+- nie przechowuje plików, a funkcje Vercela przyjmują żądania do ok. 4,5 MB, więc pliku 1 GB nie da się przez niego wysłać;
+- pliki i tak leżą na NAS, więc Vercel byłby zbędnym pośrednikiem: każdy plik szedłby dwa razy przez internet;
+- potrzebne byłoby płatne zewnętrzne miejsce na pliki (S3 lub podobne), a wtedy NAS przestaje mieć sens.
+
+Jedyne ograniczenie przy NAS to **prędkość wysyłania (upload) Twojego łącza w biurze**. Klient
+pobiera plik 1 GB z prędkością, z jaką biuro wysyła dane do internetu. Przykład: przy 100 Mb/s
+uploadu to ok. 1,5 minuty, przy 20 Mb/s ok. 7 minut.
+
+## Gdzie leżą pliki na NAS
+
+Wszystko jest w zwykłych folderach, widocznych też w menedżerze plików UGOS i przez SMB:
 
 ```
 /volume1/bsk-cloud/
-├── klienci/<login-klienta>/…              pliki od klienta
-│                        └── od BSK Media/ pliki, które udostępniłeś klientowi
-├── kopie-pracownikow/<komputer>/Desktop/…  aktualne kopie
-│                              └── .wersje/ poprzednie wersje (domyślnie 10 na plik)
-└── app/                                   baza danych portalu (nie ruszać)
+├── klienci/<login>/…                 pliki od klienta
+│              └── od BSK Media/       pliki, które udostępniłeś klientowi w portalu
+├── udostepnione/…                    pliki do wysyłania linkiem (możesz wrzucać tu przez SMB)
+├── kopie-pracownikow/<komputer>/…    kopie z komputerów pracowników
+│                     └── .wersje/     poprzednie wersje plików
+├── instalator/                       program BSK Backup (pracownicy pobierają go z linku)
+└── app/                              baza danych portalu — nie ruszać
 ```
 
 ---
 
-## 1. Instalacja portalu na NAS
+# Uruchomienie krok po kroku
 
-### 1.1 Przygotowanie NAS
-1. **Panel sterowania → Pliki → Folder współdzielony**: utwórz folder `bsk-cloud` (na woluminie 1).
-2. **App Center**: zainstaluj aplikację **Docker**.
-3. **Panel sterowania → Terminal**: włącz **SSH** (po instalacji możesz wyłączyć).
-4. Skopiuj katalog `bsk-cloud/` z tego repozytorium na NAS, np. do `/volume1/docker/bsk-cloud`
-   (przez udział SMB z komputera albo `scp -r bsk-cloud admin@IP-NAS:/volume1/docker/`).
+## Krok 1. Przygotuj NAS (ok. 10 min)
+1. W UGOS: **Panel sterowania → Folder współdzielony → Utwórz** i nazwij folder `bsk-cloud`.
+2. **App Center** → zainstaluj **Docker**.
+3. **Panel sterowania → Terminal** → włącz **SSH**.
+4. Ustaw NAS-owi **stały adres IP w sieci lokalnej**, np. `192.168.1.50`. Zrobisz to w ustawieniach
+   sieci NAS albo przez rezerwację DHCP w routerze.
 
-### 1.2 Konfiguracja
-Zaloguj się przez SSH (`ssh twoj-login@IP-NAS`) i:
-
+## Krok 2. Wgraj portal na NAS
+Z komputera zaloguj się do NAS przez SSH (w Windows: PowerShell):
 ```bash
-cd /volume1/docker/bsk-cloud
-cp .env.example .env
-openssl rand -hex 32          # wynik wklej do BSK_SECRET_KEY w .env
-ls -ln /volume1               # UID i GID właściciela folderu bsk-cloud -> PUID/PGID w .env
-nano .env                     # uzupełnij BSK_SECRET_KEY, BSK_ADMIN_PASSWORD, PUID, PGID
+ssh twoj-login-nas@192.168.1.50
 ```
+Na NAS pobierz kod i przygotuj konfigurację:
+```bash
+sudo mkdir -p /volume1/docker && cd /volume1/docker
+sudo git clone https://github.com/BSK-Media/bsk-cloud.git
+cd bsk-cloud
+sudo cp .env.example .env
+openssl rand -hex 32
+```
+Jeśli na NAS nie ma `git` albo repozytorium jest prywatne, pobierz ZIP z GitHuba
+(**Code → Download ZIP**) i rozpakuj go do `/volume1/docker/bsk-cloud` przez menedżer plików UGOS.
 
-Hasło admina: min. 10 znaków, małe i wielkie litery oraz cyfra.
+## Krok 3. Uzupełnij plik `.env`
+```bash
+ls -ln /volume1
+sudo nano .env
+```
+- `BSK_SECRET_KEY`: wklej wynik `openssl rand -hex 32` z kroku 2.
+- `BSK_ADMIN_USERNAME` i `BSK_ADMIN_PASSWORD`: Twoje konto administratora. Hasło musi mieć
+  min. 10 znaków, małe i wielkie litery oraz cyfrę.
+- `PUID` i `PGID`: liczby z polecenia `ls -ln /volume1` w wierszu folderu `bsk-cloud`
+  (kolumna 3 to UID, kolumna 4 to GID).
+- Opcjonalnie: `BSK_DEFAULT_QUOTA_MB` (domyślny limit miejsca dla klienta) i `BSK_SMTP_*`
+  (powiadomienia e-mail).
 
-### 1.3 Uruchomienie
+W edytorze nano zapisujesz przez Ctrl+O i Enter, wychodzisz przez Ctrl+X.
+
+## Krok 4. Uruchom
 ```bash
 sudo docker compose up -d --build
-sudo docker compose logs -f app      # Ctrl+C aby wyjść
+sudo docker compose ps
 ```
-Test w sieci firmowej: `http://IP-NAS:8090` (logowanie po HTTP zadziała dopiero po HTTPS albo
-tymczasowo z `BSK_COOKIE_SECURE=false`).
+Oba kontenery (`bsk-cloud` i `bsk-caddy`) powinny mieć status *running*. W aplikacji Docker
+w UGOS też je zobaczysz i stamtąd możesz je restartować oraz przeglądać logi.
 
-> Możesz też użyć interfejsu **Docker → Projekt → Utwórz** w UGOS: wskaż folder
-> `/volume1/docker/bsk-cloud`, a plik `docker-compose.yml` zostanie wczytany automatycznie.
+## Krok 5. Podłącz domenę cloud.bskmedia.pl
 
-### 1.4 Adres cloud.bskmedia.pl (HTTPS)
+**Wariant A (zalecany, jeśli masz publiczny adres IP).**
+1. Sprawdź swój publiczny IP, np. na stronie *jakiejestmojeip*. Jeśli adres w routerze
+   (WAN) jest inny niż ten ze strony, to masz CGNAT i musisz użyć wariantu B.
+2. W panelu DNS domeny `bskmedia.pl` (u rejestratora) dodaj rekord:
+   **typ A, nazwa `cloud`, wartość: Twój publiczny IP**.
+   Jeśli IP jest zmienne, ustaw w routerze DDNS i zamiast rekordu A dodaj rekord CNAME na adres DDNS.
+3. W routerze ustaw **przekierowanie portów (port forwarding)**:
+   - port zewnętrzny **80** → `192.168.1.50`, port **8880**,
+   - port zewnętrzny **443** → `192.168.1.50`, port **8443**.
+4. Po kilku minutach od zmiany DNS otwórz **https://cloud.bskmedia.pl**. Certyfikat HTTPS
+   (Let's Encrypt) pobierze się sam.
 
-**Wariant A — przekierowanie portów (masz publiczne IP):**
-1. U rejestratora domeny `bskmedia.pl` dodaj rekord **A**: `cloud` → Twój publiczny adres IP
-   (najlepiej stały; przy zmiennym użyj DDNS, np. wbudowanego w router).
-2. Na routerze przekieruj porty: **80 → IP-NAS:8880** oraz **443 → IP-NAS:8443**.
-3. Caddy sam pobierze certyfikat Let's Encrypt. Wejdź na `https://cloud.bskmedia.pl`.
+**Wariant B (Cloudflare Tunnel: bez otwierania portów, działa przy CGNAT).**
+DNS domeny musi być w Cloudflare (plan darmowy wystarczy).
+1. W Cloudflare przejdź do **Zero Trust → Networks → Tunnels → Create tunnel** i skopiuj token
+   do `CLOUDFLARE_TUNNEL_TOKEN` w `.env`.
+2. W tunelu dodaj *Public hostname*: `cloud.bskmedia.pl` → `http://app:8000`.
+3. Uruchom: `sudo docker compose --profile tunnel up -d --build`.
 
-**Wariant B — Cloudflare Tunnel (bez otwierania portów, działa też przy CGNAT):**
-1. Domena `bskmedia.pl` musi mieć DNS w Cloudflare (darmowy plan wystarczy).
-2. Cloudflare Zero Trust → Networks → Tunnels → Create tunnel → skopiuj token do
-   `CLOUDFLARE_TUNNEL_TOKEN` w `.env`.
-3. W tunelu dodaj *Public hostname*: `cloud.bskmedia.pl` → `http://app:8000`.
-4. Uruchom: `sudo docker compose --profile tunnel up -d --build`
-   (kontener `caddy` możesz wtedy usunąć z pliku compose). Uwaga: darmowy Cloudflare
-   ogranicza pojedyncze żądanie do 100 MB — przy większych plikach wybierz wariant A.
+Uwaga: w darmowym Cloudflare pojedyncze **wysłanie** pliku na serwer jest ograniczone do
+100 MB. Pobieranie linkiem nie ma tego limitu. Jeśli klienci mają wysyłać duże pliki, wybierz wariant A.
 
-### 1.5 Pierwsze logowanie
-Zaloguj się kontem z `.env`, a potem **usuń `BSK_ADMIN_PASSWORD` z pliku `.env`**
-(konto już istnieje w bazie). Hasło zmienisz w zakładce *Konto*.
+## Krok 6. Pierwsze logowanie
+1. Otwórz `https://cloud.bskmedia.pl` i zaloguj się kontem z `.env`.
+2. Usuń hasło z pliku `.env`, bo konto już jest w bazie:
+   `sudo nano .env`, wyczyść `BSK_ADMIN_PASSWORD=`, a potem uruchom `sudo docker compose up -d`.
+
+## Krok 7. Program BSK Backup dla pracowników (raz)
+Program dla Windows buduje się **automatycznie na GitHubie**, więc nie potrzebujesz Pythona:
+1. Na GitHubie wejdź w repozytorium **Actions → „Testy i build BSK Backup”** i wybierz ostatnie
+   zielone uruchomienie. W sekcji **Artifacts** pobierz `BSK-Backup-windows`.
+   Inna droga: wypchnij tag `v1.0.0`, a gotowy ZIP pojawi się w **Releases**.
+2. Rozpakuj ZIP i skopiuj 4 pliki (`bsk-backup.exe`, `bsk-backup-agent.exe`,
+   `install-windows.ps1`, `uninstall-windows.ps1`) do folderu **`bsk-cloud/instalator`** na NAS.
+   Możesz to zrobić przez SMB albo menedżer plików UGOS.
+
+Od teraz pracownicy pobierają program **bezpośrednio z NAS** przez link z portalu.
 
 ---
 
-## 2. Praca z klientami
-1. **+ Klient** → login, nazwa, firma, e-mail. Hasło startowe jest proponowane automatycznie.
-2. Po zapisaniu zobaczysz **jednorazowo** adres, login i hasło do przekazania klientowi.
-   Klient przy pierwszym logowaniu musi ustawić własne hasło.
-3. Na stronie klienta: jego pliki, wątek wiadomości, wysyłanie mu plików („od BSK Media”),
-   reset hasła i blokada konta.
-4. Opcjonalnie: powiadomienia e-mail o nowych plikach/wiadomościach — uzupełnij `BSK_SMTP_*`
-   i `BSK_NOTIFY_EMAIL` w `.env`.
+# Codzienna obsługa (panel administratora)
 
-Klient widzi wyłącznie własne pliki i wiadomości. Może usuwać tylko to, co sam wysłał.
+## Konta klientów
+1. **+ Klient** → wpisz login, osobę kontaktową, firmę, e-mail i **limit miejsca** (MB, `0` = bez limitu).
+2. Po zapisaniu zobaczysz **raz** adres, login i hasło. Przekaż je klientowi.
+   Przy pierwszym logowaniu klient musi ustawić własne hasło.
+3. Na stronie klienta możesz:
+   - przeglądać jego pliki i wiadomości;
+   - wysyłać mu pliki (trafiają do „od BSK Media”);
+   - zmienić limit miejsca;
+   - nadać nowe hasło;
+   - zablokować konto (klient natychmiast traci dostęp).
 
----
+**Limit miejsca** liczy tylko pliki wysłane przez klienta. To, co Ty mu udostępniasz, się nie
+wlicza. Klient widzi pasek zajętego miejsca, a po przekroczeniu limitu wysyłka zostaje odrzucona.
 
-## 3. Kopie zapasowe komputerów pracowników
+## Linki do pobrania (np. grafika 1 GB)
+Masz trzy sposoby:
+- **Plik klienta:** na stronie klienta przy pliku kliknij **Link**. Powstaje link ważny 7 dni.
+- **Wyślij i utwórz link:** w zakładce **Linki do pobrania** przeciągnij plik, ustaw ważność,
+  limit pobrań i hasło.
+- **Plik już na NAS (najlepsze dla dużych plików):** skopiuj plik w biurze przez sieć do folderu
+  `bsk-cloud/udostepnione`. Kopiowanie w sieci lokalnej jest najszybsze. Potem w **Linki do pobrania**
+  wybierz plik z listy i kliknij **Utwórz link**.
 
-### 3.1 Dodaj komputer w portalu
-**+ Komputer** → nazwa (np. `LAPTOP-ANNA`) i pracownik → zapisz. Pojawi się **token**
-i gotowe polecenie instalacji (token jest widoczny tylko raz; w razie potrzeby wygenerujesz nowy).
+Link ma postać `https://cloud.bskmedia.pl/s/Xy7…`. Odbiorca otwiera stronę z nazwą i rozmiarem
+pliku i klika **Pobierz**. Plik idzie prosto z NAS, a przerwane pobieranie można wznowić.
+W zakładce widzisz liczbę pobrań i możesz w każdej chwili **wyłączyć** link.
 
-### 3.2 Zbuduj program (raz)
-Na dowolnym komputerze z Windows i [Pythonem 3.11+](https://www.python.org/downloads/):
-```bat
-cd bsk-cloud\agent
-build-windows.bat
-```
-W folderze `agent\dist\` powstaną `bsk-backup.exe`, `bsk-backup-agent.exe` oraz skrypty
-instalacji. Ten folder kopiujesz na komputery pracowników (pendrive, udział sieciowy).
+## Kopie komputerów pracowników
+1. **+ Komputer** → nazwa (np. `LAPTOP-ANNA`), pracownik, opcjonalnie limit miejsca.
+2. Portal pokaże **link instalacyjny** (ważny 7 dni, maks. 5 pobrań). Wyślij go pracownikowi.
+3. Pracownik na swoim komputerze:
+   1. otwiera link i klika **Pobierz BSK-Backup.zip**;
+   2. rozpakowuje ZIP (prawy przycisk → *Wyodrębnij wszystkie*);
+   3. klika dwukrotnie **ZAINSTALUJ.cmd**;
+   4. jeśli pojawi się niebieskie okno SmartScreen, wybiera *Więcej informacji → Uruchom mimo to*.
+      Program nie ma płatnego podpisu cyfrowego, stąd to ostrzeżenie.
 
-### 3.3 Instalacja u pracownika
-W folderze z programem (PowerShell, **bez** uprawnień administratora — instaluje się dla
-zalogowanego użytkownika):
+   Nie potrzebuje uprawnień administratora ani wpisywania czegokolwiek, bo token jest już w paczce.
+4. Program działa w tle, startuje sam po zalogowaniu i kopiuje **Pulpit** i **Dokumenty**
+   (także te w OneDrive).
+5. W portalu, na stronie komputera, widzisz wszystkie pliki z kopii, wyszukiwarkę, ostatni kontakt
+   i poprzednie wersje każdego pliku do pobrania.
+
+Jak działa program:
+- reaguje na utworzenie, zapis, skopiowanie i przeniesienie pliku;
+- odczekuje ok. 10 s, aż plik przestanie się zmieniać, i wysyła tylko pliki faktycznie zmienione;
+- pomija pliki tymczasowe i systemowe (`~$*.docx`, `*.tmp`, `Thumbs.db`, `node_modules`, `.git` …);
+- **bez internetu** pliki czekają w kolejce na dysku i wysyłają się same po powrocie połączenia,
+  także po restarcie komputera;
+- co godzinę skanuje foldery, więc nic nie umknie;
+- usunięcie pliku na komputerze **nie** usuwa go z kopii, a nadpisanie zachowuje poprzednią wersję
+  (domyślnie 10 wersji, ustawienie `BSK_BACKUP_KEEP_VERSIONS`);
+- przy przekroczeniu limitu miejsca komputer wstrzymuje wysyłkę na godzinę i zapisuje to w dzienniku;
+- **Nowy link instalacyjny** lub **Wyłącz urządzenie** natychmiast odcina stary token,
+  np. po zwolnieniu pracownika, kradzieży laptopa albo reinstalacji.
+
+Inne foldery niż Pulpit i Dokumenty ustawisz u pracownika poleceniem:
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install-windows.ps1 -Server "https://cloud.bskmedia.pl" -Token "bsk_..."
+& "$env:LOCALAPPDATA\Programs\BSKBackup\bsk-backup.exe" configure --folder "C:\Projekty" --folder "D:\Klienci"
 ```
-Domyślnie kopiowane są **Pulpit** i **Dokumenty** (również przekierowane do OneDrive).
-Inne foldery: dodaj `-Folders "C:\Projekty","D:\Klienci"`.
-
-Agent startuje automatycznie po zalogowaniu do Windows. Podgląd stanu:
+Stan programu u pracownika:
 ```powershell
 & "$env:LOCALAPPDATA\Programs\BSKBackup\bsk-backup.exe" status
 ```
-Dziennik: `%LOCALAPPDATA%\BSKBackup\bsk-backup.log`. Deinstalacja: `uninstall-windows.ps1`.
+Dziennik programu: `%LOCALAPPDATA%\BSKBackup\bsk-backup.log`.
 
-### 3.4 Jak działa agent
-- reaguje na utworzenie, zapis, przeniesienie i skopiowanie pliku; czeka ~10 s, aż plik
-  przestanie się zmieniać, liczy SHA-256 i wysyła tylko faktycznie zmienione pliki;
-- pomija pliki tymczasowe i systemowe (`~$*.docx`, `*.tmp`, `Thumbs.db`, `desktop.ini`,
-  `node_modules`, `.git` …) — lista `excludes` w `%LOCALAPPDATA%\BSKBackup\config.json`;
-- przy starcie i co godzinę skanuje foldery, więc nic nie umknie, nawet gdy komputer był wyłączony;
-- bez internetu/NAS pliki czekają w trwałej kolejce i są wysyłane automatycznie po powrocie
-  połączenia (także po restarcie komputera);
-- **usunięcie pliku na komputerze nie usuwa go z kopii**; nadpisanie tworzy nową wersję
-  na NAS (stare w `.wersje/`, liczba w `BSK_BACKUP_KEEP_VERSIONS`);
-- w portalu (*Komputery → nazwa*) wyszukasz plik i pobierzesz dowolną wersję;
-- wyłączenie urządzenia lub nowy token natychmiast odcina stary komputer (np. po zwolnieniu
-  pracownika lub kradzieży laptopa).
-
-**macOS / Linux:** `python3 -m venv venv && venv/bin/pip install -r requirements.txt`, potem
-`venv/bin/python bsk_backup.py configure --server … --token …` i autostart z
-`macos-launchagent.plist` (macOS) lub usługi systemd (Linux).
+## Dziennik
+Zakładka **Dziennik** pokazuje logowania (także nieudane), wysłane i usunięte pliki, pobrania
+linkami i instalatora oraz zmiany kont.
 
 ---
 
-## 4. Bezpieczeństwo i utrzymanie
-- Hasła: bcrypt; blokada po wielu nieudanych logowaniach; ochrona CSRF; ciasteczka tylko
-  po HTTPS; nagłówki bezpieczeństwa (CSP, HSTS); tokeny urządzeń trzymane jako skrót SHA-256.
-- Każda operacja (logowanie, wysłanie, usunięcie, zmiany kont) trafia do *Dziennika*.
-- **RAID to nie kopia zapasowa.** Skonfiguruj w UGOS (*Kopia zapasowa i synchronizacja*)
-  kopię folderu `bsk-cloud` na dysk USB i/lub do chmury — zasada 3-2-1.
-- Aktualizacja portalu: wgraj nowe pliki i `sudo docker compose up -d --build`.
-  Dane w `/volume1/bsk-cloud` pozostają.
+# Bezpieczeństwo i utrzymanie
+- Ruch jest szyfrowany (HTTPS). Hasła są zapisane jako bcrypt, a po wielu błędnych logowaniach
+  następuje blokada. Formularze mają ochronę CSRF, strona ma nagłówki bezpieczeństwa (CSP, HSTS).
+  Linki do pobrania mają losowe adresy i nie są indeksowane przez wyszukiwarki.
+- **RAID to nie kopia zapasowa.** W UGOS (*Kopia zapasowa i synchronizacja*) ustaw kopię folderu
+  `bsk-cloud` na dysk USB i/lub do chmury, zgodnie z zasadą 3-2-1.
+- Aktualizacja portalu:
+  ```bash
+  cd /volume1/docker/bsk-cloud && sudo git pull && sudo docker compose up -d --build
+  ```
+  Dane w `/volume1/bsk-cloud` pozostają nienaruszone.
+- Aktualizacja BSK Backup: podmień pliki w `instalator/` i wyślij pracownikom nowe linki instalacyjne.
+  Ponowna instalacja nadpisuje program i zachowuje kolejkę.
 
-## 5. Dla programisty
+# Dla programisty
 ```bash
-cd server && pip install -r requirements-dev.txt && python -m pytest -q
-cd agent  && pip install -r requirements.txt pytest uvicorn && python -m pytest -q   # test end-to-end z serwerem
+pip install -r server/requirements-dev.txt -r agent/requirements.txt
+(cd server && python -m pytest -q)
+(cd agent && python -m pytest -q)
 ```
-Lokalny start serwera:
+Lokalny start portalu:
 ```bash
 cd server
 BSK_DATA_DIR=./dev-data BSK_SECRET_KEY=$(openssl rand -hex 32) BSK_COOKIE_SECURE=false \
-BSK_ADMIN_USERNAME=admin BSK_ADMIN_PASSWORD=ZmienMnie123 \
+BSK_ADMIN_USERNAME=admin BSK_ADMIN_PASSWORD=ZmienMnie123 BSK_PUBLIC_URL=http://127.0.0.1:8000 \
 uvicorn app.main:create_app --factory --reload
 ```
+Ręczne budowanie programu dla Windows: `agent\build-windows.bat` (wymaga Pythona 3.11+).
+macOS/Linux: `python3 bsk_backup.py configure --server … --token …` + `agent/macos-launchagent.plist`.
