@@ -44,7 +44,7 @@ services:
       - caddy_config:/config
 
   # Edycja dokumentów online (Excel/Word/PowerPoint) ze współpracą na żywo — ONLYOFFICE Docs.
-  # Uruchom z profilem "office"; w tunelu Cloudflare dodaj trasę office.bskmedia.pl -> http://office:80
+  # Uruchom z profilem "office"; edytor jest dostępny pod https://cloud.bskmedia.pl/office
   office:
     image: onlyoffice/documentserver:latest
     container_name: bsk-office
@@ -60,6 +60,17 @@ services:
       - ${BSK_OFFICE_FOLDER:-/volume1/bsk-cloud/office}/lib:/var/lib/onlyoffice
       - ${BSK_OFFICE_FOLDER:-/volume1/bsk-cloud/office}/logs:/var/log/onlyoffice
 
+  # Rozdzielacz za tunelem: cloud.bskmedia.pl/office -> edytor dokumentów, reszta -> portal.
+  # W Cloudflare trasa cloud.bskmedia.pl musi wskazywać na: HTTP  gateway:80
+  gateway:
+    image: caddy:2
+    container_name: bsk-gateway
+    profiles: [tunnel]
+    restart: unless-stopped
+    depends_on: [app]
+    volumes:
+      - ./Caddyfile.gateway:/etc/caddy/Caddyfile:ro
+
   # Alternatywa dla przekierowania portów (np. gdy operator daje CGNAT / brak publicznego IP).
   cloudflared:
     image: cloudflare/cloudflared:latest
@@ -69,7 +80,7 @@ services:
     command: tunnel --no-autoupdate run
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
-    depends_on: [app]
+    depends_on: [app, gateway]
 
 volumes:
   caddy_data:

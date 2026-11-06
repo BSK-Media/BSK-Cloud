@@ -8,6 +8,13 @@
 		Strict-Transport-Security "max-age=31536000"
 		-Server
 	}
+	# edytor dokumentów pod tym samym adresem: https://cloud.bskmedia.pl/office
+	handle_path /office/* {
+		reverse_proxy office:80 {
+			header_up X-Forwarded-Host {host}/office
+			header_up X-Forwarded-Proto https
+		}
+	}
 	reverse_proxy app:8000 {
 		transport http {
 			read_timeout 2h
