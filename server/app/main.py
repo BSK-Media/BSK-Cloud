@@ -27,6 +27,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from . import backup, charts, chunks, office, security, storage
 from .config import Settings
 from .db import Database, iso_in, now_iso
+from . import notify
 from .notify import notify_admin
 
 log = logging.getLogger("bskcloud")
@@ -225,6 +226,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def render(request: Request, name: str, status_code: int = 200, **ctx):
         ctx.setdefault("user", current_user(request))
         ctx.setdefault("nav", "")
+        if ctx["user"] and not ctx["user"]["must_change_password"]:
+            ctx.setdefault("unread_total", unread_for(ctx["user"]))
         ctx["csrf"] = csrf_token(request)
         ctx["flashes"] = request.session.pop("flash", [])
         ctx["max_upload_mb"] = settings.max_upload_mb
@@ -327,6 +330,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "INSERT INTO messages (client_id, author_id, body, created_at) VALUES (?, ?, ?, ?)",
             client_id, author["id"], body[:5000], now_iso(),
         )
+
+    def mark_seen(user, client_id: int) -> None:
+        db.run("INSERT INTO seen (user_id, client_id, seen_at) VALUES (?, ?, ?) ON CONFLICT (user_id, client_id)"
+               " DO UPDATE SET seen_at = excluded.seen_at", user["id"], client_id, now_iso())
+
+    def unread_by_client(admin_id: int) -> dict[int, int]:
+        """Dla administratora: nowe wiadomości i pliki od klientów, których jeszcze nie oglądał."""
+        rows = db.all(
+            "SELECT x.client_id, COUNT(*) AS n FROM ("
+            " SELECT m.client_id, m.created_at AS ts FROM messages m JOIN users a ON a.id = m.author_id WHERE a.role = 'client'"
+            " UNION ALL SELECT f.client_id, f.uploaded_at FROM files f WHERE f.uploaded_by = f.client_id) x"
+            " LEFT JOIN seen s ON s.client_id = x.client_id AND s.user_id = ?"
+            " WHERE s.seen_at IS NULL OR x.ts > s.seen_at GROUP BY x.client_id",
+            admin_id,
+        )
+        return {r["client_id"]: r["n"] for r in rows}
+
+    def unread_for(user) -> int:
+        if user["role"] == "admin":
+            return sum(unread_by_client(user["id"]).values())
+        seen = db.one("SELECT seen_at FROM seen WHERE user_id = ? AND client_id = ?", user["id"], user["id"])
+        since = seen["seen_at"] if seen else ""
+        return db.one(
+            "SELECT (SELECT COUNT(*) FROM messages m JOIN users a ON a.id = m.author_id"
+            "        WHERE m.client_id = ? AND a.role = 'admin' AND m.created_at > ?)"
+            " + (SELECT COUNT(*) FROM files f WHERE f.client_id = ? AND f.uploaded_by != ? AND f.uploaded_at > ?) AS n",
+            user["id"], since, user["id"], user["id"], since,
+        )["n"]
+
+    def message_json(m, user) -> dict:
+        name = m["display_name"] or m["username"]
+        return {"id": m["id"], "mine": m["author_id"] == user["id"], "author": name, "initials": _initials(name),
+                "agency": m["role"] == "admin", "time": _local_dt(m["created_at"]), "body": m["body"]}
+
+    def notify_client(client, subject: str, lines: list[str]) -> None:
+        if client["email"] and client["notify_email"] and client["active"]:
+            notify.send(settings, client["email"], subject, lines, settings.public_url + "/files",
+                        "Otwórz strefę klienta", throttle_key=f"client:{client['id']}")
 
     def thread(client_id: int):
         return db.all(
@@ -470,7 +511,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/account", response_class=HTMLResponse)
     def account(request: Request):
         user = require_user(request, allow_pw_change=True)
-        return render(request, "account.html", user=user, nav="account")
+        return render(request, "account.html", user=user, nav="account", smtp_ok=notify.configured(settings),
+                      notify_to=settings.notify_email, smtp_host=settings.smtp_host)
 
     @app.post("/account/password")
     def change_password(
@@ -506,12 +548,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def my_files(request: Request):
         user = require_user(request, "client")
         files = client_files(user["id"])
+        unread = unread_for(user)
+        mark_seen(user, user["id"])
         sent = [f for f in files if f["uploaded_by"] == user["id"]]
         received = [f for f in files if f["uploaded_by"] != user["id"]]
         return render(
             request, "client_files.html", files=files, messages=thread(user["id"]), quota=quota_info(user),
             days=daily_files(user["id"]), sent=sent, received=received, nav="files",
             sent_size=sum(f["size"] for f in sent), received_size=sum(f["size"] for f in received),
+            new_count=unread, unread_total=0,
         )
 
     @app.post("/files/upload")
@@ -534,9 +579,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             flash(request, f"Wysłano plików: {len(names)}.")
             notify_admin(
                 settings,
-                f"Nowe pliki od {user['display_name'] or user['username']}",
-                "Pliki:\n- " + "\n- ".join(names) + (f"\n\nKomentarz:\n{note}" if note.strip() else "")
-                + f"\n\n{settings.public_url}/admin/clients/{user['id']}",
+                f"Nowe pliki od {user['company'] or user['display_name'] or user['username']}",
+                "Pliki: " + ", ".join(names) + (f"\n\nKomentarz: {note}" if note.strip() else ""),
+                link=f"{settings.public_url}/admin/clients/{user['id']}", throttle_key=f"admin:{user['id']}",
             )
         return RedirectResponse("/files", 303)
 
@@ -546,10 +591,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user = require_user(request, "client")
         if body.strip():
             add_message(user["id"], user, body)
+            mark_seen(user, user["id"])
             notify_admin(
                 settings,
-                f"Wiadomość od {user['display_name'] or user['username']}",
-                body + f"\n\n{settings.public_url}/admin/clients/{user['id']}",
+                f"Wiadomość od {user['company'] or user['display_name'] or user['username']}",
+                body.strip()[:1500],
+                link=f"{settings.public_url}/admin/clients/{user['id']}", throttle_key=f"admin:{user['id']}",
             )
         return RedirectResponse("/files#wiadomosci", 303)
 
@@ -614,7 +661,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ql = q.strip().lower()
             clients = [c for c in clients if ql in " ".join(
                 [c["username"], c["display_name"], c["company"], c["email"]]).lower()]
-        return render(request, "admin_clients.html", clients=clients, q=q, nav="clients")
+        admin = require_user(request, "admin")
+        return render(request, "admin_clients.html", clients=clients, q=q, nav="clients",
+                      unread=unread_by_client(admin["id"]))
 
     @app.get("/admin/devices", response_class=HTMLResponse)
     def admin_devices(request: Request):
@@ -694,6 +743,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         require_user(request, "admin")
         client = client_or_404(client_id)
         creds = request.session.pop("new_credentials", None)
+        mark_seen(require_user(request, "admin"), client_id)
         return render(
             request, "admin_client.html", client=client, files=client_files(client_id),
             messages=thread(client_id), credentials=creds, public_url=settings.public_url,
@@ -710,6 +760,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         email: str = Form(""),
         quota_mb: int = Form(0),
         quota_gb: str | None = Form(None),
+        notify_email: str = Form(""),
         csrf: str = Form(""),
     ):
         check_csrf(request, csrf)
@@ -717,8 +768,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         client_or_404(client_id)
         quota_mb = parse_quota(quota_gb, quota_mb)
         db.run(
-            "UPDATE users SET display_name = ?, company = ?, email = ?, quota_mb = ? WHERE id = ?",
-            display_name.strip()[:120], company.strip()[:120], email.strip()[:200], max(0, quota_mb), client_id,
+            "UPDATE users SET display_name = ?, company = ?, email = ?, quota_mb = ?, notify_email = ? WHERE id = ?",
+            display_name.strip()[:120], company.strip()[:120], email.strip()[:200], max(0, quota_mb),
+            1 if notify_email else 0, client_id,
         )
         db.log(admin["id"], "client_edited", str(client_id))
         flash(request, "Zapisano dane klienta.")
@@ -771,6 +823,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             count += 1
         if note.strip():
             add_message(client_id, admin, note)
+        if count:
+            notify_client(client, "Nowe pliki od BSK Media",
+                          [f"Udostępniliśmy Ci plików: {count}.", note.strip()])
         flash(request, f"Udostępniono klientowi plików: {count}.")
         return RedirectResponse(f"/admin/clients/{client_id}", 303)
 
@@ -778,8 +833,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def admin_message(request: Request, client_id: int, body: str = Form(...), csrf: str = Form("")):
         check_csrf(request, csrf)
         admin = require_user(request, "admin")
-        client_or_404(client_id)
+        client = client_or_404(client_id)
         add_message(client_id, admin, body)
+        mark_seen(admin, client_id)
+        if body.strip():
+            notify_client(client, "Nowa wiadomość od BSK Media", [body.strip()[:1500]])
         return RedirectResponse(f"/admin/clients/{client_id}#wiadomosci", 303)
 
     # ------------------------------------------------------------------ admin: urządzenia (kopie)
@@ -1358,6 +1416,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, "Nieznany typ dokumentu.")
         fid = create_blank(user, user, kind, title)
         return RedirectResponse(f"/files/{fid}/edit" if office_ready() else "/files", 303)
+
+    # ------------------------------------------------------------------ wiadomości na żywo i liczniki
+
+    @app.get("/api/thread/{client_id}")
+    def api_thread(request: Request, client_id: int, after: int = 0, visible: int = 1):
+        user = current_user(request)
+        if not user or user["must_change_password"]:
+            raise HTTPException(401, "Zaloguj się ponownie.")
+        if user["role"] != "admin" and user["id"] != client_id:
+            raise HTTPException(403, "Brak dostępu.")
+        rows = db.all(
+            "SELECT m.*, u.display_name, u.username, u.role FROM messages m JOIN users u ON u.id = m.author_id"
+            " WHERE m.client_id = ? AND m.id > ? ORDER BY m.id LIMIT 200", client_id, after,
+        )
+        if visible:
+            mark_seen(user, client_id)
+        return {"messages": [message_json(m, user) for m in rows], "unread": unread_for(user)}
+
+    @app.get("/api/unread")
+    def api_unread(request: Request):
+        user = current_user(request)
+        if not user:
+            raise HTTPException(401, "Zaloguj się ponownie.")
+        return {"unread": unread_for(user)}
+
+    @app.post("/admin/test-email")
+    def test_email(request: Request, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        require_user(request, "admin")
+        if not notify.configured(settings) or not settings.notify_email:
+            flash(request, "Poczta nie jest skonfigurowana — uzupełnij BSK_SMTP_* i BSK_NOTIFY_EMAIL w pliku .env.", "error")
+        else:
+            err = notify.send(settings, settings.notify_email, "Test powiadomień",
+                              ["Jeśli to czytasz, powiadomienia e-mail z portalu działają."],
+                              settings.public_url + "/admin", "Otwórz panel", wait=True)
+            if err:
+                flash(request, f"Nie udało się wysłać e-maila: {err}", "error")
+            else:
+                flash(request, f"Wysłano e-mail testowy na {settings.notify_email}.")
+        return RedirectResponse("/account", 303)
 
     # ------------------------------------------------------------------ wysyłka w kawałkach z przeglądarki
 

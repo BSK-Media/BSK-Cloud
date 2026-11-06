@@ -22,6 +22,7 @@
   {% endif %}
 {% endmacro %}
 {% if user %}
+<span hidden data-unread-poll data-unread="{{ unread_total or 0 }}"></span>
 <input type="checkbox" id="nav-toggle">
 <div class="shell">
   <aside class="sidebar">
@@ -29,7 +30,7 @@
     <nav class="nav">
       {% if user.role == 'admin' %}
         <a href="/admin" class="{{ 'active' if nav == 'dashboard' }}">{{ ui.icon("home") }}Pulpit</a>
-        <a href="/admin/clients" class="{{ 'active' if nav == 'clients' }}">{{ ui.icon("users") }}Klienci</a>
+        <a href="/admin/clients" class="{{ 'active' if nav == 'clients' }}">{{ ui.icon("users") }}Klienci<span class="badge" data-unread-badge {{ 'hidden' if not unread_total }}>{{ unread_total }}</span></a>
         <a href="/admin/devices" class="{{ 'active' if nav == 'devices' }}">{{ ui.icon("laptop") }}Pracownicy i kopie</a>
         <a href="/admin/shares" class="{{ 'active' if nav == 'shares' }}">{{ ui.icon("link") }}Linki do pobrania</a>
         <div class="nav-label">System</div>
@@ -38,7 +39,7 @@
       {% else %}
         <a href="/files" class="{{ 'active' if nav == 'files' }}">{{ ui.icon("home") }}Pulpit</a>
         <a href="/files#pliki">{{ ui.icon("folder") }}Pliki</a>
-        <a href="/files#wiadomosci">{{ ui.icon("message") }}Wiadomości</a>
+        <a href="/files#wiadomosci">{{ ui.icon("message") }}Wiadomości<span class="badge" data-unread-badge {{ 'hidden' if not unread_total }}>{{ unread_total }}</span></a>
         <a href="/account" class="{{ 'active' if nav == 'account' }}">{{ ui.icon("user") }}Moje konto</a>
       {% endif %}
     </nav>

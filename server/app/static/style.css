@@ -291,3 +291,9 @@ footer.foot { text-align: center; color: var(--muted); font-size: .78rem; margin
   .kpi .label { font-size: .76rem; }
 }
 .disk-head span { white-space: nowrap; }
+.badge { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 6px;
+  border-radius: 999px; background: #e34948; color: #fff; font-size: .72rem; font-weight: 700; line-height: 1; margin-left: 6px; }
+.badge[hidden] { display: none; }
+.nav a .badge { margin-left: auto; }
+.msg.fresh .bubble { animation: pop .5s ease-out; }
+@keyframes pop { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }

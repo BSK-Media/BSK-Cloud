@@ -107,17 +107,17 @@
 {% else %}{{ empty("Nie ma jeszcze żadnych plików.") }}{% endif %}
 {%- endmacro %}
 
-{% macro thread(messages, user, csrf, action) -%}
-<div class="thread" data-scroll-end>
+{% macro thread(messages, user, csrf, action, client_id) -%}
+<div class="thread" data-scroll-end data-thread="{{ client_id }}" data-last="{{ messages[-1].id if messages else 0 }}">
   {% for m in messages %}
   <div class="msg {{ 'mine' if m.author_id == user.id else '' }}">
     <span class="avatar {{ 'agency' if m.role == 'admin' else '' }}">{{ (m.display_name or m.username)|initials }}</span>
     <div class="bubble"><div class="meta">{{ m.display_name or m.username }}{% if m.role == 'admin' %} · BSK Media{% endif %} · {{ m.created_at|dt }}</div>
       <div class="body">{{ m.body }}</div></div>
   </div>
-  {% else %}{{ empty("Brak wiadomości — napisz pierwszą.", "message") }}{% endfor %}
+  {% else %}<div data-empty>{{ empty("Brak wiadomości — napisz pierwszą.", "message") }}</div>{% endfor %}
 </div>
-<form method="post" action="{{ action }}" class="composer">
+<form method="post" action="{{ action }}" class="composer" data-live-composer>
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <textarea name="body" rows="2" maxlength="5000" required placeholder="Napisz wiadomość lub komentarz…"></textarea>
   <button class="primary" title="Wyślij">{{ icon("message") }}<span class="hide-sm">Wyślij</span></button>

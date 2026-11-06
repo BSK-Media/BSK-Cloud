@@ -4,6 +4,7 @@
 {% block subtitle %}<div class="subtitle">{{ user.company or 'Twoja strefa wymiany plików z BSK Media' }}</div>{% endblock %}
 {% block actions %}<a class="button primary" href="#wyslij">{{ ui.icon("upload") }}Wyślij pliki</a>{% endblock %}
 {% block content %}
+{% if new_count %}<div class="flash info">Masz <b>{{ new_count }}</b> {{ 'nowość' if new_count == 1 else 'nowości' }} od BSK Media (wiadomości lub pliki) od ostatniej wizyty.</div>{% endif %}
 <div class="kpis">
   {{ ui.kpi("Wysłane przez Ciebie", sent|length, sent_size|size, "upload") }}
   {{ ui.kpi("Od BSK Media", received|length, received_size|size, "download") }}
@@ -37,8 +38,9 @@
     {% endif %}
   </section>
   <section class="card" id="wiadomosci">
-    <div class="card-head">{{ ui.icon("message") }}<h2>Wiadomości i komentarze</h2></div>
-    {{ ui.thread(messages, user, csrf, "/files/message") }}
+    <div class="card-head">{{ ui.icon("message") }}<h2>Wiadomości i komentarze</h2><span class="spacer"></span>
+      <button type="button" class="btn-sm" data-notify-enable hidden>{{ ui.icon("message") }}Włącz powiadomienia</button></div>
+    {{ ui.thread(messages, user, csrf, "/files/message", user.id) }}
   </section>
 </div>
 

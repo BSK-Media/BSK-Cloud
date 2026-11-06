@@ -54,8 +54,9 @@
     {% if not office_enabled %}<p class="hint">Edycja online nie jest jeszcze włączona — plik zostanie utworzony do pobrania.</p>{% endif %}
   </section>
   <section class="card" id="wiadomosci">
-    <div class="card-head">{{ ui.icon("message") }}<h2>Wiadomości</h2></div>
-    {{ ui.thread(messages, user, csrf, "/admin/clients/" ~ client.id ~ "/message") }}
+    <div class="card-head">{{ ui.icon("message") }}<h2>Wiadomości</h2><span class="spacer"></span>
+      <button type="button" class="btn-sm" data-notify-enable hidden>{{ ui.icon("message") }}Włącz powiadomienia</button></div>
+    {{ ui.thread(messages, user, csrf, "/admin/clients/" ~ client.id ~ "/message", client.id) }}
   </section>
 </div>
 
@@ -70,6 +71,8 @@
       <label>Limit miejsca
         <span class="input-suffix"><input name="quota_gb" type="number" min="0" step="any" value="{{ client.quota_mb|gb }}"><span>GB</span></span>
         <span class="hint">0 = bez limitu</span></label>
+      <label class="check full"><input type="checkbox" name="notify_email" value="1" {{ 'checked' if client.notify_email }}>
+        Powiadamiaj klienta e-mailem o odpowiedziach i nowych plikach {% if not client.email %}<span class="hint">(najpierw podaj e-mail)</span>{% endif %}</label>
     </div>
     <div class="row"><button class="primary">Zapisz zmiany</button>
       <span class="small muted">Ostatnie logowanie: {{ client.last_login|ago }} · konto od {{ client.created_at|dt }}</span></div>

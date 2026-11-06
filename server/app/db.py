@@ -71,6 +71,12 @@ CREATE TABLE IF NOT EXISTS events (
     detail TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+CREATE TABLE IF NOT EXISTS seen (
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    client_id INTEGER NOT NULL REFERENCES users(id),
+    seen_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, client_id)
+);
 CREATE TABLE IF NOT EXISTS share_links (
     id INTEGER PRIMARY KEY,
     token TEXT NOT NULL UNIQUE,
@@ -105,6 +111,7 @@ MIGRATIONS = [
     ("users", "quota_mb", "INTEGER NOT NULL DEFAULT 0"),
     ("devices", "quota_mb", "INTEGER NOT NULL DEFAULT 0"),
     ("devices", "folders", "TEXT NOT NULL DEFAULT ''"),
+    ("users", "notify_email", "INTEGER NOT NULL DEFAULT 1"),
     ("files", "office_version", "INTEGER NOT NULL DEFAULT 1"),
     ("files", "modified_at", "TEXT"),
     ("files", "modified_by", "INTEGER"),
@@ -112,7 +119,8 @@ MIGRATIONS = [
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    # z mikrosekundami — kolejność zdarzeń w tej samej sekundzie (np. „przeczytane” vs nowa wiadomość)
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def iso_in(days: float) -> str:
