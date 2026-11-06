@@ -1,72 +1,83 @@
 {% extends "base.html" %}
+{% from "_folders.html" import folders_fields %}
+{% block title %}{{ device.employee or device.name }} — {{ site_name }}{% endblock %}
+{% block heading %}<span class="row"><span class="avatar">{{ (device.employee or device.name)|initials }}</span>{{ device.employee or device.name }}
+  {% if not device.active %}<span class="tag off">wyłączony</span>{% elif online(device.last_seen) %}<span class="tag ok">● online</span>{% else %}<span class="tag off">offline</span>{% endif %}</span>{% endblock %}
+{% block subtitle %}<div class="subtitle">Komputer <b>{{ device.name }}</b> · ostatni kontakt {{ device.last_seen|ago }}{% if device.last_ip %} ({{ device.last_ip }}){% endif %} · folder na NAS <code>kopie-pracownikow/{{ device.folder_name }}</code></div>{% endblock %}
+{% block actions %}<a class="button" href="/admin/devices">{{ ui.icon("back") }}Wszyscy</a>{% endblock %}
 {% block content %}
-<div class="row">
-  <h1>{{ device.name }} <span class="muted">{{ device.employee }}</span></h1>
-  {% if not device.active %}<span class="tag danger">wyłączony</span>{% endif %}
-</div>
-
 {% if install_link %}
-<div class="flash ok">
-  <b>Link instalacyjny dla pracownika</b> (ważny do {{ install_link.expires_at|dt }}, pobrań: {{ install_link.downloads }}/5).
-  Wyślij go pracownikowi — otwiera go na komputerze, który ma być kopiowany:
-  <div class="copyrow"><input readonly value="{{ public_url }}/instaluj/{{ install_link.code }}" data-copy-source><button type="button" data-copy>Kopiuj</button></div>
-  {% if not installer_ready %}<p class="small"><b>Uwaga:</b> na NAS nie ma jeszcze plików programu w folderze <code>instalator/</code> — zobacz README, punkt „Instalator”.</p>{% endif %}
+<div class="flash info">
+  <b>Link instalacyjny dla pracownika</b> — ważny do {{ install_link.expires_at|dt }}, pobrań {{ install_link.downloads }}/5.
+  Wyślij go pracownikowi; otwiera go na komputerze, który ma być kopiowany:
+  <div class="copyrow"><input readonly value="{{ public_url }}/instaluj/{{ install_link.code }}" data-copy-source><button type="button" data-copy>{{ ui.icon("copy") }}Kopiuj</button></div>
+  {% if not installer_ready %}<div class="small"><b>Uwaga:</b> w folderze <code>bsk-dane/instalator</code> na NAS nie ma jeszcze plików programu.</div>{% endif %}
 </div>
 {% endif %}
-{% if token %}
-<details class="card">
-  <summary>Instalacja ręczna (token)</summary>
-  <p class="small">Token jest widoczny tylko teraz:</p>
-  <code class="token">{{ token }}</code>
-  <p class="small">W folderze z programem: <code>powershell -ExecutionPolicy Bypass -File .\install-windows.ps1 -Server "{{ public_url }}" -Token "{{ token }}"</code></p>
-</details>
-{% endif %}
 
-<p class="muted">W kopii: <b>{{ stats.n }}</b> plików, {{ stats.total|size }}{% if device.quota_mb %} z limitu {{ (device.quota_mb * 1048576)|size }}{% endif %} · ostatni kontakt: {{ device.last_seen|dt or 'nigdy' }}{% if device.last_ip %} ({{ device.last_ip }}){% endif %} · folder na NAS: <code>kopie-pracownikow/{{ device.folder_name }}</code></p>
-
-<div class="row left">
-  <form method="post" action="/admin/devices/{{ device.id }}/install-link" data-confirm="Utworzyć nowy link instalacyjny? Obecny token tego komputera przestanie działać (np. przy reinstalacji lub nowym komputerze).">
-    <input type="hidden" name="csrf" value="{{ csrf }}"><button class="primary">Nowy link instalacyjny</button>
-  </form>
-  <form method="post" action="/admin/devices/{{ device.id }}/token" data-confirm="Wygenerować nowy token? Stary przestanie działać i trzeba będzie go podmienić na komputerze.">
-    <input type="hidden" name="csrf" value="{{ csrf }}"><button>Nowy token</button>
-  </form>
-  <form method="post" action="/admin/devices/{{ device.id }}/toggle">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <button class="{{ 'danger' if device.active else '' }}">{{ 'Wyłącz urządzenie' if device.active else 'Włącz urządzenie' }}</button>
-  </form>
+<div class="grid g-main mb">
+  <section class="card">
+    <div class="card-head"><h2>Aktualizowane pliki — ostatnie 30 dni</h2><span class="spacer"></span><span class="muted small">liczba plików dziennie</span></div>
+    {{ charts.stacked_columns(days, [("files", "Pliki")], "Pliki zapisane w kopii w ostatnich 30 dniach") }}
+  </section>
+  <section class="card">
+    <div class="card-head">{{ ui.icon("drive") }}<h2>Miejsce na kopie</h2></div>
+    {{ ui.quota_card({"used": stats.total, "limit": device.quota_mb * 1048576, "percent": ((stats.total * 100 / (device.quota_mb * 1048576))|round|int) if device.quota_mb else 0}, "Kopia tego komputera") }}
+    <p class="small muted">{{ stats.n }} plików · poprzednie wersje zapisywane osobno</p>
+  </section>
 </div>
-
-<details class="card">
-  <summary>Ustawienia komputera</summary>
-  <form method="post" action="/admin/devices/{{ device.id }}/settings" class="stack narrow-form">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <label>Pracownik <input name="employee" value="{{ device.employee }}"></label>
-    <label>Limit miejsca na kopie (MB, 0 = bez limitu) <input name="quota_mb" type="number" min="0" step="1024" value="{{ device.quota_mb }}"></label>
-    <button>Zapisz</button>
-  </form>
-</details>
 
 <section class="card">
-  <form method="get" class="row left">
-    <input name="q" value="{{ q }}" placeholder="Szukaj w ścieżkach…">
-    <button>Szukaj</button>
-  </form>
-  <table class="list">
-    <thead><tr><th>Ścieżka</th><th>Rozmiar</th><th>Kopia z</th><th>Wersje</th></tr></thead>
+  <div class="card-head"><h2>Pliki w kopii</h2><span class="spacer"></span>
+    <form method="get" class="search">{{ ui.icon("search") }}<input name="q" value="{{ q }}" placeholder="Szukaj pliku lub folderu…"></form></div>
+  {% if files %}
+  <div class="table-wrap"><table class="list">
+    <thead><tr><th>Plik</th><th class="hide-sm">Zapisano</th><th>Wersje</th><th></th></tr></thead>
     <tbody>
     {% for f in files %}
     <tr>
-      <td><a href="/admin/devices/{{ device.id }}/download?path={{ f.rel_path|q }}">{{ f.rel_path }}</a></td>
-      <td>{{ f.size|size }}</td><td>{{ f.uploaded_at|dt }}</td>
+      <td><div class="file">{{ ui.ficon(f.rel_path) }}<div><a href="/admin/devices/{{ device.id }}/download?path={{ f.rel_path|q }}">{{ f.rel_path.split('/')[-1] }}</a>
+        <div class="meta">{{ f.rel_path }} · {{ f.size|size }}</div></div></div></td>
+      <td class="hide-sm small muted nowrap" title="{{ f.uploaded_at|dt }}">{{ f.uploaded_at|ago }}</td>
       <td><a href="/admin/devices/{{ device.id }}/versions?path={{ f.rel_path|q }}">{{ f.versions }}</a></td>
+      <td class="actions"><a class="button ghost btn-sm" href="/admin/devices/{{ device.id }}/download?path={{ f.rel_path|q }}" title="Pobierz">{{ ui.icon("download") }}</a></td>
     </tr>
-    {% else %}<tr><td colspan="4" class="muted">Brak plików w kopii.</td></tr>{% endfor %}
+    {% endfor %}
     </tbody>
-  </table>
-  <div class="row left">
-    {% if page > 1 %}<a href="?q={{ q|q }}&page={{ page - 1 }}">← Nowsze</a>{% endif %}
-    {% if has_more %}<a href="?q={{ q|q }}&page={{ page + 1 }}">Starsze →</a>{% endif %}
+  </table></div>
+  <div class="row">
+    {% if page > 1 %}<a class="button btn-sm" href="?q={{ q|q }}&page={{ page - 1 }}">← Nowsze</a>{% endif %}
+    {% if has_more %}<a class="button btn-sm" href="?q={{ q|q }}&page={{ page + 1 }}">Starsze →</a>{% endif %}
   </div>
+  {% else %}{{ ui.empty("Brak plików w kopii" ~ (" pasujących do wyszukiwania" if q else " — pojawią się po instalacji programu") ~ ".", "shield") }}{% endif %}
+</section>
+
+<section class="card">
+  <div class="card-head">{{ ui.icon("laptop") }}<h2>Ustawienia</h2></div>
+  <form method="post" action="/admin/devices/{{ device.id }}/settings" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="form-grid">
+      <label>Pracownik <input name="employee" value="{{ device.employee }}"></label>
+      <label>Limit miejsca na kopie
+        <span class="input-suffix"><input name="quota_gb" type="number" min="0" step="any" value="{{ device.quota_mb|gb }}"><span>GB</span></span>
+        <span class="hint">1024 GB = 1 TB · 0 = bez limitu</span></label>
+      {{ folders_fields(special, chosen, extra) }}
+    </div>
+    <div class="row"><button class="primary">Zapisz ustawienia</button></div>
+  </form>
+  <div class="row mt">
+    <form method="post" action="/admin/devices/{{ device.id }}/install-link" data-confirm="Utworzyć nowy link instalacyjny? Obecny token tego komputera przestanie działać (np. przy reinstalacji lub nowym komputerze).">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><button>{{ ui.icon("link") }}Nowy link instalacyjny</button></form>
+    <form method="post" action="/admin/devices/{{ device.id }}/token" data-confirm="Wygenerować nowy token? Stary przestanie działać i trzeba będzie go podmienić na komputerze.">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><button>{{ ui.icon("key") }}Nowy token</button></form>
+    <form method="post" action="/admin/devices/{{ device.id }}/toggle">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><button class="{{ 'danger' if device.active }}">{{ ui.icon("lock") }}{{ 'Wyłącz urządzenie' if device.active else 'Włącz urządzenie' }}</button></form>
+  </div>
+  {% if token %}
+  <details class="mt"><summary class="small">Instalacja ręczna (token widoczny tylko teraz)</summary>
+    <p><code class="token">{{ token }}</code></p>
+    <p class="small">W folderze z programem: <code>powershell -ExecutionPolicy Bypass -File .\install-windows.ps1 -Server "{{ public_url }}" -Token "{{ token }}"</code></p>
+  </details>
+  {% endif %}
 </section>
 {% endblock %}

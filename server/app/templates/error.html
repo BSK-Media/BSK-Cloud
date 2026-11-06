@@ -1,8 +1,8 @@
 {% extends "base.html" %}
+{% block heading %}Coś poszło nie tak{% endblock %}
 {% block content %}
-<section class="card narrow">
-  <h1>Ups…</h1>
-  <p>{{ message }}</p>
-  <p><a href="/">Wróć na stronę główną</a></p>
-</section>
+<section class="card">{{ ui.empty(message, "file") }}<p class="center"><a class="button" href="/">{{ ui.icon("back") }}Wróć na stronę główną</a></p></section>
+{% endblock %}
+{% block auth %}
+<section class="card center"><h1>Ups…</h1><p>{{ message }}</p><p><a class="button" href="/">Wróć na stronę główną</a></p></section>
 {% endblock %}

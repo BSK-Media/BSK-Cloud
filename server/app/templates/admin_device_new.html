@@ -1,14 +1,22 @@
 {% extends "base.html" %}
+{% from "_folders.html" import folders_fields %}
+{% block title %}Dodaj pracownika — {{ site_name }}{% endblock %}
+{% block heading %}Dodaj pracownika{% endblock %}
+{% block subtitle %}<div class="subtitle">Po zapisaniu dostaniesz link, z którego pracownik zainstaluje program BSK Backup</div>{% endblock %}
 {% block content %}
-<section class="card narrow">
-  <h1>Dodaj komputer pracownika</h1>
-  <p class="muted">Po zapisaniu dostaniesz link instalacyjny dla pracownika (ważny 7 dni) — pracownik otwiera go na swoim komputerze, pobiera program i instaluje dwoma kliknięciami.</p>
+<section class="card">
   <form method="post" action="/admin/devices/new" class="stack">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <label>Nazwa komputera (np. LAPTOP-ANNA) <input name="name" required maxlength="80"></label>
-    <label>Pracownik <input name="employee" maxlength="120"></label>
-    <label>Limit miejsca na kopie (MB, 0 = bez limitu) <input name="quota_mb" type="number" min="0" step="1024" value="0"></label>
-    <button class="primary">Dodaj i wygeneruj token</button>
+    <div class="form-grid">
+      <label>Pracownik <input name="employee" maxlength="120" placeholder="np. Olaf Nowak"></label>
+      <label>Nazwa komputera <input name="name" required maxlength="80" placeholder="np. LAPTOP-OLAF">
+        <span class="hint">Pod tą nazwą kopie trafią na NAS</span></label>
+      <label>Limit miejsca na kopie
+        <span class="input-suffix"><input name="quota_gb" type="number" min="0" step="any" value="1024"><span>GB</span></span>
+        <span class="hint">1024 GB = 1 TB · 0 = bez limitu</span></label>
+      {{ folders_fields(special, ["@pulpit", "@dokumenty"], "") }}
+    </div>
+    <div class="row"><button class="primary">{{ ui.icon("plus") }}Dodaj i utwórz link instalacyjny</button><a class="button ghost" href="/admin/devices">Anuluj</a></div>
   </form>
 </section>
 {% endblock %}

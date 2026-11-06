@@ -1,20 +1,51 @@
 {% extends "base.html" %}
+{% block title %}Pulpit — {{ site_name }}{% endblock %}
+{% block heading %}Witaj, {{ (user.display_name or user.username).split()[0] }}{% endblock %}
+{% block subtitle %}<div class="subtitle">{{ user.company or 'Twoja strefa wymiany plików z BSK Media' }}</div>{% endblock %}
+{% block actions %}<a class="button primary" href="#wyslij">{{ ui.icon("upload") }}Wyślij pliki</a>{% endblock %}
 {% block content %}
-<h1>Witaj, {{ user.display_name or user.username }}</h1>
-{% include "_quota.html" %}
-<div class="grid">
+<div class="kpis">
+  {{ ui.kpi("Wysłane przez Ciebie", sent|length, sent_size|size, "upload") }}
+  {{ ui.kpi("Od BSK Media", received|length, received_size|size, "download") }}
+  {{ ui.kpi("Wiadomości", messages|length, "ostatnia " ~ (messages[-1].created_at|ago if messages else "—"), "message") }}
+  {{ ui.kpi("Miejsce", quota.used|size, ("z " ~ quota.limit|size) if quota.limit else "bez limitu", "drive") }}
+</div>
+
+<div class="grid g-main mb">
   <section class="card">
-    <h2>Wyślij pliki do BSK Media</h2>
-    {% set upload_action = "/files/upload" %}{% include "_upload_form.html" %}
+    <div class="card-head"><h2>Twoja aktywność — ostatnie 30 dni</h2></div>
+    {{ charts.stacked_columns(days, [("client", "Wysłane przez Ciebie"), ("agency", "Od BSK Media")], "Twoja aktywność") }}
   </section>
   <section class="card">
-    <h2>Wiadomości i komentarze</h2>
-    {% set message_action = "/files/message" %}{% include "_messages.html" %}
+    <div class="card-head">{{ ui.icon("drive") }}<h2>Twoje miejsce</h2></div>
+    {{ ui.quota_card(quota, "Wykorzystane miejsce") }}
   </section>
 </div>
-<section class="card">
-  <h2>Pliki</h2>
-  <p class="muted small">Tutaj są pliki wysłane przez Ciebie oraz te, które udostępniliśmy Tobie (oznaczone „BSK Media”).</p>
-  {% include "_files_table.html" %}
+
+<div class="grid g-2 mb">
+  <section class="card" id="wyslij">
+    <div class="card-head">{{ ui.icon("upload") }}<h2>Wyślij pliki do BSK Media</h2></div>
+    {{ ui.upload_form("/files/upload", csrf, max_upload_mb) }}
+    {% if office_enabled %}
+    <div class="card-head mt"><h3>albo utwórz nowy dokument online</h3></div>
+    <form method="post" action="/files/new-doc" class="row">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input name="title" placeholder="Nazwa dokumentu" class="grow">
+      <button name="kind" value="xlsx">{{ ui.icon("sheet") }}Arkusz</button>
+      <button name="kind" value="docx">{{ ui.icon("doc") }}Dokument</button>
+    </form>
+    {% endif %}
+  </section>
+  <section class="card" id="wiadomosci">
+    <div class="card-head">{{ ui.icon("message") }}<h2>Wiadomości i komentarze</h2></div>
+    {{ ui.thread(messages, user, csrf, "/files/message") }}
+  </section>
+</div>
+
+<section class="card" id="pliki">
+  <div class="card-head"><h2>Pliki</h2><span class="spacer"></span>
+    <div class="tabs" data-filter-tabs><button class="on" data-f="all">Wszystkie</button><button data-f="client">Wysłane przeze mnie</button><button data-f="agency">Od BSK Media</button></div>
+  </div>
+  {{ ui.files_table(files, user, csrf) }}
 </section>
 {% endblock %}

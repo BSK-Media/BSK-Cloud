@@ -1,0 +1,151 @@
+{# Ikony (własne, obrysowe, 24×24) i wspólne komponenty interfejsu #}
+{% macro icon(name, cls="") -%}
+<svg class="icon {{ cls }}" viewBox="0 0 24 24" aria-hidden="true">
+{%- if name == "home" -%}<rect x="3" y="3" width="7" height="9" rx="2"/><rect x="14" y="3" width="7" height="5" rx="2"/><rect x="14" y="12" width="7" height="9" rx="2"/><rect x="3" y="16" width="7" height="5" rx="2"/>
+{%- elif name == "users" -%}<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.8c1.6.8 2.6 2.6 3 5.2"/>
+{%- elif name == "laptop" -%}<rect x="4" y="4" width="16" height="11" rx="2"/><path d="M2 19h20"/>
+{%- elif name == "link" -%}<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>
+{%- elif name == "list" -%}<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r=".8"/><circle cx="3.5" cy="12" r=".8"/><circle cx="3.5" cy="18" r=".8"/>
+{%- elif name == "user" -%}<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4.2-6 8-6s7 2 8 6"/>
+{%- elif name == "logout" -%}<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 17l-5-5 5-5M5 12h11"/>
+{%- elif name == "upload" -%}<path d="M12 15V4M7 9l5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+{%- elif name == "download" -%}<path d="M12 4v11M7 10l5 5 5-5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+{%- elif name == "file" -%}<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>
+{%- elif name == "img" -%}<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/>
+{%- elif name == "video" -%}<rect x="3" y="5" width="13" height="14" rx="2"/><path d="M16 10l5-3v10l-5-3"/>
+{%- elif name == "audio" -%}<path d="M9 18V6l11-2v12"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>
+{%- elif name == "sheet" -%}<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16M4 15h16M10 3v18"/>
+{%- elif name == "doc" -%}<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>
+{%- elif name == "slides" -%}<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M12 16v4M8 20h8"/>
+{%- elif name == "pdf" -%}<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 15h1.5a1.5 1.5 0 0 0 0-3H9v5"/>
+{%- elif name == "zip" -%}<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M11 5h1M11 8h1M11 11h1M10.5 14h2v3h-2z"/>
+{%- elif name == "message" -%}<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>
+{%- elif name == "edit" -%}<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>
+{%- elif name == "trash" -%}<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/>
+{%- elif name == "plus" -%}<path d="M12 5v14M5 12h14"/>
+{%- elif name == "drive" -%}<rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13l2.5-8h9L19 13"/><circle cx="17" cy="16.5" r=".9"/>
+{%- elif name == "shield" -%}<path d="M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/>
+{%- elif name == "search" -%}<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>
+{%- elif name == "menu" -%}<path d="M4 6h16M4 12h16M4 18h16"/>
+{%- elif name == "back" -%}<path d="M15 6l-6 6 6 6"/>
+{%- elif name == "key" -%}<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3"/>
+{%- elif name == "lock" -%}<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>
+{%- elif name == "clock" -%}<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
+{%- elif name == "copy" -%}<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>
+{%- elif name == "folder" -%}<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+{%- elif name == "chart" -%}<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>
+{%- else -%}<circle cx="12" cy="12" r="8"/>
+{%- endif -%}
+</svg>
+{%- endmacro %}
+
+{% macro ficon(name) -%}
+{%- set kind = name|ftype -%}<span class="ficon {{ kind }}">{{ icon(kind) }}</span>
+{%- endmacro %}
+
+{% macro kpi(label, value, hint="", ico="chart", extra="") -%}
+<div class="kpi"><div class="label">{{ icon(ico) }}{{ label }}</div><div class="value">{{ value }}</div>
+{% if hint %}<div class="hint">{{ hint }}</div>{% endif %}{{ extra }}</div>
+{%- endmacro %}
+
+{% macro empty(text, ico="folder") -%}
+<div class="empty">{{ icon(ico) }}<div>{{ text }}</div></div>
+{%- endmacro %}
+
+{% macro upload_form(action, csrf, max_upload_mb, button="Wyślij pliki", extra="") -%}
+<form method="post" action="{{ action }}" enctype="multipart/form-data" class="stack upload" data-upload>
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label class="drop">
+    <input type="file" name="files" multiple required>
+    {{ icon("upload") }}
+    <span><b>Przeciągnij pliki tutaj</b> albo kliknij, aby wybrać</span>
+    <small class="hint">Pojedynczy plik do {{ (max_upload_mb / 1024)|round(0)|int }} GB · przerwane wysyłanie wznawia się samo</small>
+  </label>
+  {{ extra }}
+  <label>Komentarz do wysyłki (opcjonalnie)
+    <textarea name="note" rows="2" maxlength="500" placeholder="np. poprawiona wersja logo, wersja 3"></textarea>
+  </label>
+  <progress value="0" max="100" hidden></progress>
+  <button class="primary">{{ icon("upload") }}{{ button }}</button>
+</form>
+{%- endmacro %}
+
+{% macro files_table(files, user, csrf, show_owner=False) -%}
+{% if files %}
+<div class="table-wrap"><table class="list" data-filterable>
+  <thead><tr><th>Plik</th><th class="hide-sm">Od</th><th class="hide-sm">Data</th><th></th></tr></thead>
+  <tbody>
+  {% for f in files %}
+  {% set dt = doc_type(f.original_name) %}
+  <tr data-from="{{ 'agency' if f.uploader_role == 'admin' else 'client' }}">
+    <td><div class="file">{{ ficon(f.original_name) }}<div>
+      <a href="/files/{{ f.id }}/download">{{ f.original_name }}</a>
+      <div class="meta">{{ f.size|size }}{% if f.note %} · {{ f.note }}{% endif %}{% if f.modified_at %} · edytowano {{ f.modified_at|ago }}{% endif %}</div>
+    </div></div></td>
+    <td class="hide-sm">{% if f.uploader_role == 'admin' %}<span class="tag agency">BSK Media</span>{% else %}<span class="tag">Klient</span>{% endif %}</td>
+    <td class="hide-sm nowrap muted small" title="{{ f.uploaded_at|dt }}">{{ f.uploaded_at|ago }}</td>
+    <td class="actions">
+      {% if office_enabled and dt %}<a class="button btn-sm" href="/files/{{ f.id }}/edit">{{ icon("edit") }}{{ 'Edytuj online' if dt[2] else 'Podgląd' }}</a>{% endif %}
+      <a class="button ghost btn-sm" href="/files/{{ f.id }}/download" title="Pobierz">{{ icon("download") }}</a>
+      {% if user.role == 'admin' %}
+      <form method="post" action="/admin/shares/new" class="inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="file"><input type="hidden" name="file_id" value="{{ f.id }}">
+        <input type="hidden" name="expires_days" value="7"><input type="hidden" name="back" value="/admin/clients/{{ f.client_id }}">
+        <button class="ghost btn-sm" title="Utwórz link do pobrania (ważny 7 dni)">{{ icon("link") }}</button>
+      </form>
+      {% endif %}
+      {% if user.role == 'admin' or f.uploaded_by == user.id %}
+      <form method="post" action="/files/{{ f.id }}/delete" class="inline" data-confirm="Usunąć plik {{ f.original_name }}?">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><button class="ghost btn-sm danger" title="Usuń">{{ icon("trash") }}</button>
+      </form>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% else %}{{ empty("Nie ma jeszcze żadnych plików.") }}{% endif %}
+{%- endmacro %}
+
+{% macro thread(messages, user, csrf, action) -%}
+<div class="thread" data-scroll-end>
+  {% for m in messages %}
+  <div class="msg {{ 'mine' if m.author_id == user.id else '' }}">
+    <span class="avatar {{ 'agency' if m.role == 'admin' else '' }}">{{ (m.display_name or m.username)|initials }}</span>
+    <div class="bubble"><div class="meta">{{ m.display_name or m.username }}{% if m.role == 'admin' %} · BSK Media{% endif %} · {{ m.created_at|dt }}</div>
+      <div class="body">{{ m.body }}</div></div>
+  </div>
+  {% else %}{{ empty("Brak wiadomości — napisz pierwszą.", "message") }}{% endfor %}
+</div>
+<form method="post" action="{{ action }}" class="composer">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <textarea name="body" rows="2" maxlength="5000" required placeholder="Napisz wiadomość lub komentarz…"></textarea>
+  <button class="primary" title="Wyślij">{{ icon("message") }}<span class="hide-sm">Wyślij</span></button>
+</form>
+{%- endmacro %}
+
+{% macro share_options() -%}
+<div class="form-grid">
+  <label>Ważny przez
+    <select name="expires_days">
+      <option value="1">1 dzień</option><option value="3">3 dni</option><option value="7" selected>7 dni</option>
+      <option value="14">14 dni</option><option value="30">30 dni</option><option value="90">90 dni</option>
+      <option value="0">bezterminowo</option>
+    </select></label>
+  <label>Limit pobrań <input name="max_downloads" type="number" min="0" value="0" title="0 = bez limitu"></label>
+  <label>Hasło (opcjonalnie)<input name="password" type="text" autocomplete="off"></label>
+  <label>Notatka dla odbiorcy <input name="note" maxlength="300" placeholder="np. Finalne pliki kampanii"></label>
+</div>
+{%- endmacro %}
+
+{% macro quota_card(quota, title="Twoje miejsce") -%}
+<div class="quota-box">
+  {% if quota.limit %}{{ charts.ring(quota.used, quota.limit) }}{% endif %}
+  <div class="facts">
+    <span class="muted small">{{ title }}</span>
+    <b>{{ quota.used|size }}{% if quota.limit %} <span class="muted small">z {{ quota.limit|size }}</span>{% endif %}</b>
+    {% if quota.limit %}<span class="small">Wykorzystane miejsce: {{ quota.percent }}% · wolne {{ (quota.limit - quota.used)|size if quota.limit > quota.used else '0 B' }}</span>
+    {% else %}<span class="small muted">Bez limitu miejsca</span>{% endif %}
+  </div>
+</div>
+{%- endmacro %}

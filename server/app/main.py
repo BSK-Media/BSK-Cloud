@@ -1,8 +1,13 @@
 """BSK Media Cloud — portal plików dla klientów + odbiór kopii zapasowych z komputerów pracowników."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 import logging
+import shutil
+import urllib.request
+from datetime import date, datetime, timedelta, timezone
 import os
 import re
 import tempfile
@@ -18,7 +23,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import backup, chunks, security, storage
+from . import backup, charts, chunks, office, security, storage
 from .config import Settings
 from .db import Database, iso_in, now_iso
 from .notify import notify_admin
@@ -26,6 +31,67 @@ from .notify import notify_admin
 log = logging.getLogger("bskcloud")
 BASE = Path(__file__).parent
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9._-]{3,40}$")
+SPECIAL_FOLDERS = {
+    "@pulpit": "Pulpit",
+    "@dokumenty": "Dokumenty",
+    "@pobrane": "Pobrane",
+    "@obrazy": "Obrazy",
+    "@wideo": "Wideo",
+    "@muzyka": "Muzyka",
+}
+
+
+def _local_dt(v: str | None) -> str:
+    """Czas z bazy (UTC) w strefie Europe/Warsaw, format dd.mm.rrrr gg:mm."""
+    if not v:
+        return ""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.fromisoformat(v).astimezone(ZoneInfo("Europe/Warsaw")).strftime("%d.%m.%Y %H:%M")
+    except Exception:  # noqa: BLE001
+        return v[:16].replace("T", " ")
+
+
+def _ago(v: str | None) -> str:
+    if not v:
+        return "nigdy"
+    try:
+        delta = datetime.now(timezone.utc) - datetime.fromisoformat(v)
+    except ValueError:
+        return v
+    s = int(delta.total_seconds())
+    if s < 60:
+        return "przed chwilą"
+    if s < 3600:
+        return f"{s // 60} min temu"
+    if s < 86400:
+        return f"{s // 3600} godz. temu"
+    if s < 86400 * 30:
+        return f"{s // 86400} dni temu"
+    return _local_dt(v)[:10]
+
+
+def _initials(name: str | None) -> str:
+    parts = [p for p in (name or "?").replace(".", " ").replace("_", " ").split() if p]
+    return ("".join(p[0] for p in parts[:2]) or "?").upper()
+
+
+def _file_kind(name: str) -> str:
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    kinds = {
+        "img": {"jpg", "jpeg", "png", "gif", "webp", "tif", "tiff", "bmp", "svg", "heic", "psd", "ai", "eps"},
+        "video": {"mp4", "mov", "avi", "mkv", "webm", "m4v", "prproj", "aep"},
+        "audio": {"mp3", "wav", "aac", "flac", "m4a", "ogg"},
+        "sheet": {"xlsx", "xls", "ods", "csv", "numbers"},
+        "doc": {"docx", "doc", "odt", "rtf", "txt", "pages", "md"},
+        "slides": {"pptx", "ppt", "odp", "key"},
+        "pdf": {"pdf"},
+        "zip": {"zip", "rar", "7z", "tar", "gz"},
+    }
+    for kind, exts in kinds.items():
+        if ext in exts:
+            return kind
+    return "file"
 
 
 class Redirect(Exception):
@@ -54,7 +120,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.db = db
     templates = Jinja2Templates(directory=str(BASE / "templates"))
     templates.env.filters["size"] = storage.human_size
-    templates.env.filters["dt"] = lambda v: (v or "")[:16].replace("T", " ")
+    templates.env.filters["dt"] = _local_dt
+    templates.env.filters["ago"] = _ago
+    templates.env.filters["gb"] = lambda mb: (f"{(mb or 0) / 1024:.3f}".rstrip("0").rstrip(".") or "0")
+    templates.env.filters["initials"] = _initials
+    templates.env.filters["ftype"] = _file_kind
+    templates.env.globals["charts"] = charts
+    templates.env.globals["office_enabled"] = bool(settings.office_url and settings.office_secret)
+    templates.env.globals["doc_type"] = office.doc_type
     templates.env.globals["site_name"] = settings.site_name
     app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 
@@ -144,6 +217,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def render(request: Request, name: str, status_code: int = 200, **ctx):
         ctx.setdefault("user", current_user(request))
+        ctx.setdefault("nav", "")
         ctx["csrf"] = csrf_token(request)
         ctx["flashes"] = request.session.pop("flash", [])
         ctx["max_upload_mb"] = settings.max_upload_mb
@@ -261,6 +335,83 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             client_id,
         )
 
+    # ------------------------------------------------------------------ statystyki i dyski
+
+    def parse_quota(gb: str | None, mb: int) -> int:
+        """Limit z formularza: pole w GB (np. „1024” = 1 TB) albo starsze w MB. 0 = bez limitu."""
+        if gb not in (None, ""):
+            try:
+                return max(0, round(float(str(gb).replace(",", ".")) * 1024))
+            except ValueError:
+                raise HTTPException(400, "Limit miejsca musi być liczbą.")
+        return max(0, mb)
+
+    def daily_files(client_id: int | None = None, days: int = 30) -> list[dict]:
+        start = (date.today() - timedelta(days=days - 1)).isoformat()
+        sql = ("SELECT substr(f.uploaded_at, 1, 10) AS d,"
+               " SUM(CASE WHEN u.role = 'client' THEN 1 ELSE 0 END) AS c,"
+               " SUM(CASE WHEN u.role = 'admin' THEN 1 ELSE 0 END) AS a"
+               " FROM files f JOIN users u ON u.id = f.uploaded_by WHERE substr(f.uploaded_at, 1, 10) >= ?")
+        args: list = [start]
+        if client_id is not None:
+            sql += " AND f.client_id = ?"
+            args.append(client_id)
+        found = {r["d"]: r for r in db.all(sql + " GROUP BY d", *args)}
+        return [{"date": d, "client": (found.get(d.isoformat()) or {"c": 0})["c"],
+                 "agency": (found.get(d.isoformat()) or {"a": 0})["a"]} for d in charts.day_range(days)]
+
+    def daily_backups(device_id: int, days: int = 30) -> list[dict]:
+        start = (date.today() - timedelta(days=days - 1)).isoformat()
+        found = {r["d"]: r["n"] for r in db.all(
+            "SELECT substr(uploaded_at, 1, 10) AS d, COUNT(*) AS n FROM backup_files"
+            " WHERE device_id = ? AND substr(uploaded_at, 1, 10) >= ? GROUP BY d", device_id, start)}
+        return [{"date": d, "files": found.get(d.isoformat(), 0)} for d in charts.day_range(days)]
+
+    def disks() -> list[dict]:
+        """Zajętość dysków NAS widzianych przez portal (bez powtórzeń tego samego dysku)."""
+        out, seen = [], {}
+        for label, path in (("Dane klientów i kopie (HDD)", settings.data_dir),
+                            ("Portal i baza danych (SSD)", settings.db_path.parent),
+                            ("Kopia zapasowa (SSD)", settings.backup_dir)):
+            if not path or not Path(path).exists():
+                continue
+            dev = os.stat(path).st_dev
+            if dev in seen:
+                seen[dev]["label"] += " · " + label
+                continue
+            u = shutil.disk_usage(path)
+            seen[dev] = {"label": label, "used": u.total - u.free, "total": u.total, "free": u.free}
+            out.append(seen[dev])
+        return out
+
+    def device_rows():
+        return db.all(
+            "SELECT d.*, (SELECT COUNT(*) FROM backup_files b WHERE b.device_id = d.id) AS file_count,"
+            " (SELECT COALESCE(SUM(size), 0) FROM backup_files b WHERE b.device_id = d.id) AS total_size,"
+            " (SELECT MAX(uploaded_at) FROM backup_files b WHERE b.device_id = d.id) AS last_backup"
+            " FROM devices d ORDER BY d.active DESC, d.employee, d.name"
+        )
+
+    def client_rows():
+        return db.all(
+            "SELECT u.*, (SELECT COUNT(*) FROM files f WHERE f.client_id = u.id) AS file_count,"
+            " (SELECT COALESCE(SUM(size), 0) FROM files f WHERE f.client_id = u.id) AS total_size,"
+            " (SELECT COALESCE(SUM(size), 0) FROM files f WHERE f.client_id = u.id AND f.uploaded_by = u.id) AS own_size,"
+            " (SELECT MAX(uploaded_at) FROM files f WHERE f.client_id = u.id) AS last_upload,"
+            " (SELECT MAX(created_at) FROM messages m WHERE m.client_id = u.id) AS last_message"
+            " FROM users u WHERE u.role = 'client' ORDER BY u.active DESC, u.company, u.display_name"
+        )
+
+    def online(last_seen: str | None, hours: int = 2) -> bool:
+        if not last_seen:
+            return False
+        try:
+            return datetime.now(timezone.utc) - datetime.fromisoformat(last_seen) < timedelta(hours=hours)
+        except ValueError:
+            return False
+
+    templates.env.globals["online"] = online
+
     # ------------------------------------------------------------------ public
 
     @app.get("/", include_in_schema=False)
@@ -312,7 +463,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/account", response_class=HTMLResponse)
     def account(request: Request):
         user = require_user(request, allow_pw_change=True)
-        return render(request, "account.html", user=user)
+        return render(request, "account.html", user=user, nav="account")
 
     @app.post("/account/password")
     def change_password(
@@ -347,9 +498,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/files", response_class=HTMLResponse)
     def my_files(request: Request):
         user = require_user(request, "client")
+        files = client_files(user["id"])
+        sent = [f for f in files if f["uploaded_by"] == user["id"]]
+        received = [f for f in files if f["uploaded_by"] != user["id"]]
         return render(
-            request, "client_files.html", files=client_files(user["id"]), messages=thread(user["id"]),
-            quota=quota_info(user),
+            request, "client_files.html", files=files, messages=thread(user["id"]), quota=quota_info(user),
+            days=daily_files(user["id"]), sent=sent, received=received, nav="files",
+            sent_size=sum(f["size"] for f in sent), received_size=sum(f["size"] for f in received),
         )
 
     @app.post("/files/upload")
@@ -416,25 +571,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/admin", response_class=HTMLResponse)
     def admin_home(request: Request):
         require_user(request, "admin")
-        clients = db.all(
-            "SELECT u.*, (SELECT COUNT(*) FROM files f WHERE f.client_id = u.id) AS file_count,"
-            " (SELECT COALESCE(SUM(size), 0) FROM files f WHERE f.client_id = u.id) AS total_size,"
-            " (SELECT COALESCE(SUM(size), 0) FROM files f WHERE f.client_id = u.id AND f.uploaded_by = u.id) AS own_size,"
-            " (SELECT MAX(uploaded_at) FROM files f WHERE f.client_id = u.id) AS last_upload,"
-            " (SELECT MAX(created_at) FROM messages m WHERE m.client_id = u.id) AS last_message"
-            " FROM users u WHERE u.role = 'client' ORDER BY u.active DESC, u.company, u.display_name"
-        )
+        since = (date.today() - timedelta(days=29)).isoformat()
+        kpi = {
+            "clients": db.one("SELECT COUNT(*) AS n FROM users WHERE role = 'client' AND active = 1")["n"],
+            "client_files_30": db.one(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(f.size), 0) AS b FROM files f JOIN users u ON u.id = f.uploaded_by"
+                " WHERE u.role = 'client' AND substr(f.uploaded_at, 1, 10) >= ?", since),
+            "storage": db.one("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS b FROM files"),
+            "backups": db.one("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS b FROM backup_files"),
+            "links": db.one(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(downloads), 0) AS d FROM share_links WHERE revoked = 0"
+                " AND (expires_at IS NULL OR expires_at > ?)", now_iso()),
+        }
+        days = daily_files()
+        clients = client_rows()
+        top = sorted(clients, key=lambda c: c["total_size"], reverse=True)[:8]
         recent = db.all(
-            "SELECT f.*, u.display_name, u.company, u.username FROM files f JOIN users u ON u.id = f.client_id"
-            " ORDER BY f.uploaded_at DESC LIMIT 15"
+            "SELECT f.*, u.display_name, u.company, u.username, up.role AS uploader_role FROM files f"
+            " JOIN users u ON u.id = f.client_id JOIN users up ON up.id = f.uploaded_by"
+            " ORDER BY f.uploaded_at DESC LIMIT 8"
         )
-        devices = db.all(
-            "SELECT d.*, (SELECT COUNT(*) FROM backup_files b WHERE b.device_id = d.id) AS file_count,"
-            " (SELECT COALESCE(SUM(size), 0) FROM backup_files b WHERE b.device_id = d.id) AS total_size"
-            " FROM devices d ORDER BY d.active DESC, d.name"
+        devices = device_rows()
+        return render(
+            request, "admin_home.html", kpi=kpi, days=days, top=top, recent=recent, devices=devices,
+            disks=disks(), spark=[d["client"] for d in days][-14:],
+            backup_status=backup.last_status(settings), backup_running=backup_lock.locked(),
+            devices_online=sum(1 for d in devices if online(d["last_seen"])), nav="dashboard",
         )
-        return render(request, "admin_home.html", clients=clients, recent=recent, devices=devices,
-                      backup_status=backup.last_status(settings), backup_running=backup_lock.locked())
+
+    @app.get("/admin/clients", response_class=HTMLResponse)
+    def admin_clients(request: Request, q: str = ""):
+        require_user(request, "admin")
+        clients = client_rows()
+        if q.strip():
+            ql = q.strip().lower()
+            clients = [c for c in clients if ql in " ".join(
+                [c["username"], c["display_name"], c["company"], c["email"]]).lower()]
+        return render(request, "admin_clients.html", clients=clients, q=q, nav="clients")
+
+    @app.get("/admin/devices", response_class=HTMLResponse)
+    def admin_devices(request: Request):
+        require_user(request, "admin")
+        return render(request, "admin_devices.html", devices=device_rows(), nav="devices")
 
     backup_lock = threading.Lock()
 
@@ -464,7 +642,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         require_user(request, "admin")
         return render(
             request, "admin_client_new.html", suggested=security.generate_password(),
-            default_quota=settings.default_quota_mb,
+            default_quota=settings.default_quota_mb, nav="clients",
         )
 
     @app.post("/admin/clients/new")
@@ -476,10 +654,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         email: str = Form(""),
         password: str = Form(...),
         quota_mb: int = Form(0),
+        quota_gb: str | None = Form(None),
         csrf: str = Form(""),
     ):
         check_csrf(request, csrf)
         admin = require_user(request, "admin")
+        quota_mb = parse_quota(quota_gb, quota_mb)
         username = username.strip()
         error = None
         if not USERNAME_RE.match(username):
@@ -510,7 +690,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return render(
             request, "admin_client.html", client=client, files=client_files(client_id),
             messages=thread(client_id), credentials=creds, public_url=settings.public_url,
-            quota=quota_info(client),
+            quota=quota_info(client), days=daily_files(client_id), nav="clients",
             folder=client_dir(client).as_posix().replace(settings.data_dir.as_posix(), "", 1),
         )
 
@@ -522,11 +702,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         company: str = Form(""),
         email: str = Form(""),
         quota_mb: int = Form(0),
+        quota_gb: str | None = Form(None),
         csrf: str = Form(""),
     ):
         check_csrf(request, csrf)
         admin = require_user(request, "admin")
         client_or_404(client_id)
+        quota_mb = parse_quota(quota_gb, quota_mb)
         db.run(
             "UPDATE users SET display_name = ?, company = ?, email = ?, quota_mb = ? WHERE id = ?",
             display_name.strip()[:120], company.strip()[:120], email.strip()[:200], max(0, quota_mb), client_id,
@@ -598,7 +780,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/admin/devices/new", response_class=HTMLResponse)
     def new_device_form(request: Request):
         require_user(request, "admin")
-        return render(request, "admin_device_new.html")
+        return render(request, "admin_device_new.html", nav="devices", special=SPECIAL_FOLDERS)
 
     @app.post("/admin/devices/new")
     def create_device(
@@ -606,10 +788,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         name: str = Form(...),
         employee: str = Form(""),
         quota_mb: int = Form(0),
+        quota_gb: str | None = Form(None),
+        special: list[str] = Form([]),
+        extra_folders: str = Form(""),
         csrf: str = Form(""),
     ):
         check_csrf(request, csrf)
         admin = require_user(request, "admin")
+        quota_mb = parse_quota(quota_gb, quota_mb)
+        folders = folders_text(special, extra_folders)
         name = name.strip()[:80]
         if not name or db.one("SELECT 1 FROM devices WHERE name = ?", name):
             flash(request, "Podaj unikalną nazwę komputera.", "error")
@@ -620,15 +807,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             folder, i = f"{base_folder}-{i}", i + 1
         token = security.new_device_token()
         did = db.run(
-            "INSERT INTO devices (name, employee, folder_name, token_hash, created_at, quota_mb)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            name, employee.strip()[:120], folder, security.token_hash(token), now_iso(), max(0, quota_mb),
+            "INSERT INTO devices (name, employee, folder_name, token_hash, created_at, quota_mb, folders)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            name, employee.strip()[:120], folder, security.token_hash(token), now_iso(), quota_mb, folders,
         )
         (settings.backups_dir / folder).mkdir(parents=True, exist_ok=True)
         db.log(admin["id"], "device_created", name)
         create_install_link(did, token)
         request.session["new_token"] = token
         return RedirectResponse(f"/admin/devices/{did}", 303)
+
+    def folders_text(special: list[str], extra: str) -> str:
+        """Foldery do kopiowania: specjalne (@pulpit…) + własne ścieżki, po jednej w linii."""
+        chosen = [f for f in special if f in SPECIAL_FOLDERS]
+        paths = [ln.strip() for ln in extra.splitlines() if ln.strip() and not ln.strip().startswith("@")]
+        return "\n".join(chosen + paths[:30])
 
     def device_or_404(device_id: int):
         d = db.one("SELECT * FROM devices WHERE id = ?", device_id)
@@ -660,16 +853,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request, "admin_device.html", device=device, files=rows[:per_page], has_more=len(rows) > per_page,
             page=page, q=q, stats=stats, token=request.session.pop("new_token", None),
             public_url=settings.public_url, install_link=link, installer_ready=installer_ready(),
+            days=daily_backups(device_id), nav="devices", special=SPECIAL_FOLDERS,
+            chosen=[ln for ln in device["folders"].splitlines() if ln.startswith("@")],
+            extra="\n".join(ln for ln in device["folders"].splitlines() if ln and not ln.startswith("@")),
         )
 
     @app.post("/admin/devices/{device_id}/settings")
     def device_settings(
-        request: Request, device_id: int, employee: str = Form(""), quota_mb: int = Form(0), csrf: str = Form("")
+        request: Request,
+        device_id: int,
+        employee: str = Form(""),
+        quota_mb: int = Form(0),
+        quota_gb: str | None = Form(None),
+        special: list[str] = Form([]),
+        extra_folders: str = Form(""),
+        csrf: str = Form(""),
     ):
         check_csrf(request, csrf)
         admin = require_user(request, "admin")
         device_or_404(device_id)
-        db.run("UPDATE devices SET employee = ?, quota_mb = ? WHERE id = ?", employee.strip()[:120], max(0, quota_mb), device_id)
+        db.run("UPDATE devices SET employee = ?, quota_mb = ?, folders = ? WHERE id = ?", employee.strip()[:120],
+               parse_quota(quota_gb, quota_mb), folders_text(special, extra_folders), device_id)
         db.log(admin["id"], "device_edited", str(device_id))
         flash(request, "Zapisano ustawienia komputera.")
         return RedirectResponse(f"/admin/devices/{device_id}", 303)
@@ -749,7 +953,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if p.is_file() and p.name.startswith(target.name + "."):
                     versions.append({"name": p.name, "stamp": p.name[len(target.name) + 1:], "size": p.stat().st_size})
         current = db.one("SELECT * FROM backup_files WHERE device_id = ? AND rel_path = ?", device_id, rel)
-        return render(request, "admin_versions.html", device=device, rel=rel, versions=versions, current=current)
+        return render(request, "admin_versions.html", device=device, rel=rel, versions=versions, current=current,
+                      nav="devices")
 
     @app.get("/admin/log", response_class=HTMLResponse)
     def admin_log(request: Request):
@@ -757,7 +962,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         events = db.all(
             "SELECT e.*, u.username FROM events e LEFT JOIN users u ON u.id = e.user_id ORDER BY e.id DESC LIMIT 300"
         )
-        return render(request, "admin_log.html", events=events)
+        return render(request, "admin_log.html", events=events, nav="log")
 
     # ------------------------------------------------------------------ instalator agenta (link dla pracownika)
 
@@ -869,7 +1074,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             " ORDER BY s.revoked, s.id DESC LIMIT 300"
         )
         return render(
-            request, "admin_shares.html", links=links, shared=shared_files(), now=now_iso(),
+            request, "admin_shares.html", links=links, nav="shares", shared=shared_files(), now=now_iso(),
             public_url=settings.public_url, shared_folder="/udostepnione",
         )
 
@@ -1005,6 +1210,147 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.log(None, "share_download", f"{link['name']} z {client_ip(request)}")
         return FileResponse(path, filename=link["name"])
 
+    # ------------------------------------------------------------------ edycja online (ONLYOFFICE Docs)
+
+    def office_ready() -> bool:
+        return bool(settings.office_url and settings.office_secret)
+
+    @app.get("/files/{file_id}/edit", response_class=HTMLResponse)
+    def edit_online(request: Request, file_id: int, mode: str = "edit"):
+        user = require_user(request)
+        f, _ = file_for(user, file_id)
+        if not office_ready():
+            raise HTTPException(404, "Edycja online nie jest włączona na serwerze.")
+        if not office.doc_type(f["original_name"]):
+            raise HTTPException(400, "Tego typu pliku nie da się otworzyć w edytorze online.")
+        cfg = office.editor_config(secret=settings.office_secret, file_row=f, user=user,
+                                   internal_app_url=settings.app_internal_url, mode=mode)
+        back = f"/admin/clients/{f['client_id']}" if user["role"] == "admin" else "/files"
+        response = render(request, "editor.html", file=f, config=json.dumps(cfg), back=back,
+                          office_url=settings.office_url, nav="clients" if user["role"] == "admin" else "files")
+        o = settings.office_url
+        response.headers["Content-Security-Policy"] = (
+            f"default-src 'self'; script-src 'self' {o}; frame-src {o}; connect-src 'self' {o}; "
+            f"img-src 'self' data: {o}; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"
+        )
+        db.log(user["id"], "office_open", f["rel_path"])
+        return response
+
+    def office_file_or_404(file_id: int, purpose: str, sig: str):
+        if not office_ready() or not office.check_url(settings.office_secret, file_id, purpose, sig):
+            raise HTTPException(403, "Brak dostępu.")
+        f = db.one("SELECT * FROM files WHERE id = ?", file_id)
+        if not f:
+            raise HTTPException(404, "Nie ma takiego pliku.")
+        path = settings.clients_dir / f["rel_path"]
+        if not storage.inside(settings.clients_dir, path):
+            raise HTTPException(404, "Nie ma takiego pliku.")
+        return f, path
+
+    @app.get("/office/file/{file_id}")
+    def office_file(file_id: int, sig: str = ""):
+        """Pobranie pliku przez serwer dokumentów (sieć wewnętrzna Dockera, adres podpisany)."""
+        f, path = office_file_or_404(file_id, "file", sig)
+        if not path.is_file():
+            raise HTTPException(404, "Nie ma takiego pliku.")
+        return FileResponse(path, filename=f["original_name"])
+
+    @app.post("/office/callback/{file_id}")
+    async def office_callback(request: Request, file_id: int, sig: str = ""):
+        """Serwer dokumentów zgłasza stan edycji; przy statusie 2/6 zapisujemy nową wersję pliku."""
+        f, path = office_file_or_404(file_id, "callback", sig)
+        try:
+            body = await request.json()
+            token = body.get("token") or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+            data = office.jwt_decode(token, settings.office_secret)
+            data = data.get("payload", data)
+        except Exception:  # noqa: BLE001
+            return JSONResponse({"error": 1})
+        status = int(data.get("status", 0))
+        if status not in (2, 6):
+            return {"error": 0}
+        url = str(data.get("url", ""))
+        if settings.office_url and url.startswith(settings.office_url):
+            url = settings.office_internal_url + url[len(settings.office_url):]  # pobierz wewnątrz NAS
+        if not url.startswith(("http://", "https://")):
+            return JSONResponse({"error": 1})
+        users = data.get("users") or []
+        try:
+            await asyncio.to_thread(save_office_version, f, path, url, users, status)
+        except Exception:  # noqa: BLE001
+            log.exception("Nie udało się zapisać pliku z edytora")
+            return JSONResponse({"error": 1})
+        return {"error": 0}
+
+    def save_office_version(f, path: Path, url: str, users: list, status: int) -> None:
+        settings.tmp_dir.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=settings.tmp_dir, prefix="office-")
+        digest, size = hashlib.sha256(), 0
+        try:
+            with os.fdopen(fd, "wb") as out, urllib.request.urlopen(url, timeout=120) as resp:  # noqa: S310
+                while chunk := resp.read(1024 * 1024):
+                    digest.update(chunk)
+                    out.write(chunk)
+                    size += len(chunk)
+            if path.is_file():
+                vdir = path.parent / ".wersje"
+                vdir.mkdir(exist_ok=True)
+                shutil.copy2(path, vdir / f"{path.name}.{storage.version_stamp()}")
+                storage.prune_versions(vdir, path.name, 10)
+            os.replace(tmp_name, path)
+        finally:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        editor = None
+        if users:
+            try:
+                editor = int(users[0])
+            except (TypeError, ValueError):
+                editor = None
+        db.run(
+            "UPDATE files SET size = ?, sha256 = ?, modified_at = ?, modified_by = ?,"
+            " office_version = office_version + ? WHERE id = ?",
+            size, digest.hexdigest(), now_iso(), editor, 1 if status == 2 else 0, f["id"],
+        )
+        db.log(editor, "office_saved", f"{f['rel_path']} ({size} B)")
+
+    def create_blank(client, author, kind: str, title: str) -> int:
+        content, ext = office.blank_document(kind)
+        base = storage.safe_name((title.strip() or ("Nowy arkusz" if kind == "xlsx" else "Nowy dokument")))
+        if not base.lower().endswith("." + ext):
+            base += "." + ext
+        target_dir = client_dir(client) / ("od BSK Media" if author["role"] == "admin" else "")
+        target_dir.mkdir(parents=True, exist_ok=True)
+        dest = storage.unique_path(target_dir, base)
+        dest.write_bytes(content)
+        fid = db.run(
+            "INSERT INTO files (client_id, rel_path, original_name, size, sha256, uploaded_by, uploaded_at, note)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, '')",
+            client["id"], dest.relative_to(settings.clients_dir).as_posix(), dest.name, len(content),
+            hashlib.sha256(content).hexdigest(), author["id"], now_iso(),
+        )
+        db.log(author["id"], "office_new", dest.name)
+        return fid
+
+    @app.post("/admin/clients/{client_id}/new-doc")
+    def admin_new_doc(request: Request, client_id: int, kind: str = Form(...), title: str = Form(""),
+                      csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        if kind not in ("xlsx", "docx"):
+            raise HTTPException(400, "Nieznany typ dokumentu.")
+        fid = create_blank(client_or_404(client_id), admin, kind, title)
+        return RedirectResponse(f"/files/{fid}/edit" if office_ready() else f"/admin/clients/{client_id}", 303)
+
+    @app.post("/files/new-doc")
+    def client_new_doc(request: Request, kind: str = Form(...), title: str = Form(""), csrf: str = Form("")):
+        check_csrf(request, csrf)
+        user = require_user(request, "client")
+        if kind not in ("xlsx", "docx"):
+            raise HTTPException(400, "Nieznany typ dokumentu.")
+        fid = create_blank(user, user, kind, title)
+        return RedirectResponse(f"/files/{fid}/edit" if office_ready() else "/files", 303)
+
     # ------------------------------------------------------------------ wysyłka w kawałkach z przeglądarki
 
     def api_user(request: Request):
@@ -1069,6 +1415,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(401, "Token nieprawidłowy albo urządzenie wyłączone.")
         db.run("UPDATE devices SET last_seen = ?, last_ip = ? WHERE id = ?", now_iso(), client_ip(request), device["id"])
         return device
+
+    @app.get("/api/agent/config")
+    def agent_config(request: Request):
+        """Foldery ustawione dla tego komputera w panelu (pusta lista = ustawienia lokalne agenta)."""
+        device = device_from_token(request)
+        return {"folders": [ln for ln in device["folders"].splitlines() if ln.strip()],
+                "lan_server": settings.lan_url}
 
     @app.get("/api/agent/ping")
     def agent_ping(request: Request):

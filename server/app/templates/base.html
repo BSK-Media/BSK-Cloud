@@ -1,47 +1,74 @@
-<!doctype html>
+{% import "_ui.html" as ui with context %}<!doctype html>
 <html lang="pl">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
   <title>{% block title %}{{ site_name }}{% endblock %}</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/app.js" defer></script>
 </head>
 <body>
-<header class="topbar">
-  <a class="brand" href="/">{{ site_name }}</a>
-  {% if user %}
-  <nav>
-    {% if user.role == 'admin' %}
-      <a href="/admin">Klienci i kopie</a>
-      <a href="/admin/clients/new">+ Klient</a>
-      <a href="/admin/devices/new">+ Komputer</a>
-      <a href="/admin/shares">Linki do pobrania</a>
-      <a href="/admin/log">Dziennik</a>
-    {% else %}
-      <a href="/files">Moje pliki</a>
-    {% endif %}
-    <a href="/account">Konto ({{ user.username }})</a>
-    <form method="post" action="/logout" class="inline">
-      <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button class="link">Wyloguj</button>
-    </form>
-  </nav>
-  {% endif %}
-</header>
-<main>
+{% macro flashes_block() %}
   {% for kind, msg in flashes %}<div class="flash {{ kind }}">{{ msg }}</div>{% endfor %}
   {% if new_links %}
-  <div class="flash ok">
-    <b>Link do pobrania gotowy</b> — skopiuj i wyślij klientowi:
+  <div class="flash">
+    <b>Link do pobrania gotowy</b> — skopiuj i wyślij odbiorcy:
     {% for url in new_links %}
-    <div class="copyrow"><input readonly value="{{ url }}" data-copy-source><button type="button" data-copy>Kopiuj</button></div>
+    <div class="copyrow"><input readonly value="{{ url }}" data-copy-source><button type="button" data-copy>{{ ui.icon("copy") }}Kopiuj</button></div>
     {% endfor %}
   </div>
   {% endif %}
-  {% block content %}{% endblock %}
-</main>
-<footer>© BSK Media</footer>
+{% endmacro %}
+{% if user %}
+<input type="checkbox" id="nav-toggle">
+<div class="shell">
+  <aside class="sidebar">
+    <a class="brand" href="/"><span class="brand-mark">BSK</span><span>{{ site_name }}<small>{{ 'Panel administratora' if user.role == 'admin' else 'Strefa klienta' }}</small></span></a>
+    <nav class="nav">
+      {% if user.role == 'admin' %}
+        <a href="/admin" class="{{ 'active' if nav == 'dashboard' }}">{{ ui.icon("home") }}Pulpit</a>
+        <a href="/admin/clients" class="{{ 'active' if nav == 'clients' }}">{{ ui.icon("users") }}Klienci</a>
+        <a href="/admin/devices" class="{{ 'active' if nav == 'devices' }}">{{ ui.icon("laptop") }}Pracownicy i kopie</a>
+        <a href="/admin/shares" class="{{ 'active' if nav == 'shares' }}">{{ ui.icon("link") }}Linki do pobrania</a>
+        <div class="nav-label">System</div>
+        <a href="/admin/log" class="{{ 'active' if nav == 'log' }}">{{ ui.icon("list") }}Dziennik zdarzeń</a>
+        <a href="/account" class="{{ 'active' if nav == 'account' }}">{{ ui.icon("user") }}Moje konto</a>
+      {% else %}
+        <a href="/files" class="{{ 'active' if nav == 'files' }}">{{ ui.icon("home") }}Pulpit</a>
+        <a href="/files#pliki">{{ ui.icon("folder") }}Pliki</a>
+        <a href="/files#wiadomosci">{{ ui.icon("message") }}Wiadomości</a>
+        <a href="/account" class="{{ 'active' if nav == 'account' }}">{{ ui.icon("user") }}Moje konto</a>
+      {% endif %}
+    </nav>
+    <div class="side-foot">
+      <div class="me">
+        <span class="avatar {{ 'agency' if user.role == 'admin' }}">{{ (user.display_name or user.username)|initials }}</span>
+        <div class="who"><b>{{ user.display_name or user.username }}</b><span>{{ user.company or ('Administrator' if user.role == 'admin' else 'Klient') }}</span></div>
+        <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button title="Wyloguj">{{ ui.icon("logout") }}</button></form>
+      </div>
+    </div>
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <label for="nav-toggle" class="burger" title="Menu">{{ ui.icon("menu") }}</label>
+      <div><h1>{% block heading %}{% endblock %}</h1>{% block subtitle %}{% endblock %}</div>
+      <div class="actions">{% block actions %}{% endblock %}</div>
+    </header>
+    <main class="content">
+      {{ flashes_block() }}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+{% else %}
+<div class="auth"><div class="auth-box">
+  <a class="brand" href="/"><span class="brand-mark">BSK</span><span>{{ site_name }}<small>BSK Media</small></span></a>
+  {{ flashes_block() }}
+  {% block auth %}{% endblock %}
+  <footer class="foot">© BSK Media · połączenie szyfrowane</footer>
+</div></div>
+{% endif %}
 </body>
 </html>

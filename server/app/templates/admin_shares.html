@@ -1,25 +1,16 @@
 {% extends "base.html" %}
+{% block title %}Linki do pobrania — {{ site_name }}{% endblock %}
+{% block heading %}Linki do pobrania{% endblock %}
+{% block subtitle %}<div class="subtitle">Odbiorca pobiera plik prosto z NAS, bez logowania · pobieranie można wznowić po przerwie</div>{% endblock %}
 {% block content %}
-<h1>Linki do pobrania</h1>
-<p class="muted">Link pozwala pobrać plik bezpośrednio z NAS bez logowania — np. grafikę 1 GB dla klienta.
-Pobieranie można wznowić po przerwaniu połączenia.</p>
-
-<div class="grid">
+<div class="grid g-2 mb">
   <section class="card">
-    <h2>Wyślij plik i utwórz link</h2>
-    <form method="post" action="/admin/shares/upload" enctype="multipart/form-data" class="stack upload" data-upload>
-      <input type="hidden" name="csrf" value="{{ csrf }}">
-      <label class="drop"><input type="file" name="files" multiple required>
-        <span>Przeciągnij pliki tutaj (trafią do folderu {{ shared_folder }} na NAS)</span></label>
-      {% include "_share_options.html" %}
-      <progress value="0" max="100" hidden></progress>
-      <button class="primary">Wyślij i utwórz link</button>
-    </form>
+    <div class="card-head">{{ ui.icon("upload") }}<h2>Wyślij plik i utwórz link</h2></div>
+    {{ ui.upload_form("/admin/shares/upload", csrf, max_upload_mb, "Wyślij i utwórz link", ui.share_options()) }}
   </section>
   <section class="card">
-    <h2>Plik, który już jest na NAS</h2>
-    <p class="small muted">Największe pliki najszybciej skopiujesz w sieci firmowej do folderu
-      <code>bsk-dane{{ shared_folder }}</code> (udział SMB / menedżer plików UGOS), a tutaj tylko utworzysz link.</p>
+    <div class="card-head">{{ ui.icon("folder") }}<h2>Plik, który już jest na NAS</h2></div>
+    <p class="small muted">Duże pliki najszybciej skopiujesz w biurze przez sieć do folderu <code>bsk-dane{{ shared_folder }}</code>, a tutaj tylko utworzysz link.</p>
     {% if shared %}
     <form method="post" action="/admin/shares/new" class="stack">
       <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="shared">
@@ -27,35 +18,35 @@ Pobieranie można wznowić po przerwaniu połączenia.</p>
         <select name="rel_path" required>
           {% for f in shared %}<option value="{{ f.rel }}">{{ f.rel }} ({{ f.size|size }})</option>{% endfor %}
         </select></label>
-      {% include "_share_options.html" %}
-      <button class="primary">Utwórz link</button>
+      {{ ui.share_options() }}
+      <button class="primary">{{ ui.icon("link") }}Utwórz link</button>
     </form>
-    {% else %}<p class="muted">Folder jest pusty.</p>{% endif %}
+    {% else %}{{ ui.empty("Folder „udostepnione” jest pusty.") }}{% endif %}
   </section>
 </div>
 
 <section class="card">
-  <h2>Utworzone linki</h2>
-  <table class="list">
-    <thead><tr><th>Plik</th><th>Link</th><th>Ważny do</th><th>Pobrania</th><th>Hasło</th><th></th></tr></thead>
+  <div class="card-head"><h2>Utworzone linki</h2></div>
+  {% if links %}
+  <div class="table-wrap"><table class="list">
+    <thead><tr><th>Plik</th><th>Link</th><th class="hide-sm">Ważny do</th><th>Pobrania</th><th></th></tr></thead>
     <tbody>
     {% for l in links %}
     {% set expired = l.revoked or (l.expires_at and l.expires_at <= now) or (l.max_downloads and l.downloads >= l.max_downloads) %}
-    <tr class="{{ 'inactive' if expired else '' }}">
-      <td>{{ l.name }} <span class="small muted">{{ l.size|size }}</span>
-        {% if l.kind == 'file' %}<br><a class="small" href="/admin/clients/{{ l.client_id }}">plik klienta</a>{% endif %}
-        {% if l.note %}<br><span class="small muted">{{ l.note }}</span>{% endif %}</td>
-      <td>{% if not expired %}<div class="copyrow"><input readonly value="{{ public_url }}/s/{{ l.token }}" data-copy-source><button type="button" data-copy>Kopiuj</button></div>
-          {% else %}<span class="muted">{{ 'wyłączony' if l.revoked else 'nieaktywny' }}</span>{% endif %}</td>
-      <td>{{ l.expires_at|dt or 'bezterminowo' }}</td>
-      <td>{{ l.downloads }}{% if l.max_downloads %} / {{ l.max_downloads }}{% endif %}<br><span class="small muted">{{ l.last_download|dt }}</span></td>
-      <td>{{ 'tak' if l.password_hash else '—' }}</td>
-      <td>{% if not l.revoked %}
+    <tr class="{{ 'inactive' if expired }}">
+      <td><div class="file">{{ ui.ficon(l.name) }}<div><b>{{ l.name }}</b>
+        <div class="meta">{{ l.size|size }}{% if l.password_hash %} · {{ ui.icon("lock") }} hasło{% endif %}{% if l.kind == 'file' %} · <a href="/admin/clients/{{ l.client_id }}">plik klienta</a>{% endif %}{% if l.note %} · {{ l.note }}{% endif %}</div></div></div></td>
+      <td>{% if not expired %}<div class="copyrow"><input readonly value="{{ public_url }}/s/{{ l.token }}" data-copy-source><button type="button" class="btn-sm" data-copy>{{ ui.icon("copy") }}</button></div>
+          {% else %}<span class="tag off">{{ 'wyłączony' if l.revoked else 'nieaktywny' }}</span>{% endif %}</td>
+      <td class="hide-sm small">{{ l.expires_at|dt if l.expires_at else 'bezterminowo' }}</td>
+      <td class="num">{{ l.downloads }}{% if l.max_downloads %} / {{ l.max_downloads }}{% endif %}<div class="small muted">{{ l.last_download|ago if l.last_download else '' }}</div></td>
+      <td class="actions">{% if not l.revoked %}
         <form method="post" action="/admin/shares/{{ l.id }}/revoke" class="inline" data-confirm="Wyłączyć ten link?">
-          <input type="hidden" name="csrf" value="{{ csrf }}"><button class="link danger">Wyłącz</button></form>{% endif %}</td>
+          <input type="hidden" name="csrf" value="{{ csrf }}"><button class="ghost btn-sm danger">Wyłącz</button></form>{% endif %}</td>
     </tr>
-    {% else %}<tr><td colspan="6" class="muted">Brak linków.</td></tr>{% endfor %}
+    {% endfor %}
     </tbody>
-  </table>
+  </table></div>
+  {% else %}{{ ui.empty("Nie utworzono jeszcze żadnego linku.", "link") }}{% endif %}
 </section>
 {% endblock %}

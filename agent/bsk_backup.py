@@ -31,7 +31,8 @@ import requests
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
+CONFIG_REFRESH_S = 3600
 CHUNK_THRESHOLD = 50 * 1024 * 1024  # większe pliki idą w kawałkach (limit Cloudflare: 100 MB na żądanie)
 LAN_RECHECK_S = 300
 log = logging.getLogger("bsk-backup")
@@ -74,6 +75,60 @@ def default_folders() -> list[Path]:
                 seen.add(r)
                 out.append(c)
     return out
+
+
+# Foldery specjalne ustawiane w panelu (@pulpit…) -> identyfikatory Windows (KNOWNFOLDERID) i zapasowe ścieżki
+SPECIAL = {
+    "@pulpit": ("{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}", ["Desktop", "Pulpit"]),
+    "@dokumenty": ("{FDD39AD0-238F-46AF-ADB4-6C85480369C7}", ["Documents", "Dokumenty"]),
+    "@pobrane": ("{374DE290-123F-4565-9164-39C4925E467B}", ["Downloads", "Pobrane"]),
+    "@obrazy": ("{33E28130-4E1E-4676-835A-98395C3BC3BB}", ["Pictures", "Obrazy"]),
+    "@wideo": ("{18989B1D-99B5-455B-841C-AB7C74E4DDFC}", ["Videos", "Wideo", "Filmy"]),
+    "@muzyka": ("{4BD8D571-6D19-48D3-BE97-422220080E43}", ["Music", "Muzyka"]),
+}
+
+
+def _known_folder_windows(guid: str) -> Path | None:
+    try:
+        import ctypes
+        from ctypes import wintypes
+        import uuid
+
+        class GUID(ctypes.Structure):
+            _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD), ("Data3", wintypes.WORD),
+                        ("Data4", ctypes.c_ubyte * 8)]
+
+        u = uuid.UUID(guid)
+        g = GUID(u.time_low, u.time_mid, u.time_hi_version, (ctypes.c_ubyte * 8)(*u.bytes[8:]))
+        out = ctypes.c_wchar_p()
+        if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(g), 0, None, ctypes.byref(out)) != 0:
+            return None
+        path = out.value
+        ctypes.windll.ole32.CoTaskMemFree(out)
+        return Path(path)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def resolve_folder(entry: str) -> Path | None:
+    """„@pulpit” itp. -> prawdziwa ścieżka (z uwzględnieniem OneDrive); zwykła ścieżka bez zmian."""
+    entry = entry.strip()
+    if not entry.startswith("@"):
+        p = Path(os.path.expandvars(entry)).expanduser()
+        return p if p.is_dir() else None
+    if entry not in SPECIAL:
+        return None
+    guid, names = SPECIAL[entry]
+    if sys.platform == "win32":
+        found = _known_folder_windows(guid)
+        if found and found.is_dir():
+            return found
+    home = Path.home()
+    for base in (home, home / "OneDrive"):
+        for name in names:
+            if (base / name).is_dir():
+                return base / name
+    return None
 
 
 class Config:
@@ -211,6 +266,8 @@ class Agent:
         self.http.headers["User-Agent"] = f"BSK-Backup/{VERSION}"
         self.http.verify = config.verify_tls
         self.roots = [(Path(f["path"]), f["label"]) for f in config.folders]
+        self._config_checked = 0.0
+        self.folders_changed = threading.Event()
         self.paused_until = 0.0
         self.offline_backoff = 15.0
         self._base = config.server
@@ -451,7 +508,39 @@ class Agent:
         return n
 
     # --- pętla główna
-    def run(self) -> None:
+    # --- foldery ustawiane przez administratora w panelu
+    def refresh_remote_config(self) -> bool:
+        """Pobiera listę folderów z portalu. Zwraca True, gdy się zmieniła (trzeba przestawić obserwację)."""
+        self._config_checked = time.time()
+        try:
+            r = self.http.get(self.base() + "/api/agent/config", timeout=15)
+            if r.status_code != 200:
+                return False
+            data = r.json()
+        except (requests.RequestException, ValueError):
+            return False
+        if data.get("lan_server") and not self.cfg.lan_server:
+            self.cfg.lan_server = str(data["lan_server"]).rstrip("/")
+            self.cfg.save()
+        entries = [e for e in data.get("folders") or [] if isinstance(e, str) and e.strip()]
+        if not entries:
+            return False  # brak ustawień w panelu — zostają ustawienia lokalne
+        resolved, missing = [], []
+        for e in entries:
+            p = resolve_folder(e)
+            (resolved if p else missing).append(p or e)
+        if missing:
+            log.warning("Nie znaleziono folderów z panelu: %s", ", ".join(map(str, missing)))
+        new = make_labels(list(dict.fromkeys(resolved)))
+        if not new or [f["path"] for f in new] == [f["path"] for f in self.cfg.folders]:
+            return False
+        self.cfg.folders = new
+        self.cfg.save()
+        self.roots = [(Path(f["path"]), f["label"]) for f in new]
+        log.info("Nowe foldery z panelu: %s", ", ".join(f["path"] for f in new))
+        return True
+
+    def _start_observer(self):
         observer = Observer()
         handler = _Handler(self)
         for root, _ in self.roots:
@@ -459,9 +548,19 @@ class Agent:
                 observer.schedule(handler, str(root), recursive=True)
                 log.info("Obserwuję: %s", root)
         observer.start()
+        return observer
+
+    def run(self) -> None:
+        self.refresh_remote_config()
+        observer = self._start_observer()
         threading.Thread(target=self._scan_loop, daemon=True).start()
         try:
             while not self.stop.is_set():
+                if time.time() - self._config_checked > CONFIG_REFRESH_S and self.refresh_remote_config():
+                    observer.stop()
+                    observer.join(timeout=10)
+                    observer = self._start_observer()
+                    self.folders_changed.set()  # skan nowych folderów od razu
                 if self.work_once() == 0:
                     self.stop.wait(2)
         finally:
@@ -476,7 +575,10 @@ class Agent:
                     log.info("Skan: %d plików do sprawdzenia/wysłania", added)
             except Exception:  # noqa: BLE001
                 log.exception("Błąd skanowania")
-            self.stop.wait(self.cfg.scan_interval_minutes * 60)
+            self.folders_changed.clear()
+            deadline = time.time() + self.cfg.scan_interval_minutes * 60
+            while not self.stop.is_set() and not self.folders_changed.is_set() and time.time() < deadline:
+                self.stop.wait(2)
 
 
 class AuthError(Exception):

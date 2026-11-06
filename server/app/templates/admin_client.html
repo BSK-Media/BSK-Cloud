@@ -1,58 +1,85 @@
 {% extends "base.html" %}
+{% block title %}{{ client.company or client.display_name or client.username }} — {{ site_name }}{% endblock %}
+{% block heading %}<span class="row"><span class="avatar">{{ (client.company or client.display_name or client.username)|initials }}</span>{{ client.company or client.display_name or client.username }}
+  {% if not client.active %}<span class="tag danger">zablokowany</span>{% endif %}</span>{% endblock %}
+{% block subtitle %}<div class="subtitle">{{ client.display_name }}{% if client.display_name %} · {% endif %}login <code>{{ client.username }}</code>{% if client.email %} · <a href="mailto:{{ client.email }}">{{ client.email }}</a>{% endif %}</div>{% endblock %}
+{% block actions %}<a class="button" href="/admin/clients">{{ ui.icon("back") }}Klienci</a>{% endblock %}
 {% block content %}
-<div class="row">
-  <h1>{{ client.display_name or client.username }} {% if client.company %}<span class="muted">— {{ client.company }}</span>{% endif %}</h1>
-  {% if not client.active %}<span class="tag danger">zablokowany</span>{% endif %}
-</div>
-
 {% if credentials %}
 <div class="flash warn">
-  <b>Dane logowania do przekazania klientowi</b> (widoczne tylko teraz):<br>
-  Adres: <code>{{ public_url }}</code><br>
-  Login: <code>{{ credentials[0] }}</code><br>
-  Hasło: <code>{{ credentials[1] }}</code>
+  <b>Dane logowania do przekazania klientowi</b> (widoczne tylko teraz):
+  <div class="copyrow"><input readonly value="Adres: {{ public_url }}   Login: {{ credentials[0] }}   Hasło: {{ credentials[1] }}" data-copy-source><button type="button" data-copy>{{ ui.icon("copy") }}Kopiuj</button></div>
+  <div class="small">Login: <code>{{ credentials[0] }}</code> · Hasło: <code>{{ credentials[1] }}</code></div>
 </div>
 {% endif %}
 
-{% include "_quota.html" %}
-<div class="grid">
+<div class="kpis">
+  {{ ui.kpi("Wszystkie pliki", files|length, files|sum(attribute="size")|size, "folder") }}
+  {% set own = files|selectattr("uploaded_by", "equalto", client.id)|list %}
+  {{ ui.kpi("Od klienta", own|length, own|sum(attribute="size")|size, "upload") }}
+  {{ ui.kpi("Od BSK Media", files|length - own|length, "udostępnione klientowi", "download") }}
+  {{ ui.kpi("Wiadomości", messages|length, "ostatnia " ~ (messages[-1].created_at|ago if messages else "—"), "message") }}
+</div>
+
+<div class="grid g-main mb">
   <section class="card">
-    <h2>Udostępnij pliki klientowi</h2>
-    {% set upload_action = "/admin/clients/" ~ client.id ~ "/upload" %}{% include "_upload_form.html" %}
+    <div class="card-head"><h2>Aktywność — ostatnie 30 dni</h2></div>
+    {{ charts.stacked_columns(days, [("client", "Od klienta"), ("agency", "Od BSK Media")], "Aktywność klienta") }}
   </section>
   <section class="card">
-    <h2>Wiadomości</h2>
-    {% set message_action = "/admin/clients/" ~ client.id ~ "/message" %}{% include "_messages.html" %}
+    <div class="card-head">{{ ui.icon("drive") }}<h2>Miejsce klienta</h2></div>
+    {{ ui.quota_card(quota, "Pliki wysłane przez klienta") }}
+    <p class="small muted">Folder na NAS: <code>bsk-dane{{ folder }}</code></p>
+  </section>
+</div>
+
+<section class="card" id="pliki">
+  <div class="card-head"><h2>Pliki klienta</h2><span class="spacer"></span>
+    <div class="tabs" data-filter-tabs><button class="on" data-f="all">Wszystkie</button><button data-f="client">Od klienta</button><button data-f="agency">Od BSK Media</button></div>
+  </div>
+  {{ ui.files_table(files, user, csrf) }}
+</section>
+
+<div class="grid g-2 mb">
+  <section class="card">
+    <div class="card-head">{{ ui.icon("upload") }}<h2>Udostępnij pliki klientowi</h2></div>
+    {{ ui.upload_form("/admin/clients/" ~ client.id ~ "/upload", csrf, max_upload_mb, "Wyślij do klienta") }}
+    <div class="card-head mt"><h3>albo utwórz nowy dokument</h3></div>
+    <form method="post" action="/admin/clients/{{ client.id }}/new-doc" class="row">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input name="title" placeholder="Nazwa, np. Harmonogram kampanii" class="grow">
+      <button name="kind" value="xlsx">{{ ui.icon("sheet") }}Arkusz</button>
+      <button name="kind" value="docx">{{ ui.icon("doc") }}Dokument</button>
+    </form>
+    {% if not office_enabled %}<p class="hint">Edycja online nie jest jeszcze włączona — plik zostanie utworzony do pobrania.</p>{% endif %}
+  </section>
+  <section class="card" id="wiadomosci">
+    <div class="card-head">{{ ui.icon("message") }}<h2>Wiadomości</h2></div>
+    {{ ui.thread(messages, user, csrf, "/admin/clients/" ~ client.id ~ "/message") }}
   </section>
 </div>
 
 <section class="card">
-  <h2>Pliki</h2>
-  <p class="muted small">Folder na NAS: <code>{{ folder }}</code></p>
-  {% include "_files_table.html" %}
-</section>
-
-<section class="card">
-  <h2>Dane i dostęp</h2>
-  <form method="post" action="/admin/clients/{{ client.id }}/edit" class="stack narrow-form">
+  <div class="card-head">{{ ui.icon("user") }}<h2>Dane i dostęp</h2></div>
+  <form method="post" action="/admin/clients/{{ client.id }}/edit" class="stack">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <label>Login <input value="{{ client.username }}" disabled></label>
-    <label>Osoba kontaktowa <input name="display_name" value="{{ client.display_name }}"></label>
-    <label>Firma <input name="company" value="{{ client.company }}"></label>
-    <label>E-mail <input name="email" type="email" value="{{ client.email }}"></label>
-    <label>Limit miejsca na pliki klienta (MB, 0 = bez limitu)
-      <input name="quota_mb" type="number" min="0" step="100" value="{{ client.quota_mb }}"></label>
-    <button>Zapisz</button>
+    <div class="form-grid">
+      <label>Firma <input name="company" value="{{ client.company }}"></label>
+      <label>Osoba kontaktowa <input name="display_name" value="{{ client.display_name }}"></label>
+      <label>E-mail <input name="email" type="email" value="{{ client.email }}"></label>
+      <label>Limit miejsca
+        <span class="input-suffix"><input name="quota_gb" type="number" min="0" step="any" value="{{ client.quota_mb|gb }}"><span>GB</span></span>
+        <span class="hint">0 = bez limitu</span></label>
+    </div>
+    <div class="row"><button class="primary">Zapisz zmiany</button>
+      <span class="small muted">Ostatnie logowanie: {{ client.last_login|ago }} · konto od {{ client.created_at|dt }}</span></div>
   </form>
-  <p class="muted small">Ostatnie logowanie: {{ client.last_login|dt or 'nigdy' }} · konto od {{ client.created_at|dt }}</p>
-  <div class="row left">
+  <div class="row mt">
     <form method="post" action="/admin/clients/{{ client.id }}/reset-password" data-confirm="Wygenerować nowe hasło? Obecne przestanie działać.">
-      <input type="hidden" name="csrf" value="{{ csrf }}"><button>Nadaj nowe hasło</button>
-    </form>
+      <input type="hidden" name="csrf" value="{{ csrf }}"><button>{{ ui.icon("key") }}Nadaj nowe hasło</button></form>
     <form method="post" action="/admin/clients/{{ client.id }}/toggle">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button class="{{ 'danger' if client.active else '' }}">{{ 'Zablokuj konto' if client.active else 'Odblokuj konto' }}</button>
-    </form>
+      <button class="{{ 'danger' if client.active }}">{{ ui.icon("lock") }}{{ 'Zablokuj konto' if client.active else 'Odblokuj konto' }}</button></form>
   </div>
 </section>
 {% endblock %}
