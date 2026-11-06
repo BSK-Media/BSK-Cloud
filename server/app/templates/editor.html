@@ -9,5 +9,5 @@
 {% block content %}
 <div class="editor-wrap"><div id="office-editor" data-config="{{ config }}"></div></div>
 <script src="{{ office_url }}/web-apps/apps/api/documents/api.js"></script>
-<script src="/static/office.js"></script>
+<script src="/static/office.js?v={{ asset_v }}"></script>
 {% endblock %}

@@ -131,6 +131,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     templates.env.globals["doc_type"] = office.doc_type
     templates.env.globals["site_name"] = settings.site_name
     app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
+    # numer wersji plików statycznych — po aktualizacji przeglądarka i Cloudflare pobiorą nowe style
+    asset_hash = hashlib.sha256()
+    for f in sorted((BASE / "static").iterdir()):
+        if f.is_file():
+            asset_hash.update(f.read_bytes())
+    templates.env.globals["asset_v"] = asset_hash.hexdigest()[:10]
 
     max_upload = settings.max_upload_mb * 1024 * 1024
     max_backup = settings.max_backup_file_mb * 1024 * 1024

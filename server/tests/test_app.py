@@ -551,3 +551,9 @@ def test_dashboard_and_lists_render(app, admin):
     assert "ACME" in admin.get("/admin/clients?q=acme").text
     assert "Brak klientów" in admin.get("/admin/clients?q=zzz").text
     assert 'style="' not in page  # CSP: bez stylów inline
+
+
+def test_static_assets_versioned(app):
+    page = TestClient(app).get("/login").text
+    m = re.search(r'/static/style\.css\?v=([0-9a-f]{10})"', page)
+    assert m and re.search(r'/static/app\.js\?v=' + m.group(1), page)
