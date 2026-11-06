@@ -429,7 +429,7 @@ def test_backup_to_second_disk(tmp_path):
 @pytest.fixture()
 def office_app(tmp_path):
     s = Settings(data_dir=tmp_path, secret_key="x" * 40, cookie_secure=False, admin_username="admin",
-                 admin_password=ADMIN_PW, office_url="https://office.example", office_secret="s" * 32,
+                 admin_password=ADMIN_PW, office_url="https://cloud.example/office", office_secret="s" * 32,
                  app_internal_url="http://app:8000", public_url="https://cloud.example")
     return create_app(s)
 
@@ -448,8 +448,9 @@ def test_office_edit_and_save(office_app):
                    follow_redirects=False)
     assert r.headers["location"] == "/files/1/edit"
     page = admin.get("/files/1/edit")
-    assert page.status_code == 200 and "office.example/web-apps/apps/api/documents/api.js" in page.text
-    assert "frame-src https://office.example" in page.headers["content-security-policy"]
+    assert page.status_code == 200 and "https://cloud.example/office/web-apps/apps/api/documents/api.js" in page.text
+    csp = page.headers["content-security-policy"]
+    assert "frame-src https://cloud.example/office/;" in csp and "script-src 'self' https://cloud.example/office/;" in csp
     cfg = json.loads(html.unescape(re.search(r'data-config="([^"]+)"', page.text).group(1)))
     assert cfg["document"]["key"] == "bsk-1-1" and cfg["editorConfig"]["mode"] == "edit"
     assert office.jwt_decode(cfg["token"], "s" * 32)["document"]["title"] == "Budżet.xlsx"

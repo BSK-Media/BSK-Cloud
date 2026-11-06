@@ -134,7 +134,8 @@ w UGOS też je zobaczysz i stamtąd możesz je restartować oraz przeglądać lo
 DNS domeny musi być w Cloudflare (plan darmowy wystarczy).
 1. W Cloudflare przejdź do **Zero Trust → Networks → Tunnels → Create tunnel** i skopiuj token
    do `CLOUDFLARE_TUNNEL_TOKEN` w `.env`.
-2. W tunelu dodaj *Public hostname*: `cloud.bskmedia.pl` → `http://app:8000`.
+2. W tunelu dodaj *Public hostname*: `cloud.bskmedia.pl` → `HTTP` → `gateway:80`
+   (rozdzielacz: `/office` → edytor dokumentów, reszta → portal).
 3. Uruchom: `sudo docker compose --profile tunnel up -d --build`.
 
 Darmowy Cloudflare przyjmuje najwyżej 100 MB w jednym żądaniu. Portal i BSK Backup wysyłają duże pliki
@@ -249,9 +250,10 @@ Działa na serwerze dokumentów **ONLYOFFICE Docs** (wersja Community, darmowa, 
 połączeń). Potrzebuje ok. 2–3 GB RAM.
 
 Uruchomienie:
-1. W `.env` ustaw `BSK_OFFICE_URL=https://office.bskmedia.pl` i `BSK_OFFICE_SECRET`
+1. W `.env` ustaw `BSK_OFFICE_URL=https://cloud.bskmedia.pl/office` i `BSK_OFFICE_SECRET`
    (losowy, np. `od -An -tx1 -N24 /dev/urandom | tr -d ' \n'`).
-2. W Cloudflare, w tunelu, dodaj trasę: `office.bskmedia.pl` → `HTTP` → `office:80`.
+2. Edytor działa pod tym samym adresem co portal (`/office`). W Cloudflare trasa `cloud.bskmedia.pl`
+   musi wskazywać na `HTTP` → `gateway:80`.
 3. `sudo docker compose --profile tunnel --profile office up -d --build`. Pierwszy start serwera
    dokumentów trwa 1–3 minuty.
 

@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import shutil
+import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
 import os
@@ -1228,7 +1229,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         back = f"/admin/clients/{f['client_id']}" if user["role"] == "admin" else "/files"
         response = render(request, "editor.html", file=f, config=json.dumps(cfg), back=back,
                           office_url=settings.office_url, nav="clients" if user["role"] == "admin" else "files")
-        o = settings.office_url
+        # źródło CSP ze ścieżką musi kończyć się „/”, żeby obejmowało też pliki pod nią (/office/...)
+        o = settings.office_url + ("/" if urllib.parse.urlsplit(settings.office_url).path else "")
         response.headers["Content-Security-Policy"] = (
             f"default-src 'self'; script-src 'self' {o}; frame-src {o}; connect-src 'self' {o}; "
             f"img-src 'self' data: {o}; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"

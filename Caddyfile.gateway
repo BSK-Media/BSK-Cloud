@@ -1,0 +1,31 @@
+# Rozdzielacz ruchu za tunelem Cloudflare (wszystko pod jednym adresem cloud.bskmedia.pl):
+#   /office/...  -> serwer dokumentów ONLYOFFICE (edycja Excel/Word online)
+#   reszta       -> portal BSK Cloud
+{
+	admin off
+	auto_https off
+}
+
+:80 {
+	# Edytor dokumentów pod ścieżką /office — ONLYOFFICE dowiaduje się o niej z X-Forwarded-Host
+	handle_path /office/* {
+		reverse_proxy office:80 {
+			header_up X-Forwarded-Host {host}/office
+			header_up X-Forwarded-Proto https
+			transport http {
+				read_timeout 1h
+				write_timeout 1h
+			}
+		}
+	}
+	redir /office /office/ 308
+
+	handle {
+		reverse_proxy app:8000 {
+			transport http {
+				read_timeout 2h
+				write_timeout 2h
+			}
+		}
+	}
+}
