@@ -21,4 +21,20 @@
   </form>
 </section>
 </div>
+{% if user.role == 'admin' %}
+<section class="card mt">
+  <div class="card-head">{{ ui.icon("message") }}<h2>Powiadomienia e-mail</h2></div>
+  {% if smtp_ok and notify_to %}
+    <p><span class="tag ok">● skonfigurowane</span> Serwer <code>{{ smtp_host }}</code> · powiadomienia trafiają na <b>{{ notify_to }}</b>.</p>
+    <p class="small muted">Dostajesz e-mail, gdy klient napisze wiadomość lub wyśle pliki (najwyżej jeden na 5 minut z jednej rozmowy).
+      Klienci z zaznaczoną opcją dostają e-mail o Twoich odpowiedziach i nowych plikach.</p>
+    <form method="post" action="/admin/test-email"><input type="hidden" name="csrf" value="{{ csrf }}">
+      <button>{{ ui.icon("message") }}Wyślij e-mail testowy</button></form>
+  {% else %}
+    <p><span class="tag off">nie skonfigurowane</span> Uzupełnij w pliku <code>.env</code> na NAS dane skrzynki pocztowej
+      (<code>BSK_SMTP_HOST</code>, <code>BSK_SMTP_PORT</code>, <code>BSK_SMTP_USER</code>, <code>BSK_SMTP_PASSWORD</code>,
+      <code>BSK_SMTP_FROM</code>, <code>BSK_NOTIFY_EMAIL</code>).</p>
+  {% endif %}
+</section>
+{% endif %}
 {% endblock %}

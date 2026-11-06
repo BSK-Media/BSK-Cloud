@@ -557,3 +557,96 @@ def test_static_assets_versioned(app):
     page = TestClient(app).get("/login").text
     m = re.search(r'/static/style\.css\?v=([0-9a-f]{10})"', page)
     assert m and re.search(r'/static/app\.js\?v=' + m.group(1), page)
+
+
+@pytest.fixture()
+def mail_app(tmp_path, monkeypatch):
+    from app import notify
+    sent = []
+    monkeypatch.setattr(notify, "_deliver", lambda settings, to, subject, text, html: sent.append((to, subject, text, html)))
+    notify._last_sent.clear()
+    s = Settings(data_dir=tmp_path, secret_key="x" * 40, cookie_secure=False, admin_username="admin",
+                 admin_password=ADMIN_PW, smtp_host="smtp.hostinger.com", smtp_port=465, smtp_user="cloud@bskmedia.pl",
+                 smtp_password="x", smtp_from="cloud@bskmedia.pl", notify_email="biuro@bskmedia.pl",
+                 public_url="https://cloud.bskmedia.pl")
+    app = create_app(s)
+    app.state.sent = sent
+    return app
+
+
+def wait_for_mail(sent, n):
+    import time
+    for _ in range(50):
+        if len(sent) >= n:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_unread_live_thread_and_emails(mail_app):
+    app, sent = mail_app, mail_app.state.sent
+    admin = TestClient(app)
+    login(admin, "admin", ADMIN_PW)
+    tok = csrf_of(admin, "/admin/clients/new")
+    admin.post("/admin/clients/new", data={"username": "acme", "company": "ACME", "email": "anna@acme.pl",
+                                           "password": "KlientHaslo1", "csrf": tok})
+    c = TestClient(app)
+    login(c, "acme", "KlientHaslo1")
+    change_pw(c, "KlientHaslo1")
+    ctok = csrf_of(c, "/files")
+    # klient pisze -> admin widzi licznik i dostaje e-mail
+    c.post("/files/message", data={"body": "Dzień dobry, kiedy projekt?", "csrf": ctok})
+    c.post("/files/message", data={"body": "Druga wiadomość", "csrf": ctok})
+    assert admin.get("/api/unread").json()["unread"] == 2
+    assert 'data-unread-badge >2<' in admin.get("/admin").text.replace("\n", "") or ">2</span>" in admin.get("/admin").text
+    assert "2 nowe" in admin.get("/admin/clients").text
+    assert wait_for_mail(sent, 1)
+    to, subject, text, html_body = sent[0]
+    assert to == "biuro@bskmedia.pl" and "ACME" in subject and "kiedy projekt" in text and "/admin/clients/2" in html_body
+    import time; time.sleep(0.2)
+    assert len(sent) == 1  # druga wiadomość w ciągu 5 minut nie wysyła kolejnego maila
+    # admin otwiera rozmowę -> licznik znika
+    admin.get("/admin/clients/2")
+    assert admin.get("/api/unread").json()["unread"] == 0
+    # API rozmowy: nowe wiadomości po id
+    thread = admin.get("/api/thread/2", params={"after": 0}).json()["messages"]
+    assert [m["body"] for m in thread] == ["Dzień dobry, kiedy projekt?", "Druga wiadomość"] and not thread[0]["mine"]
+    last = thread[-1]["id"]
+    # admin odpowiada (jak z JS) -> klient: licznik + e-mail do klienta
+    atok = csrf_of(admin, "/admin/clients/2")
+    r = admin.post("/admin/clients/2/message", data={"body": "Projekt będzie w piątek.", "csrf": atok},
+                   headers={"X-Requested-With": "fetch"})
+    assert r.json()["redirect"].startswith("/admin/clients/2")
+    assert [m["body"] for m in admin.get("/api/thread/2", params={"after": last}).json()["messages"]] == ["Projekt będzie w piątek."]
+    assert c.get("/api/unread").json()["unread"] == 1
+    assert wait_for_mail(sent, 2) and sent[1][0] == "anna@acme.pl" and "piątek" in sent[1][2]
+    page = c.get("/files").text
+    assert "Masz <b>1</b> nowość" in page
+    assert c.get("/api/unread").json()["unread"] == 0
+    # klient nie podejrzy cudzej rozmowy
+    assert c.get("/api/thread/1").status_code == 403
+    # wyłączenie powiadomień klienta
+    atok = csrf_of(admin, "/admin/clients/2")
+    admin.post("/admin/clients/2/edit", data={"company": "ACME", "display_name": "", "email": "anna@acme.pl",
+                                              "quota_gb": "0", "csrf": atok})
+    from app import notify
+    notify._last_sent.clear()
+    admin.post("/admin/clients/2/message", data={"body": "Bez maila", "csrf": atok})
+    time.sleep(0.2)
+    assert len(sent) == 2
+
+
+def test_email_test_button(mail_app):
+    admin = TestClient(mail_app)
+    login(admin, "admin", ADMIN_PW)
+    page = admin.get("/account").text
+    assert "smtp.hostinger.com" in page and "biuro@bskmedia.pl" in page
+    tok = csrf_of(admin, "/account")
+    r = admin.post("/admin/test-email", data={"csrf": tok})
+    assert "Wysłano e-mail testowy na biuro@bskmedia.pl" in r.text
+    assert mail_app.state.sent[-1][1] == "[BSK Media Cloud] Test powiadomień"
+
+
+def test_email_not_configured(app, admin):
+    tok = csrf_of(admin, "/account")
+    assert "Poczta nie jest skonfigurowana" in admin.post("/admin/test-email", data={"csrf": tok}).text

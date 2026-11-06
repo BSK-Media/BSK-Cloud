@@ -261,6 +261,26 @@ Uruchomienie:
 Przy plikach `.xlsx`, `.docx`, `.pptx`, `.ods`, `.odt`, `.csv` pojawi się przycisk **Edytuj online**.
 W panelu klienta jest też **Nowy arkusz / Nowy dokument**.
 
+# Wiadomości i powiadomienia
+- Rozmowa z klientem odświeża się sama co kilka sekund, a nowa wiadomość daje sygnał dźwiękowy.
+  Po kliknięciu **Włącz powiadomienia** pojawiają się też powiadomienia systemowe przeglądarki.
+- Licznik nowych wiadomości i plików jest w menu (**Klienci**, u klienta **Wiadomości**) oraz przy każdym
+  kliencie na liście.
+- E-mail do Ciebie przychodzi o nowej wiadomości lub plikach od klienta. E-mail do klienta wychodzi
+  o Twojej odpowiedzi i nowych plikach, jeśli ma podany e-mail i zaznaczoną opcję. Z jednej rozmowy
+  wychodzi najwyżej jeden e-mail na 5 minut.
+
+**Poczta na Hostingerze.** W hPanel → *E-maile* utwórz skrzynkę, np. `cloud@bskmedia.pl`, i wpisz w `.env`:
+```
+BSK_SMTP_HOST=smtp.hostinger.com
+BSK_SMTP_PORT=465
+BSK_SMTP_USER=cloud@bskmedia.pl
+BSK_SMTP_PASSWORD=hasło-tej-skrzynki
+BSK_SMTP_FROM=cloud@bskmedia.pl
+BSK_NOTIFY_EMAIL=twoj-adres@bskmedia.pl
+```
+Potem uruchom `sudo docker compose up -d app` i w **Moje konto** kliknij **Wyślij e-mail testowy**.
+
 # Bezpieczeństwo i utrzymanie
 - Ruch jest szyfrowany (HTTPS). Hasła są zapisane jako bcrypt, a po wielu błędnych logowaniach
   następuje blokada. Formularze mają ochronę CSRF, strona ma nagłówki bezpieczeństwa (CSP, HSTS).

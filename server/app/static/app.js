@@ -148,3 +148,141 @@ document.querySelectorAll(".sidebar a").forEach((a) => a.addEventListener("click
   const t = document.getElementById("nav-toggle");
   if (t) t.checked = false;
 }));
+
+// ---------------------------------------------------------------- wiadomości na żywo
+const baseTitle = document.title;
+let audioCtx = null;
+document.addEventListener("pointerdown", () => {
+  // przeglądarki pozwalają odtwarzać dźwięk dopiero po interakcji użytkownika
+  if (!audioCtx && window.AudioContext) audioCtx = new AudioContext();
+}, { once: true });
+
+function ding() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  [880, 1320].forEach((f, i) => {
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.frequency.value = f; o.type = "sine";
+    g.gain.setValueAtTime(0.0001, t + i * 0.12);
+    g.gain.exponentialRampToValueAtTime(0.18, t + i * 0.12 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.12 + 0.25);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(t + i * 0.12); o.stop(t + i * 0.12 + 0.3);
+  });
+}
+
+function desktopNotify(msg) {
+  if (!("Notification" in window) || Notification.permission !== "granted" || !document.hidden) return;
+  const n = new Notification(`Wiadomość od ${msg.author}`, { body: msg.body.slice(0, 140), tag: "bsk-thread" });
+  n.onclick = () => { window.focus(); n.close(); };
+}
+
+function setBadges(count) {
+  document.querySelectorAll("[data-unread-badge]").forEach((b) => {
+    b.textContent = count;
+    b.hidden = !count;
+  });
+  document.title = count ? `(${count}) ${baseTitle}` : baseTitle;
+}
+
+function renderMessage(m) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg fresh" + (m.mine ? " mine" : "");
+  const av = document.createElement("span");
+  av.className = "avatar" + (m.agency ? " agency" : "");
+  av.textContent = m.initials;
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = `${m.author}${m.agency ? " · BSK Media" : ""} · ${m.time}`;
+  const body = document.createElement("div");
+  body.className = "body";
+  body.textContent = m.body;
+  bubble.append(meta, body);
+  wrap.append(av, bubble);
+  return wrap;
+}
+
+document.querySelectorAll("[data-thread]").forEach((thread) => {
+  const clientId = thread.dataset.thread;
+  let last = Number(thread.dataset.last || 0);
+  let busy = false;
+
+  async function poll() {
+    if (busy) return;
+    busy = true;
+    try {
+      const res = await fetch(`/api/thread/${clientId}?after=${last}&visible=${document.hidden ? 0 : 1}`,
+                              { credentials: "same-origin" });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.messages.length) {
+        const nearBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 80;
+        const empty = thread.querySelector("[data-empty]");
+        if (empty) empty.remove();
+        data.messages.forEach((m) => {
+          thread.append(renderMessage(m));
+          last = Math.max(last, m.id);
+          if (!m.mine) { ding(); desktopNotify(m); }
+        });
+        if (nearBottom || data.messages.some((m) => m.mine)) thread.scrollTop = thread.scrollHeight;
+      }
+      setBadges(data.unread);
+    } catch (_) { /* chwilowy brak sieci — spróbujemy za chwilę */ } finally { busy = false; }
+  }
+  setInterval(poll, 4000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+
+  const composer = thread.parentElement.querySelector("[data-live-composer]");
+  if (composer && window.fetch) {
+    const area = composer.querySelector("textarea");
+    area.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) composer.requestSubmit();
+    });
+    composer.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!area.value.trim()) return;
+      const btn = composer.querySelector("button");
+      btn.disabled = true;
+      try {
+        const res = await fetch(composer.action, {
+          method: "POST", body: new FormData(composer), credentials: "same-origin",
+          headers: { "X-Requested-With": "fetch" },
+        });
+        if (!res.ok) throw new Error();
+        area.value = "";
+        await poll();
+      } catch (_) {
+        alert("Nie udało się wysłać wiadomości — sprawdź połączenie i spróbuj ponownie.");
+      } finally { btn.disabled = false; area.focus(); }
+    });
+  }
+});
+
+// Przycisk „Włącz powiadomienia” (powiadomienia systemowe przeglądarki)
+document.querySelectorAll("[data-notify-enable]").forEach((btn) => {
+  if (!("Notification" in window) || Notification.permission !== "default") return;
+  btn.hidden = false;
+  btn.addEventListener("click", async () => {
+    const p = await Notification.requestPermission();
+    btn.hidden = p !== "default";
+    if (p === "granted") new Notification("Powiadomienia włączone", { body: "Damy znać o nowych wiadomościach." });
+  });
+});
+
+// Licznik nieprzeczytanych na pozostałych stronach (co 30 s)
+if (document.querySelector("[data-unread-poll]") && !document.querySelector("[data-thread]")) {
+  let known = Number(document.querySelector("[data-unread-poll]").dataset.unread || 0);
+  setBadges(known);
+  setInterval(async () => {
+    try {
+      const res = await fetch("/api/unread", { credentials: "same-origin" });
+      if (!res.ok) return;
+      const { unread } = await res.json();
+      if (unread > known) ding();
+      known = unread;
+      setBadges(unread);
+    } catch (_) { /* offline */ }
+  }, 30000);
+}

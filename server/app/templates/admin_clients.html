@@ -15,7 +15,8 @@
     {% for c in clients %}
     <tr class="{{ '' if c.active else 'inactive' }}">
       <td><div class="person"><span class="avatar">{{ (c.company or c.display_name or c.username)|initials }}</span>
-        <div><b><a href="/admin/clients/{{ c.id }}">{{ c.company or c.display_name or c.username }}</a></b>
+        <div><b><a href="/admin/clients/{{ c.id }}">{{ c.company or c.display_name or c.username }}</a>
+          {% if unread.get(c.id) %}<span class="badge" title="Nowe wiadomości lub pliki">{{ unread[c.id] }} nowe</span>{% endif %}</b>
         <span>{{ c.display_name }}{% if c.display_name and c.company %} · {% endif %}{{ c.username }}</span></div></div></td>
       <td class="num">{{ c.file_count }}<div class="small muted">{{ c.total_size|size }}</div></td>
       <td>{% if c.quota_mb %}{{ charts.meter(c.own_size, c.quota_mb * 1048576, "Miejsce klienta") }}
