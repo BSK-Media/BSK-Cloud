@@ -27,9 +27,11 @@ services:
       # i dla agentów kopii w biurze. Usuń, jeśli nie potrzebujesz.
       - "8090:8000"
 
+  # Tylko wariant z przekierowaniem portów (bez tunelu): docker compose --profile direct up -d
   caddy:
     image: caddy:2
     container_name: bsk-caddy
+    profiles: [direct]
     restart: unless-stopped
     depends_on: [app]
     environment:

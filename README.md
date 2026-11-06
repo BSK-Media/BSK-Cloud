@@ -127,7 +127,8 @@ w UGOS też je zobaczysz i stamtąd możesz je restartować oraz przeglądać lo
 3. W routerze ustaw **przekierowanie portów (port forwarding)**:
    - port zewnętrzny **80** → `192.168.1.50`, port **8880**,
    - port zewnętrzny **443** → `192.168.1.50`, port **8443**.
-4. Po kilku minutach od zmiany DNS otwórz **https://cloud.bskmedia.pl**. Certyfikat HTTPS
+4. Uruchom z certyfikatem: `sudo docker compose --profile direct up -d --build`.
+5. Po kilku minutach od zmiany DNS otwórz **https://cloud.bskmedia.pl**. Certyfikat HTTPS
    (Let's Encrypt) pobierze się sam.
 
 **Wariant B (Cloudflare Tunnel: bez otwierania portów, działa przy CGNAT).**
