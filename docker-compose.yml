@@ -13,8 +13,12 @@ services:
     env_file: .env
     environment:
       BSK_DATA_DIR: /data
+      BSK_DB_DIR: /baza
     volumes:
-      - ${BSK_NAS_FOLDER:-/volume1/bsk-cloud}:/data
+      # Pliki klientów, kopie pracowników, linki — duży dysk (HDD)
+      - ${BSK_DATA_FOLDER:-/volume2/bsk-dane}:/data
+      # Baza danych portalu — szybki dysk (SSD)
+      - ${BSK_DB_FOLDER:-/volume1/bsk-cloud/baza}:/baza
     ports:
       # Dostęp w sieci firmowej (np. http://192.168.1.50:8090) — przydaje się do testów
       # i dla agentów kopii w biurze. Usuń, jeśli nie potrzebujesz.

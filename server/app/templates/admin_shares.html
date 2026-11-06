@@ -19,7 +19,7 @@ Pobieranie można wznowić po przerwaniu połączenia.</p>
   <section class="card">
     <h2>Plik, który już jest na NAS</h2>
     <p class="small muted">Największe pliki najszybciej skopiujesz w sieci firmowej do folderu
-      <code>bsk-cloud{{ shared_folder }}</code> (udział SMB / menedżer plików UGOS), a tutaj tylko utworzysz link.</p>
+      <code>bsk-dane{{ shared_folder }}</code> (udział SMB / menedżer plików UGOS), a tutaj tylko utworzysz link.</p>
     {% if shared %}
     <form method="post" action="/admin/shares/new" class="stack">
       <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="shared">

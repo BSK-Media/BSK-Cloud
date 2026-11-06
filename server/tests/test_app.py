@@ -286,3 +286,12 @@ def test_install_link_and_device_quota(app, admin):
     admin.post("/admin/devices/1/install-link", data={"csrf": tok})
     assert anon.get("/api/agent/ping", headers=h).status_code == 401
     assert anon.get(f"/instaluj/{code}").status_code == 404
+
+
+def test_db_on_separate_disk(tmp_path):
+    s = Settings(data_dir=tmp_path / "hdd", db_dir=tmp_path / "ssd", secret_key="x" * 40, cookie_secure=False,
+                 admin_username="admin", admin_password=ADMIN_PW)
+    create_app(s)
+    assert (tmp_path / "ssd" / "bskcloud.db").exists()
+    assert not (tmp_path / "hdd" / "app" / "bskcloud.db").exists()
+    assert (tmp_path / "hdd" / "klienci").is_dir()
