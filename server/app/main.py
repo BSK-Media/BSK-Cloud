@@ -17,7 +17,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import security, storage
+from . import chunks, security, storage
 from .config import Settings
 from .db import Database, iso_in, now_iso
 from .notify import notify_admin
@@ -41,6 +41,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     tempfile.tempdir = str(settings.tmp_dir)
 
     db = Database(settings.db_path)
+    chunk_store = chunks.ChunkStore(db, settings.tmp_dir)
+    chunk_store.cleanup()
     limiter = security.LoginLimiter()
     _bootstrap_admin(db, settings)
 
@@ -67,6 +69,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if request.method in ("POST", "PUT") and int(length) > limit:
                 return JSONResponse({"detail": "Plik jest za duży."}, status_code=413)
         response = await call_next(request)
+        if request.headers.get("x-requested-with") == "fetch" and response.status_code == 303:
+            # wysyłka z JS: zwróć adres docelowy zamiast przekierowania, żeby komunikat (np. link) nie
+            # został „zużyty” przez niewidoczne dla użytkownika żądanie
+            response = JSONResponse({"redirect": response.headers["location"]})
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "same-origin")
@@ -163,7 +169,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         limit = (client["quota_mb"] or 0) * 1024 * 1024
         return {"used": used, "limit": limit, "percent": min(100, round(used * 100 / limit)) if limit else 0}
 
-    def save_upload(client, uploader, upload: UploadFile, note: str) -> int:
+    class ChunkedFile:
+        """Plik złożony z kawałków, gotowy do przeniesienia na miejsce docelowe."""
+
+        def __init__(self, row):
+            self.row = row
+            self.filename = row["name"]
+
+    def incoming(user, files, upload_ids) -> list:
+        out = [f for f in (files or []) if f.filename]
+        for uid in upload_ids or []:
+            row = chunk_store.take_done(uid, user["id"])
+            if not row:
+                raise HTTPException(400, "Wysyłka pliku nie została dokończona — spróbuj ponownie.")
+            out.append(ChunkedFile(row))
+        return out
+
+    def place(source, dest: Path, limit: int) -> tuple[int, str]:
+        if isinstance(source, ChunkedFile):
+            row = source.row
+            if row["size"] > limit:
+                chunk_store.remove(row["id"])
+                raise storage.TooLarge()
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(chunk_store.path(row["id"]), dest)
+            chunk_store.remove(row["id"])
+            return row["size"], row["sha256"]
+        return storage.copy_hashed(source.file, dest, settings.tmp_dir, limit)
+
+    def save_upload(client, uploader, upload, note: str) -> int:
         limit = max_upload
         quota_exceeded = False
         if uploader["role"] == "client" and client["quota_mb"]:
@@ -176,7 +210,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         name = storage.safe_name(upload.filename or "plik")
         dest = storage.unique_path(target_dir, name)
         try:
-            size, sha = storage.copy_hashed(upload.file, dest, settings.tmp_dir, limit)
+            size, sha = place(upload, dest, limit)
         except storage.TooLarge:
             if quota_exceeded:
                 raise HTTPException(
@@ -318,17 +352,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/files/upload")
     def client_upload(
         request: Request,
-        files: list[UploadFile] = File(...),
+        files: list[UploadFile] | None = File(None),
+        upload_ids: list[str] = Form([]),
         note: str = Form(""),
         csrf: str = Form(""),
     ):
         check_csrf(request, csrf)
         user = require_user(request, "client")
         names = []
-        for up in files:
-            if up.filename:
-                save_upload(user, user, up, note)
-                names.append(up.filename)
+        for up in incoming(user, files, upload_ids):
+            save_upload(user, user, up, note)
+            names.append(up.filename)
         if note.strip():
             add_message(user["id"], user, note)
         if names:
@@ -507,7 +541,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def admin_upload(
         request: Request,
         client_id: int,
-        files: list[UploadFile] = File(...),
+        files: list[UploadFile] | None = File(None),
+        upload_ids: list[str] = Form([]),
         note: str = Form(""),
         csrf: str = Form(""),
     ):
@@ -515,10 +550,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         admin = require_user(request, "admin")
         client = client_or_404(client_id)
         count = 0
-        for up in files:
-            if up.filename:
-                save_upload(client, admin, up, note)
-                count += 1
+        for up in incoming(admin, files, upload_ids):
+            save_upload(client, admin, up, note)
+            count += 1
         if note.strip():
             add_message(client_id, admin, note)
         flash(request, f"Udostępniono klientowi plików: {count}.")
@@ -742,7 +776,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "rem Instalacja BSK Backup dla komputera: " + link["device_name"].replace("%", "") + "\r\n"
             'cd /d "%~dp0"\r\n'
             'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-windows.ps1" '
-            f'-Server "{settings.public_url}" -Token "{link["token"]}"\r\n'
+            f'-Server "{settings.public_url}" -Token "{link["token"]}"'
+            + (f' -LanServer "{settings.lan_url}"' if settings.lan_url else "") + "\r\n"
             "echo.\r\npause\r\n"
         )
         readme = (
@@ -818,7 +853,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/admin/shares/upload")
     def share_upload(
         request: Request,
-        files: list[UploadFile] = File(...),
+        files: list[UploadFile] | None = File(None),
+        upload_ids: list[str] = Form([]),
         expires_days: int = Form(7),
         max_downloads: int = Form(0),
         password: str = Form(""),
@@ -828,11 +864,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         check_csrf(request, csrf)
         admin = require_user(request, "admin")
         made = []
-        for up in files:
-            if not up.filename:
-                continue
+        for up in incoming(admin, files, upload_ids):
             dest = storage.unique_path(settings.shared_dir, storage.safe_name(up.filename))
-            size, _ = storage.copy_hashed(up.file, dest, settings.tmp_dir, max_upload)
+            try:
+                size, _ = place(up, dest, max_upload)
+            except storage.TooLarge:
+                raise HTTPException(413, f"Plik przekracza limit {settings.max_upload_mb} MB.")
             rel = dest.relative_to(settings.shared_dir).as_posix()
             made.append(create_share(admin, kind="shared", name=dest.name, size=size, rel_path=rel, note=note,
                                      **share_options(expires_days, max_downloads, password)))
@@ -941,6 +978,59 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.log(None, "share_download", f"{link['name']} z {client_ip(request)}")
         return FileResponse(path, filename=link["name"])
 
+    # ------------------------------------------------------------------ wysyłka w kawałkach z przeglądarki
+
+    def api_user(request: Request):
+        user = current_user(request)
+        if not user or user["must_change_password"]:
+            raise HTTPException(401, "Zaloguj się ponownie.")
+        if not security.csrf_ok(request.session.get("csrf"), request.headers.get("x-csrf-token")):
+            raise HTTPException(400, "Sesja wygasła — odśwież stronę.")
+        return user
+
+    def browser_upload_row(user, upload_id: str):
+        row = chunk_store.get(upload_id)
+        if not row or row["user_id"] != user["id"]:
+            raise HTTPException(404, "Wysyłka wygasła — zacznij od nowa.")
+        return row
+
+    @app.post("/api/uploads")
+    async def browser_upload_init(request: Request):
+        user = api_user(request)
+        try:
+            body = await request.json()
+            name, size = str(body["name"]), int(body["size"])
+        except (ValueError, KeyError, TypeError):
+            raise HTTPException(400, "Nieprawidłowe dane.")
+        if size < 0:
+            raise HTTPException(400, "Nieprawidłowe dane.")
+        if size > max_upload:
+            raise HTTPException(413, f"Plik {name} przekracza limit {settings.max_upload_mb} MB.")
+        if user["role"] == "client" and user["quota_mb"]:
+            pending = db.one(
+                "SELECT COALESCE(SUM(size), 0) AS s FROM uploads WHERE user_id = ?", user["id"]
+            )["s"]
+            if client_usage(user["id"]) + pending + size > user["quota_mb"] * 1024 * 1024:
+                raise HTTPException(
+                    413, f"Brak miejsca na koncie (limit {user['quota_mb']} MB). Skontaktuj się z BSK Media."
+                )
+        row = chunk_store.create(name=name, size=size, user_id=user["id"])
+        return {"id": row["id"], "received": row["received"], "chunk_size": chunks.CHUNK_SIZE}
+
+    @app.get("/api/uploads/{upload_id}")
+    def browser_upload_status(request: Request, upload_id: str):
+        row = browser_upload_row(api_user(request), upload_id)
+        return {"id": row["id"], "received": row["received"], "size": row["size"], "status": row["status"]}
+
+    @app.put("/api/uploads/{upload_id}")
+    async def browser_upload_chunk(request: Request, upload_id: str, offset: int = Query(..., ge=0)):
+        row = browser_upload_row(api_user(request), upload_id)
+        try:
+            row = await chunk_store.write(row, offset, request.stream())
+        except chunks.ChunkError as exc:
+            return JSONResponse({"detail": exc.detail, "received": exc.received}, status_code=exc.status)
+        return {"id": row["id"], "received": row["received"], "status": row["status"]}
+
     # ------------------------------------------------------------------ API agenta kopii zapasowych
 
     def device_from_token(request: Request):
@@ -968,6 +1058,55 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         row = db.one("SELECT sha256 FROM backup_files WHERE device_id = ? AND rel_path = ?", device["id"], rel)
         return {"needed": not row or row["sha256"] != sha256.lower()}
 
+    def agent_target(device, path: str):
+        try:
+            base, target = backup_path(device, path)
+        except ValueError:
+            raise HTTPException(400, "Nieprawidłowa ścieżka.")
+        return base, target, target.relative_to(base).as_posix()
+
+    def backup_limit(device, rel: str) -> int:
+        """Ile bajtów może mieć plik, nie przekraczając limitu miejsca komputera."""
+        if not device["quota_mb"]:
+            return max_backup
+        used = db.one(
+            "SELECT COALESCE(SUM(size), 0) AS used FROM backup_files WHERE device_id = ? AND rel_path != ?",
+            device["id"], rel,
+        )["used"]
+        return min(max_backup, device["quota_mb"] * 1024 * 1024 - used)
+
+    def check_size(device, rel: str, size: int) -> None:
+        limit = backup_limit(device, rel)
+        if size > limit:
+            if limit < max_backup:
+                raise HTTPException(507, "Przekroczono limit miejsca na kopie tego komputera.")
+            raise HTTPException(413, "Plik przekracza limit.")
+
+    def unchanged(device, target: Path, rel: str, sha256: str) -> bool:
+        existing = db.one("SELECT sha256 FROM backup_files WHERE device_id = ? AND rel_path = ?", device["id"], rel)
+        return bool(existing and existing["sha256"] == sha256 and target.is_file())
+
+    def store_backup(device, base: Path, target: Path, rel: str, src: str, size: int, sha256: str, mtime: float):
+        """Przenosi gotowy plik na miejsce (stara wersja -> .wersje/) i zapisuje w bazie."""
+        target.parent.mkdir(parents=True, exist_ok=True)
+        versions = 1
+        if target.is_file():
+            vdir = (base / ".wersje" / rel).parent
+            vdir.mkdir(parents=True, exist_ok=True)
+            os.replace(target, vdir / f"{target.name}.{storage.version_stamp()}")
+            versions = 1 + storage.prune_versions(vdir, target.name, settings.backup_keep_versions)
+        os.replace(src, target)
+        if mtime > 0:
+            os.utime(target, (mtime, mtime))
+        db.run(
+            "INSERT INTO backup_files (device_id, rel_path, size, sha256, mtime, uploaded_at, versions)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (device_id, rel_path) DO UPDATE SET"
+            " size = excluded.size, sha256 = excluded.sha256, mtime = excluded.mtime,"
+            " uploaded_at = excluded.uploaded_at, versions = excluded.versions",
+            device["id"], rel, size, sha256, mtime, now_iso(), versions,
+        )
+        return {"status": "stored", "path": rel, "size": size, "versions": versions}
+
     @app.put("/api/agent/files")
     async def agent_upload(
         request: Request,
@@ -975,27 +1114,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         sha256: str = Query(..., pattern="^[0-9a-fA-F]{64}$"),
         mtime: float = Query(0),
     ):
+        """Wysyłka małego pliku w jednym żądaniu."""
         device = device_from_token(request)
-        try:
-            base, target = backup_path(device, path)
-        except ValueError:
-            raise HTTPException(400, "Nieprawidłowa ścieżka.")
-        rel = target.relative_to(base).as_posix()
+        base, target, rel = agent_target(device, path)
         sha256 = sha256.lower()
-        existing = db.one("SELECT * FROM backup_files WHERE device_id = ? AND rel_path = ?", device["id"], rel)
-        if existing and existing["sha256"] == sha256 and target.is_file():
+        if unchanged(device, target, rel, sha256):
             return {"status": "unchanged", "path": rel}
-
-        limit = max_backup
-        if device["quota_mb"]:
-            used = db.one(
-                "SELECT COALESCE(SUM(size), 0) AS used FROM backup_files WHERE device_id = ? AND rel_path != ?",
-                device["id"], rel,
-            )["used"]
-            limit = min(limit, device["quota_mb"] * 1024 * 1024 - used)
-            length = request.headers.get("content-length", "")
-            if limit <= 0 or (length.isdigit() and int(length) > limit):
-                raise HTTPException(507, "Przekroczono limit miejsca na kopie tego komputera.")
+        limit = backup_limit(device, rel)
+        length = request.headers.get("content-length", "")
+        check_size(device, rel, int(length) if length.isdigit() else 0)
         settings.tmp_dir.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(dir=settings.tmp_dir, prefix="agent-")
         digest = hashlib.sha256()
@@ -1005,34 +1132,64 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 async for chunk in request.stream():
                     size += len(chunk)
                     if size > limit:
-                        if limit < max_backup:
-                            raise HTTPException(507, "Przekroczono limit miejsca na kopie tego komputera.")
-                        raise HTTPException(413, "Plik przekracza limit.")
+                        check_size(device, rel, size)
                     digest.update(chunk)
                     out.write(chunk)
             if digest.hexdigest() != sha256:
                 raise HTTPException(409, "Suma kontrolna się nie zgadza (plik zmienił się w trakcie wysyłki).")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            versions = 1
-            if target.is_file():
-                vdir = (base / ".wersje" / rel).parent
-                vdir.mkdir(parents=True, exist_ok=True)
-                os.replace(target, vdir / f"{target.name}.{storage.version_stamp()}")
-                versions = 1 + storage.prune_versions(vdir, target.name, settings.backup_keep_versions)
-            os.replace(tmp_name, target)
-            if mtime > 0:
-                os.utime(target, (mtime, mtime))
+            return store_backup(device, base, target, rel, tmp_name, size, sha256, mtime)
         finally:
             if os.path.exists(tmp_name):
                 os.unlink(tmp_name)
-        db.run(
-            "INSERT INTO backup_files (device_id, rel_path, size, sha256, mtime, uploaded_at, versions)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (device_id, rel_path) DO UPDATE SET"
-            " size = excluded.size, sha256 = excluded.sha256, mtime = excluded.mtime,"
-            " uploaded_at = excluded.uploaded_at, versions = excluded.versions",
-            device["id"], rel, size, sha256, mtime, now_iso(), versions,
-        )
-        return {"status": "stored", "path": rel, "size": size, "versions": versions}
+
+    @app.post("/api/agent/uploads")
+    async def agent_upload_init(request: Request):
+        """Początek (lub wznowienie) wysyłki dużego pliku w kawałkach."""
+        device = device_from_token(request)
+        try:
+            body = await request.json()
+            path, size = str(body["path"]), int(body["size"])
+            sha256, mtime = str(body["sha256"]).lower(), float(body.get("mtime") or 0)
+        except (ValueError, KeyError, TypeError):
+            raise HTTPException(400, "Nieprawidłowe dane.")
+        if size < 0 or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+            raise HTTPException(400, "Nieprawidłowe dane.")
+        base, target, rel = agent_target(device, path)
+        if unchanged(device, target, rel, sha256):
+            return {"status": "unchanged", "path": rel}
+        check_size(device, rel, size)
+        row = chunk_store.find_resumable(device["id"], rel, sha256)
+        if not row or row["size"] != size:
+            row = chunk_store.create(name=target.name, size=size, device_id=device["id"],
+                                     expected_sha256=sha256, target=rel, mtime=mtime)
+        return {"status": "upload", "id": row["id"], "received": row["received"], "chunk_size": chunks.CHUNK_SIZE}
+
+    def agent_upload_row(device, upload_id: str):
+        row = chunk_store.get(upload_id)
+        if not row or row["device_id"] != device["id"]:
+            raise HTTPException(404, "Wysyłka wygasła — zacznij od nowa.")
+        return row
+
+    @app.get("/api/agent/uploads/{upload_id}")
+    def agent_upload_status(request: Request, upload_id: str):
+        row = agent_upload_row(device_from_token(request), upload_id)
+        return {"id": row["id"], "received": row["received"], "size": row["size"]}
+
+    @app.put("/api/agent/uploads/{upload_id}")
+    async def agent_upload_chunk(request: Request, upload_id: str, offset: int = Query(..., ge=0)):
+        device = device_from_token(request)
+        row = agent_upload_row(device, upload_id)
+        try:
+            row = await chunk_store.write(row, offset, request.stream())
+        except chunks.ChunkError as exc:
+            return JSONResponse({"detail": exc.detail, "received": exc.received}, status_code=exc.status)
+        if row["status"] != "done":
+            return {"status": "partial", "received": row["received"]}
+        base, target, rel = agent_target(device, row["target"])
+        result = store_backup(device, base, target, rel, str(chunk_store.path(row["id"])), row["size"],
+                              row["sha256"], row["mtime"])
+        chunk_store.remove(row["id"])
+        return result
 
     # ------------------------------------------------------------------ błędy
 

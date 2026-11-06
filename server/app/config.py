@@ -26,7 +26,7 @@ class Settings:
     site_name: str = "BSK Media Cloud"
     cookie_secure: bool = True
     session_hours: int = 12
-    max_upload_mb: int = 5120
+    max_upload_mb: int = 51200
     max_backup_file_mb: int = 20480
     backup_keep_versions: int = 10
     default_quota_mb: int = 0
@@ -39,6 +39,7 @@ class Settings:
     smtp_from: str = ""
     notify_email: str = ""
     public_url: str = ""
+    lan_url: str = ""
     extra: dict = field(default_factory=dict)
 
     @property
@@ -82,7 +83,7 @@ class Settings:
             site_name=os.environ.get("BSK_SITE_NAME", "BSK Media Cloud"),
             cookie_secure=_bool("BSK_COOKIE_SECURE", True),
             session_hours=_int("BSK_SESSION_HOURS", 12),
-            max_upload_mb=_int("BSK_MAX_UPLOAD_MB", 5120),
+            max_upload_mb=_int("BSK_MAX_UPLOAD_MB", 51200),
             max_backup_file_mb=_int("BSK_MAX_BACKUP_FILE_MB", 20480),
             backup_keep_versions=_int("BSK_BACKUP_KEEP_VERSIONS", 10),
             default_quota_mb=_int("BSK_DEFAULT_QUOTA_MB", 0),
@@ -95,4 +96,5 @@ class Settings:
             smtp_from=os.environ.get("BSK_SMTP_FROM", ""),
             notify_email=os.environ.get("BSK_NOTIFY_EMAIL", ""),
             public_url=os.environ.get("BSK_PUBLIC_URL", "https://cloud.bskmedia.pl"),
+            lan_url=os.environ.get("BSK_LAN_URL", ""),
         )

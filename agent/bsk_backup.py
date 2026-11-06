@@ -31,7 +31,9 @@ import requests
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
+CHUNK_THRESHOLD = 50 * 1024 * 1024  # większe pliki idą w kawałkach (limit Cloudflare: 100 MB na żądanie)
+LAN_RECHECK_S = 300
 log = logging.getLogger("bsk-backup")
 
 DEFAULT_EXCLUDES = [
@@ -78,6 +80,7 @@ class Config:
     def __init__(self, data: dict, path: Path):
         self.path = path
         self.server = data.get("server", "").rstrip("/")
+        self.lan_server = data.get("lan_server", "").rstrip("/")
         self.token = data.get("token", "")
         self.folders = [{"path": f["path"], "label": f["label"]} for f in data.get("folders", [])]
         self.excludes = data.get("excludes", DEFAULT_EXCLUDES)
@@ -88,7 +91,7 @@ class Config:
 
     def to_dict(self) -> dict:
         return {
-            "server": self.server, "token": self.token, "folders": self.folders, "excludes": self.excludes,
+            "server": self.server, "lan_server": self.lan_server, "token": self.token, "folders": self.folders, "excludes": self.excludes,
             "settle_seconds": self.settle_seconds, "scan_interval_minutes": self.scan_interval_minutes,
             "max_file_mb": self.max_file_mb, "verify_tls": self.verify_tls,
         }
@@ -210,6 +213,8 @@ class Agent:
         self.roots = [(Path(f["path"]), f["label"]) for f in config.folders]
         self.paused_until = 0.0
         self.offline_backoff = 15.0
+        self._base = config.server
+        self._base_checked = 0.0
         self.stop = threading.Event()
 
     # --- filtrowanie
@@ -272,6 +277,54 @@ class Agent:
                     return added
         return added
 
+    # --- wybór serwera: najpierw adres w sieci biurowej (szybciej, bez internetu), potem publiczny
+    def base(self) -> str:
+        if not self.cfg.lan_server:
+            return self.cfg.server
+        if time.time() - self._base_checked > LAN_RECHECK_S:
+            self._base_checked = time.time()
+            try:
+                r = self.http.get(self.cfg.lan_server + "/api/agent/ping", timeout=3)
+                lan_ok = r.status_code == 200
+            except requests.RequestException:
+                lan_ok = False
+            new = self.cfg.lan_server if lan_ok else self.cfg.server
+            if new != self._base:
+                log.info("Łączę się przez %s", "sieć biurową" if lan_ok else "internet")
+            self._base = new
+        return self._base
+
+    def _forget_base(self) -> None:
+        self._base_checked = 0.0
+
+    def send_chunked(self, base: str, path: Path, remote: str, sha: str, st):
+        """Duży plik w kawałkach; po przerwie wznawia od miejsca, w którym skończył."""
+        init = self.http.post(base + "/api/agent/uploads", timeout=30,
+                              json={"path": remote, "size": st.st_size, "sha256": sha, "mtime": st.st_mtime})
+        if init.status_code != 200 or init.json().get("status") != "upload":
+            return init
+        info = init.json()
+        upload_id, offset, chunk = info["id"], int(info["received"]), int(info["chunk_size"])
+        resp = init
+        with open(path, "rb") as f:
+            while True:
+                f.seek(offset)
+                data = f.read(chunk)
+                resp = self.http.put(f"{base}/api/agent/uploads/{upload_id}", params={"offset": offset}, data=data,
+                                     timeout=(15, 900), headers={"Content-Type": "application/octet-stream"})
+                if resp.status_code == 409:
+                    received = resp.json().get("received")
+                    if received is None or received == 0 and offset + len(data) >= st.st_size:
+                        return resp  # suma kontrolna się nie zgadza — plik się zmienił
+                    offset = int(received)
+                    continue
+                if resp.status_code != 200:
+                    return resp
+                body = resp.json()
+                if body.get("status") != "partial":
+                    return resp
+                offset = int(body["received"])
+
     # --- wysyłka
     def process(self, raw: str, attempts: int) -> None:
         path = Path(raw)
@@ -311,18 +364,25 @@ class Agent:
             self.state.mark_done(raw, st.st_size, st.st_mtime, sha)
             return
 
-        url = self.cfg.server + "/api/agent/files"
+        base = self.base()
         params = {"path": remote, "sha256": sha, "mtime": f"{st.st_mtime:.3f}"}
         try:
-            check = self.http.get(self.cfg.server + "/api/agent/status", params={"path": remote, "sha256": sha}, timeout=30)
+            check = self.http.get(base + "/api/agent/status", params={"path": remote, "sha256": sha}, timeout=30)
             if check.status_code == 200 and not check.json().get("needed", True):
                 self.state.mark_done(raw, st.st_size, st.st_mtime, sha)
                 return
             self._raise_for_auth(check)
-            with open(path, "rb") as f:
-                resp = self.http.put(url, params=params, data=f, timeout=(15, 900),
-                                     headers={"Content-Type": "application/octet-stream"})
+            if st.st_size > CHUNK_THRESHOLD:
+                resp = self.send_chunked(base, path, remote, sha, st)
+            else:
+                with open(path, "rb") as f:
+                    resp = self.http.put(base + "/api/agent/files", params=params, data=f, timeout=(15, 900),
+                                         headers={"Content-Type": "application/octet-stream"})
         except requests.ConnectionError as exc:
+            if base != self.cfg.server:
+                self._forget_base()  # sieć biurowa zniknęła (np. laptop wyjechał) — spróbuj przez internet
+                self.state.reschedule(raw, 0, "zmiana sieci")
+                return
             self.go_offline(str(exc))
             self.state.reschedule(raw, 0, "brak połączenia")
             return
@@ -494,6 +554,8 @@ def cmd_configure(args, cfg: Config) -> int:
         cfg.server = args.server.rstrip("/")
     if args.token:
         cfg.token = args.token
+    if args.lan_server is not None:
+        cfg.lan_server = args.lan_server.rstrip("/")
     if args.folder:
         folders = [Path(f).expanduser() for f in args.folder]
     elif not cfg.folders:
@@ -534,7 +596,7 @@ def cmd_test(cfg: Config) -> int:
 def cmd_status(cfg: Config, state: State, logdir: Path) -> int:
     c = state.counts()
     out(f"BSK Backup {VERSION}")
-    out(f"Serwer: {cfg.server or '(brak)'}")
+    out(f"Serwer: {cfg.server or '(brak)'}" + (f" (w biurze: {cfg.lan_server})" if cfg.lan_server else ""))
     for f in cfg.folders:
         out(f"Folder: {f['path']} -> {f['label']}/")
     last = time.strftime("%Y-%m-%d %H:%M", time.localtime(c["last_upload"])) if c["last_upload"] else "nigdy"
@@ -556,6 +618,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("configure", help="ustaw serwer, token i foldery")
     c.add_argument("--server")
+    c.add_argument("--lan-server", help="adres serwera w sieci biurowej, np. http://192.168.50.42:8090")
     c.add_argument("--token")
     c.add_argument("--folder", action="append", help="folder do kopiowania (można podać wiele razy)")
     c.add_argument("--insecure", action="store_true", help="nie sprawdzaj certyfikatu (tylko w LAN)")

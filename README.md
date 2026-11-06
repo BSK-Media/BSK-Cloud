@@ -96,6 +96,9 @@ sudo nano .env
 - `BSK_DB_FOLDER`: folder na bazę na SSD, np. `/volume1/bsk-cloud/baza`.
 - `PUID` i `PGID`: liczby z polecenia `ls -ln` w wierszu folderu `bsk-dane`
   (kolumna 3 to UID, kolumna 4 to GID).
+- `BSK_LAN_URL`: adres portalu w sieci biurowej, np. `http://192.168.50.42:8090`. BSK Backup na komputerach
+  w biurze wysyła wtedy kopie prosto do NAS-a, z pominięciem internetu. Poza biurem automatycznie
+  przełącza się na adres publiczny.
 - Opcjonalnie: `BSK_DEFAULT_QUOTA_MB` (domyślny limit miejsca dla klienta) i `BSK_SMTP_*`
   (powiadomienia e-mail).
 
@@ -132,8 +135,9 @@ DNS domeny musi być w Cloudflare (plan darmowy wystarczy).
 2. W tunelu dodaj *Public hostname*: `cloud.bskmedia.pl` → `http://app:8000`.
 3. Uruchom: `sudo docker compose --profile tunnel up -d --build`.
 
-Uwaga: w darmowym Cloudflare pojedyncze **wysłanie** pliku na serwer jest ograniczone do
-100 MB. Pobieranie linkiem nie ma tego limitu. Jeśli klienci mają wysyłać duże pliki, wybierz wariant A.
+Darmowy Cloudflare przyjmuje najwyżej 100 MB w jednym żądaniu. Portal i BSK Backup wysyłają duże pliki
+**w kawałkach po 50 MB**, więc ten limit ich nie dotyczy. Przerwana wysyłka wznawia się od miejsca
+przerwania. Pobieranie linkiem nie ma limitu.
 
 ## Krok 6. Pierwsze logowanie
 1. Otwórz `https://cloud.bskmedia.pl` i zaloguj się kontem z `.env`.
@@ -233,9 +237,9 @@ linkami i instalatora oraz zmiany kont.
   Linki do pobrania mają losowe adresy i nie są indeksowane przez wyszukiwarki.
 - **RAID to nie kopia zapasowa.** W UGOS (*Kopia zapasowa i synchronizacja*) ustaw kopię folderów
   `bsk-dane` i `bsk-cloud/baza` na dysk USB i/lub do chmury, zgodnie z zasadą 3-2-1.
-- Aktualizacja portalu:
+- Aktualizacja portalu (plik `.env` i dane zostają):
   ```bash
-  cd /volume1/bsk-cloud/portal && sudo git pull && sudo docker compose up -d --build
+  cd /volume1/bsk-cloud && sudo curl -fL -o portal.tar.gz https://codeload.github.com/BSK-Media/BSK-Cloud/tar.gz/refs/heads/main && sudo tar -xzf portal.tar.gz -C portal --strip-components=1 && sudo rm portal.tar.gz && cd portal && sudo docker compose --profile tunnel up -d --build
   ```
   Dane w `bsk-dane` i baza w `bsk-cloud/baza` pozostają nienaruszone.
 - Aktualizacja BSK Backup: podmień pliki w `instalator/` i wyślij pracownikom nowe linki instalacyjne.

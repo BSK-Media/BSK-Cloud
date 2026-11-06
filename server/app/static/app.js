@@ -26,40 +26,94 @@ document.querySelectorAll("form[data-upload]").forEach((form) => {
     showNames();
   });
 
-  form.addEventListener("submit", (e) => {
-    if (!window.XMLHttpRequest || !input.files.length) return;
+  form.addEventListener("submit", async (e) => {
+    if (!window.fetch || !window.Blob || !input.files.length) return;
     e.preventDefault();
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", form.action);
-    xhr.setRequestHeader("X-Requested-With", "fetch");
+    const files = Array.from(input.files);
+    const csrf = form.querySelector("input[name=csrf]").value;
+    const total = files.reduce((n, f) => n + f.size, 0) || 1;
+    let done = 0;
     bar.hidden = false;
     button.disabled = true;
-    xhr.upload.onprogress = (p) => {
-      if (p.lengthComputable) {
-        bar.value = Math.round((p.loaded / p.total) * 100);
-        button.textContent = `Wysyłanie… ${bar.value}%`;
-      }
+    const show = (i, extra) => {
+      bar.value = Math.floor((done / total) * 100);
+      button.textContent = `Wysyłanie ${i + 1}/${files.length}… ${bar.value}%${extra || ""}`;
     };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 400) {
-        window.location.href = xhr.responseURL || window.location.href;
-      } else {
-        let msg = "Wysyłka nie powiodła się.";
-        try { msg = JSON.parse(xhr.responseText).detail || msg; } catch (_) {}
-        alert(msg);
-        button.disabled = false;
-        button.textContent = "Wyślij";
-        bar.hidden = true;
+    try {
+      const ids = [];
+      for (let i = 0; i < files.length; i++) {
+        ids.push(await sendChunked(files[i], csrf, (sent) => { done += sent; show(i); },
+                                   (msg) => show(i, msg)));
       }
-    };
-    xhr.onerror = () => {
-      alert("Błąd połączenia — sprawdź internet i spróbuj ponownie.");
+      const data = new FormData(form);
+      data.delete("files");
+      ids.forEach((id) => data.append("upload_ids", id));
+      const res = await fetch(form.action, {
+        method: "POST", body: data, credentials: "same-origin", headers: { "X-Requested-With": "fetch" },
+      });
+      if (!res.ok) throw new Error(await errorText(res));
+      const next = await res.json().catch(() => ({}));
+      window.location.href = next.redirect || window.location.href;
+    } catch (err) {
+      alert(err.message || "Wysyłka nie powiodła się.");
       button.disabled = false;
       button.textContent = "Wyślij";
-    };
-    xhr.send(new FormData(form));
+      bar.hidden = true;
+    }
   });
 });
+
+async function errorText(res) {
+  try { return (await res.json()).detail || `Błąd ${res.status}`; } catch (_) { return `Błąd ${res.status}`; }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Wysyła plik w kawałkach (~50 MB). Po zerwaniu połączenia ponawia i wznawia od miejsca przerwania.
+async function sendChunked(file, csrf, onProgress, onStatus) {
+  const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
+  const init = await fetch("/api/uploads", {
+    method: "POST", credentials: "same-origin", headers, body: JSON.stringify({ name: file.name, size: file.size }),
+  });
+  if (!init.ok) throw new Error(await errorText(init));
+  const up = await init.json();
+  let offset = up.received || 0;
+  let failures = 0;
+  while (offset < file.size) {
+    const end = Math.min(offset + up.chunk_size, file.size);
+    try {
+      const res = await fetch(`/api/uploads/${up.id}?offset=${offset}`, {
+        method: "PUT", credentials: "same-origin",
+        headers: { "X-CSRF-Token": csrf, "Content-Type": "application/octet-stream" },
+        body: file.slice(offset, end),
+      });
+      if (res.status === 409) {
+        const info = await res.json();
+        if (typeof info.received === "number") { onProgress(info.received - offset); offset = info.received; continue; }
+      }
+      if (!res.ok) {
+        if (res.status >= 500 || res.status === 429) throw new TypeError("server");
+        throw new Error(await errorText(res));
+      }
+      const info = await res.json();
+      onProgress(info.received - offset);
+      offset = info.received;
+      failures = 0;
+    } catch (err) {
+      if (!(err instanceof TypeError)) throw err; // błąd z serwera z komunikatem — nie ponawiamy
+      failures += 1;
+      if (failures > 30) throw new Error("Brak połączenia z serwerem. Spróbuj ponownie później.");
+      const wait = Math.min(30, 2 ** Math.min(failures, 5));
+      onStatus(` — brak połączenia, ponawiam za ${wait} s`);
+      await sleep(wait * 1000);
+      try { // dowiedz się, ile serwer już ma
+        const st = await fetch(`/api/uploads/${up.id}`, { credentials: "same-origin", headers: { "X-CSRF-Token": csrf } });
+        if (st.ok) { const info = await st.json(); onProgress(info.received - offset); offset = info.received; }
+      } catch (_) { /* nadal offline */ }
+    }
+  }
+  return up.id;
+}
 
 // Kopiowanie linków do schowka
 document.querySelectorAll("[data-copy]").forEach((btn) => {
