@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
   <title>{% block title %}{{ site_name }}{% endblock %}</title>
-  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/style.css">
-  <script src="/static/app.js" defer></script>
+  <link rel="icon" href="/static/favicon.svg?v={{ asset_v }}" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_v }}">
+  <script src="/static/app.js?v={{ asset_v }}" defer></script>
 </head>
 <body>
 {% macro flashes_block() %}
