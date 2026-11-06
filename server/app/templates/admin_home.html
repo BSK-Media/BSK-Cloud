@@ -32,6 +32,24 @@
 </table>
 </section>
 
+{% if backup_status is not none %}
+<div class="row"><h2>Kopia na drugi dysk</h2>
+  <form method="post" action="/admin/backup/run"><input type="hidden" name="csrf" value="{{ csrf }}">
+    <button {{ 'disabled' if backup_running else '' }}>{{ 'Kopia trwa…' if backup_running else 'Zrób kopię teraz' }}</button></form>
+</div>
+<section class="card">
+  {% if backup_status.error %}
+    <div class="flash {{ 'warn' if not backup_status.finished_at else 'error' }}">{{ backup_status.error }}</div>
+  {% else %}
+    <p>Ostatnia kopia: <b>{{ backup_status.finished_at|dt }}</b> (UTC) · skopiowano {{ backup_status.copied_files }} plików
+      ({{ backup_status.copied_bytes|size }}) w {{ backup_status.seconds }} s ·
+      wolne miejsce: <b>{{ backup_status.free_bytes|size }}</b> z {{ backup_status.total_bytes|size }}</p>
+    {% if backup_status.low_space %}<div class="flash error">Na dysku z kopią zostało mniej niż 10% miejsca.</div>{% endif %}
+  {% endif %}
+  <p class="small muted">Codziennie: baza danych (14 dni wstecz), pliki klientów i pliki do linków. Pliki usunięte w portalu zostają w kopii.</p>
+</section>
+{% endif %}
+
 <div class="row"><h2>Komputery pracowników (kopie zapasowe)</h2><a class="button" href="/admin/devices/new">+ Dodaj komputer</a></div>
 <section class="card">
 <table class="list">
