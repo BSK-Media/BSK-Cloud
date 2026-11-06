@@ -12,7 +12,7 @@ Własna „chmura” firmy BSK Media działająca na **Ugreen NAS DXP4800 Plus**
 
 ```
                  Internet                                     Biuro (NAS)
- klient ──► https://cloud.bskmedia.pl ──► router ──► Caddy (HTTPS) ──► portal BSK Cloud ──► /volume1/bsk-cloud
+ klient ──► https://cloud.bskmedia.pl ──► router ──► Caddy (HTTPS) ──► portal BSK Cloud ──► SSD (baza) + HDD (pliki)
  pracownik (BSK Backup) ───────────────────────────────────────────────┘
 ```
 
@@ -29,17 +29,29 @@ uploadu to ok. 1,5 minuty, przy 20 Mb/s ok. 7 minut.
 
 ## Gdzie leżą pliki na NAS
 
-Wszystko jest w zwykłych folderach, widocznych też w menedżerze plików UGOS i przez SMB:
+Portal korzysta z dwóch dysków:
 
 ```
-/volume1/bsk-cloud/
+SSD (szybki) — /volume1/bsk-cloud/            HDD (duży) — /volume2/bsk-dane/
+├── (kod portalu, docker-compose.yml, .env)    ├── klienci/<login>/…
+└── baza/bskcloud.db   baza danych portalu     ├── udostepnione/…
+                                               ├── kopie-pracownikow/<komputer>/…
+                                               ├── instalator/
+                                               └── app/tmp/   pliki w trakcie wysyłki
+```
+
+Numer woluminu HDD (`volume2`, `volume3`…) sprawdzisz w UGOS: **Storage**. Ustawiasz go
+w `.env` (`BSK_DATA_FOLDER`). Wszystkie pliki są w zwykłych folderach, widocznych też
+w menedżerze plików UGOS i przez SMB:
+
+```
+/volume2/bsk-dane/
 ├── klienci/<login>/…                 pliki od klienta
 │              └── od BSK Media/       pliki, które udostępniłeś klientowi w portalu
 ├── udostepnione/…                    pliki do wysyłania linkiem (możesz wrzucać tu przez SMB)
 ├── kopie-pracownikow/<komputer>/…    kopie z komputerów pracowników
 │                     └── .wersje/     poprzednie wersje plików
-├── instalator/                       program BSK Backup (pracownicy pobierają go z linku)
-└── app/                              baza danych portalu — nie ruszać
+└── instalator/                       program BSK Backup (pracownicy pobierają go z linku)
 ```
 
 ---
@@ -47,7 +59,10 @@ Wszystko jest w zwykłych folderach, widocznych też w menedżerze plików UGOS 
 # Uruchomienie krok po kroku
 
 ## Krok 1. Przygotuj NAS (ok. 10 min)
-1. W UGOS: **Panel sterowania → Folder współdzielony → Utwórz** i nazwij folder `bsk-cloud`.
+1. W UGOS (**Files → Shared Folder → +**) utwórz dwa foldery współdzielone:
+   - `bsk-cloud` na woluminie z **SSD** (portal i baza),
+   - `bsk-dane` na woluminie z **HDD** (pliki).
+   Jeśli na HDD nie ma jeszcze woluminu, utwórz go w **Storage**.
 2. **App Center** → zainstaluj **Docker**.
 3. **Panel sterowania → Terminal** → włącz **SSH**.
 4. Ustaw NAS-owi **stały adres IP w sieci lokalnej**, np. `192.168.1.50`. Zrobisz to w ustawieniach
@@ -60,24 +75,26 @@ ssh twoj-login-nas@192.168.1.50
 ```
 Na NAS pobierz kod i przygotuj konfigurację:
 ```bash
-sudo mkdir -p /volume1/docker && cd /volume1/docker
-sudo git clone https://github.com/BSK-Media/bsk-cloud.git
-cd bsk-cloud
+cd /volume1/bsk-cloud
+sudo git clone https://github.com/BSK-Media/bsk-cloud.git portal
+cd portal
 sudo cp .env.example .env
 openssl rand -hex 32
 ```
 Jeśli na NAS nie ma `git` albo repozytorium jest prywatne, pobierz ZIP z GitHuba
-(**Code → Download ZIP**) i rozpakuj go do `/volume1/docker/bsk-cloud` przez menedżer plików UGOS.
+(**Code → Download ZIP**) i rozpakuj go do `/volume1/bsk-cloud/portal` przez menedżer plików UGOS.
 
 ## Krok 3. Uzupełnij plik `.env`
 ```bash
-ls -ln /volume1
+ls -ln /volume1 /volume2
 sudo nano .env
 ```
 - `BSK_SECRET_KEY`: wklej wynik `openssl rand -hex 32` z kroku 2.
 - `BSK_ADMIN_USERNAME` i `BSK_ADMIN_PASSWORD`: Twoje konto administratora. Hasło musi mieć
   min. 10 znaków, małe i wielkie litery oraz cyfrę.
-- `PUID` i `PGID`: liczby z polecenia `ls -ln /volume1` w wierszu folderu `bsk-cloud`
+- `BSK_DATA_FOLDER`: folder na HDD, np. `/volume2/bsk-dane`.
+- `BSK_DB_FOLDER`: folder na bazę na SSD, np. `/volume1/bsk-cloud/baza`.
+- `PUID` i `PGID`: liczby z polecenia `ls -ln` w wierszu folderu `bsk-dane`
   (kolumna 3 to UID, kolumna 4 to GID).
 - Opcjonalnie: `BSK_DEFAULT_QUOTA_MB` (domyślny limit miejsca dla klienta) i `BSK_SMTP_*`
   (powiadomienia e-mail).
@@ -86,9 +103,11 @@ W edytorze nano zapisujesz przez Ctrl+O i Enter, wychodzisz przez Ctrl+X.
 
 ## Krok 4. Uruchom
 ```bash
+sudo mkdir -p /volume1/bsk-cloud/baza && sudo chown PUID:PGID /volume1/bsk-cloud/baza
 sudo docker compose up -d --build
 sudo docker compose ps
 ```
+W poleceniu `chown` wpisz liczby PUID i PGID z `.env`.
 Oba kontenery (`bsk-cloud` i `bsk-caddy`) powinny mieć status *running*. W aplikacji Docker
 w UGOS też je zobaczysz i stamtąd możesz je restartować oraz przeglądać logi.
 
@@ -127,7 +146,7 @@ Program dla Windows buduje się **automatycznie na GitHubie**, więc nie potrzeb
    zielone uruchomienie. W sekcji **Artifacts** pobierz `BSK-Backup-windows`.
    Inna droga: wypchnij tag `v1.0.0`, a gotowy ZIP pojawi się w **Releases**.
 2. Rozpakuj ZIP i skopiuj 4 pliki (`bsk-backup.exe`, `bsk-backup-agent.exe`,
-   `install-windows.ps1`, `uninstall-windows.ps1`) do folderu **`bsk-cloud/instalator`** na NAS.
+   `install-windows.ps1`, `uninstall-windows.ps1`) do folderu **`bsk-dane/instalator`** na NAS.
    Możesz to zrobić przez SMB albo menedżer plików UGOS.
 
 Od teraz pracownicy pobierają program **bezpośrednio z NAS** przez link z portalu.
@@ -156,7 +175,7 @@ Masz trzy sposoby:
 - **Wyślij i utwórz link:** w zakładce **Linki do pobrania** przeciągnij plik, ustaw ważność,
   limit pobrań i hasło.
 - **Plik już na NAS (najlepsze dla dużych plików):** skopiuj plik w biurze przez sieć do folderu
-  `bsk-cloud/udostepnione`. Kopiowanie w sieci lokalnej jest najszybsze. Potem w **Linki do pobrania**
+  `bsk-dane/udostepnione`. Kopiowanie w sieci lokalnej jest najszybsze. Potem w **Linki do pobrania**
   wybierz plik z listy i kliknij **Utwórz link**.
 
 Link ma postać `https://cloud.bskmedia.pl/s/Xy7…`. Odbiorca otwiera stronę z nazwą i rozmiarem
@@ -212,13 +231,13 @@ linkami i instalatora oraz zmiany kont.
 - Ruch jest szyfrowany (HTTPS). Hasła są zapisane jako bcrypt, a po wielu błędnych logowaniach
   następuje blokada. Formularze mają ochronę CSRF, strona ma nagłówki bezpieczeństwa (CSP, HSTS).
   Linki do pobrania mają losowe adresy i nie są indeksowane przez wyszukiwarki.
-- **RAID to nie kopia zapasowa.** W UGOS (*Kopia zapasowa i synchronizacja*) ustaw kopię folderu
-  `bsk-cloud` na dysk USB i/lub do chmury, zgodnie z zasadą 3-2-1.
+- **RAID to nie kopia zapasowa.** W UGOS (*Kopia zapasowa i synchronizacja*) ustaw kopię folderów
+  `bsk-dane` i `bsk-cloud/baza` na dysk USB i/lub do chmury, zgodnie z zasadą 3-2-1.
 - Aktualizacja portalu:
   ```bash
-  cd /volume1/docker/bsk-cloud && sudo git pull && sudo docker compose up -d --build
+  cd /volume1/bsk-cloud/portal && sudo git pull && sudo docker compose up -d --build
   ```
-  Dane w `/volume1/bsk-cloud` pozostają nienaruszone.
+  Dane w `bsk-dane` i baza w `bsk-cloud/baza` pozostają nienaruszone.
 - Aktualizacja BSK Backup: podmień pliki w `instalator/` i wyślij pracownikom nowe linki instalacyjne.
   Ponowna instalacja nadpisuje program i zachowuje kolejkę.
 

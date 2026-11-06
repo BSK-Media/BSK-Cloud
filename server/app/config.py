@@ -22,6 +22,7 @@ def _int(name: str, default: int) -> int:
 class Settings:
     data_dir: Path
     secret_key: str
+    db_dir: Path | None = None
     site_name: str = "BSK Media Cloud"
     cookie_secure: bool = True
     session_hours: int = 12
@@ -42,7 +43,8 @@ class Settings:
 
     @property
     def db_path(self) -> Path:
-        return self.data_dir / "app" / "bskcloud.db"
+        """Baza może leżeć na innym (szybszym) dysku niż pliki — BSK_DB_DIR."""
+        return (self.db_dir or self.data_dir / "app") / "bskcloud.db"
 
     @property
     def clients_dir(self) -> Path:
@@ -75,6 +77,7 @@ class Settings:
             )
         return cls(
             data_dir=Path(os.environ.get("BSK_DATA_DIR", "/data")),
+            db_dir=Path(os.environ["BSK_DB_DIR"]) if os.environ.get("BSK_DB_DIR") else None,
             secret_key=secret,
             site_name=os.environ.get("BSK_SITE_NAME", "BSK Media Cloud"),
             cookie_secure=_bool("BSK_COOKIE_SECURE", True),
