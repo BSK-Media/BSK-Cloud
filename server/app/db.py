@@ -104,6 +104,10 @@ CREATE TABLE IF NOT EXISTS install_links (
 MIGRATIONS = [
     ("users", "quota_mb", "INTEGER NOT NULL DEFAULT 0"),
     ("devices", "quota_mb", "INTEGER NOT NULL DEFAULT 0"),
+    ("devices", "folders", "TEXT NOT NULL DEFAULT ''"),
+    ("files", "office_version", "INTEGER NOT NULL DEFAULT 1"),
+    ("files", "modified_at", "TEXT"),
+    ("files", "modified_by", "INTEGER"),
 ]
 
 

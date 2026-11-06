@@ -41,6 +41,10 @@ class Settings:
     notify_email: str = ""
     public_url: str = ""
     lan_url: str = ""
+    office_url: str = ""
+    office_internal_url: str = "http://office"
+    office_secret: str = ""
+    app_internal_url: str = "http://app:8000"
     extra: dict = field(default_factory=dict)
 
     @property
@@ -99,4 +103,8 @@ class Settings:
             notify_email=os.environ.get("BSK_NOTIFY_EMAIL", ""),
             public_url=os.environ.get("BSK_PUBLIC_URL", "https://cloud.bskmedia.pl"),
             lan_url=os.environ.get("BSK_LAN_URL", ""),
+            office_url=os.environ.get("BSK_OFFICE_URL", "").rstrip("/"),
+            office_internal_url=os.environ.get("BSK_OFFICE_INTERNAL_URL", "http://office").rstrip("/"),
+            office_secret=os.environ.get("BSK_OFFICE_SECRET", ""),
+            app_internal_url=os.environ.get("BSK_APP_INTERNAL_URL", "http://app:8000").rstrip("/"),
         )

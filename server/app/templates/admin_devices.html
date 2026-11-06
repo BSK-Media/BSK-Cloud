@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Pracownicy i kopie — {{ site_name }}{% endblock %}
+{% block heading %}Pracownicy i kopie zapasowe{% endblock %}
+{% block subtitle %}<div class="subtitle">Komputery, które automatycznie kopiują pliki na NAS</div>{% endblock %}
+{% block actions %}<a class="button primary" href="/admin/devices/new">{{ ui.icon("plus") }}Dodaj pracownika</a>{% endblock %}
+{% block content %}
+{% if devices %}
+<div class="grid g-3">
+  {% for d in devices %}
+  <a class="card devcard {{ '' if d.active else 'inactive' }}" href="/admin/devices/{{ d.id }}">
+    <div class="person"><span class="avatar">{{ (d.employee or d.name)|initials }}</span>
+      <div><b>{{ d.employee or d.name }}</b><span>{{ d.name }}</span></div>
+      <span class="spacer"></span>
+      {% if not d.active %}<span class="tag off">wyłączony</span>{% elif online(d.last_seen) %}<span class="tag ok">● online</span>{% else %}<span class="tag off">offline</span>{% endif %}
+    </div>
+    <div class="mt">{% if d.quota_mb %}{{ charts.meter(d.total_size, d.quota_mb * 1048576, d.name) }}{% endif %}
+      <div class="row small muted num"><span>{{ d.total_size|size }}{% if d.quota_mb %} z {{ (d.quota_mb * 1048576)|size }}{% else %} · bez limitu{% endif %}</span><span class="spacer"></span><span>{{ d.file_count }} plików</span></div></div>
+    <div class="small muted">Ostatnia kopia: {{ d.last_backup|ago }} · kontakt: {{ d.last_seen|ago }}</div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<section class="card">{{ ui.empty("Nie dodano jeszcze żadnego pracownika.", "laptop") }}
+  <p class="center"><a class="button primary" href="/admin/devices/new">{{ ui.icon("plus") }}Dodaj pracownika</a></p></section>
+{% endif %}
+{% endblock %}

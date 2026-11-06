@@ -43,6 +43,23 @@ services:
       - caddy_data:/data
       - caddy_config:/config
 
+  # Edycja dokumentów online (Excel/Word/PowerPoint) ze współpracą na żywo — ONLYOFFICE Docs.
+  # Uruchom z profilem "office"; w tunelu Cloudflare dodaj trasę office.bskmedia.pl -> http://office:80
+  office:
+    image: onlyoffice/documentserver:latest
+    container_name: bsk-office
+    profiles: [office]
+    restart: unless-stopped
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: ${BSK_OFFICE_SECRET:-}
+      # serwer dokumentów pobiera pliki z portalu w wewnętrznej sieci Dockera
+      ALLOW_PRIVATE_IP_ADDRESS: "true"
+    volumes:
+      - ${BSK_OFFICE_FOLDER:-/volume1/bsk-cloud/office}/data:/var/www/onlyoffice/Data
+      - ${BSK_OFFICE_FOLDER:-/volume1/bsk-cloud/office}/lib:/var/lib/onlyoffice
+      - ${BSK_OFFICE_FOLDER:-/volume1/bsk-cloud/office}/logs:/var/log/onlyoffice
+
   # Alternatywa dla przekierowania portów (np. gdy operator daje CGNAT / brak publicznego IP).
   cloudflared:
     image: cloudflare/cloudflared:latest

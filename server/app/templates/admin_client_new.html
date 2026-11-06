@@ -1,18 +1,24 @@
 {% extends "base.html" %}
+{% block title %}Nowy klient — {{ site_name }}{% endblock %}
+{% block heading %}Nowy klient{% endblock %}
+{% block subtitle %}<div class="subtitle">Klient dostanie własną przestrzeń na pliki i wiadomości</div>{% endblock %}
 {% block content %}
-<section class="card narrow">
-  <h1>Nowe konto klienta</h1>
+<section class="card">
   <form method="post" action="/admin/clients/new" class="stack">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <label>Login (np. jan.kowalski) <input name="username" required pattern="[a-zA-Z0-9._\-]{3,40}"></label>
-    <label>Imię i nazwisko / osoba kontaktowa <input name="display_name"></label>
-    <label>Firma <input name="company"></label>
-    <label>E-mail <input name="email" type="email"></label>
-    <label>Limit miejsca (MB, 0 = bez limitu; 10240 = 10 GB)
-      <input name="quota_mb" type="number" min="0" step="100" value="{{ default_quota }}"></label>
-    <label>Hasło startowe <input name="password" value="{{ suggested }}" required minlength="10"></label>
-    <p class="muted small">Klient przy pierwszym logowaniu musi ustawić własne hasło.</p>
-    <button class="primary">Utwórz konto</button>
+    <div class="form-grid">
+      <label>Firma <input name="company" placeholder="np. ACME Sp. z o.o."></label>
+      <label>Osoba kontaktowa <input name="display_name" placeholder="np. Jan Kowalski"></label>
+      <label>Login <input name="username" required pattern="[a-zA-Z0-9._\-]{3,40}" placeholder="np. jan.kowalski">
+        <span class="hint">3–40 znaków: litery bez polskich znaków, cyfry, kropka, myślnik</span></label>
+      <label>E-mail <input name="email" type="email" placeholder="opcjonalnie"></label>
+      <label>Limit miejsca
+        <span class="input-suffix"><input name="quota_gb" type="number" min="0" step="any" value="{{ default_quota|gb }}"><span>GB</span></span>
+        <span class="hint">0 = bez limitu · liczą się tylko pliki wysłane przez klienta</span></label>
+      <label>Hasło startowe <input name="password" value="{{ suggested }}" required minlength="10">
+        <span class="hint">Klient zmieni je przy pierwszym logowaniu</span></label>
+    </div>
+    <div class="row"><button class="primary">{{ ui.icon("plus") }}Utwórz konto</button><a class="button ghost" href="/admin/clients">Anuluj</a></div>
   </form>
 </section>
 {% endblock %}

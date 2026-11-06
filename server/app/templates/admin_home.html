@@ -1,68 +1,83 @@
 {% extends "base.html" %}
+{% block title %}Pulpit — {{ site_name }}{% endblock %}
+{% block heading %}Dzień dobry, {{ (user.display_name or user.username).split()[0] }}{% endblock %}
+{% block subtitle %}<div class="subtitle">Przegląd klientów, plików i kopii zapasowych</div>{% endblock %}
+{% block actions %}
+<a class="button" href="/admin/devices/new">{{ ui.icon("laptop") }}Dodaj pracownika</a>
+<a class="button primary" href="/admin/clients/new">{{ ui.icon("plus") }}Nowy klient</a>
+{% endblock %}
 {% block content %}
-<div class="row"><h1>Klienci</h1><a class="button primary" href="/admin/clients/new">+ Nowy klient</a></div>
-<section class="card">
-<table class="list">
-  <thead><tr><th>Klient</th><th>Firma</th><th>Login</th><th>Pliki</th><th>Ostatni plik</th><th>Ostatnia wiadomość</th><th>Status</th></tr></thead>
-  <tbody>
-  {% for c in clients %}
-  <tr class="{{ '' if c.active else 'inactive' }}">
-    <td><a href="/admin/clients/{{ c.id }}">{{ c.display_name or c.username }}</a></td>
-    <td>{{ c.company }}</td><td>{{ c.username }}</td>
-    <td>{{ c.file_count }} ({{ c.total_size|size }}){% if c.quota_mb %}<br><span class="small muted">limit: {{ c.own_size|size }} / {{ (c.quota_mb * 1048576)|size }}</span>{% endif %}</td>
-    <td>{{ c.last_upload|dt }}</td><td>{{ c.last_message|dt }}</td>
-    <td>{{ 'aktywne' if c.active else 'zablokowane' }}</td>
-  </tr>
-  {% else %}<tr><td colspan="7" class="muted">Nie ma jeszcze klientów.</td></tr>{% endfor %}
-  </tbody>
-</table>
-</section>
-
-<h2>Ostatnio przesłane pliki</h2>
-<section class="card">
-<table class="list">
-  <thead><tr><th>Plik</th><th>Klient</th><th>Rozmiar</th><th>Data</th></tr></thead>
-  <tbody>
-  {% for f in recent %}
-  <tr><td><a href="/files/{{ f.id }}/download">{{ f.original_name }}</a></td>
-      <td><a href="/admin/clients/{{ f.client_id }}">{{ f.display_name or f.username }}</a> {{ f.company }}</td>
-      <td>{{ f.size|size }}</td><td>{{ f.uploaded_at|dt }}</td></tr>
-  {% else %}<tr><td colspan="4" class="muted">Brak.</td></tr>{% endfor %}
-  </tbody>
-</table>
-</section>
-
-{% if backup_status is not none %}
-<div class="row"><h2>Kopia na drugi dysk</h2>
-  <form method="post" action="/admin/backup/run"><input type="hidden" name="csrf" value="{{ csrf }}">
-    <button {{ 'disabled' if backup_running else '' }}>{{ 'Kopia trwa…' if backup_running else 'Zrób kopię teraz' }}</button></form>
+<div class="kpis">
+  {{ ui.kpi("Aktywni klienci", kpi.clients, "kont w portalu", "users") }}
+  {{ ui.kpi("Pliki od klientów (30 dni)", kpi.client_files_30.n, kpi.client_files_30.b|size ~ " łącznie", "upload", charts.sparkline(spark)) }}
+  {{ ui.kpi("Kopie pracowników", kpi.backups.b|size, kpi.backups.n ~ " plików · " ~ devices_online ~ "/" ~ devices|length ~ " komputerów online", "shield") }}
+  {{ ui.kpi("Aktywne linki", kpi.links.n, kpi.links.d ~ " pobrań łącznie", "link") }}
 </div>
-<section class="card">
-  {% if backup_status.error %}
-    <div class="flash {{ 'warn' if not backup_status.finished_at else 'error' }}">{{ backup_status.error }}</div>
-  {% else %}
-    <p>Ostatnia kopia: <b>{{ backup_status.finished_at|dt }}</b> (UTC) · skopiowano {{ backup_status.copied_files }} plików
-      ({{ backup_status.copied_bytes|size }}) w {{ backup_status.seconds }} s ·
-      wolne miejsce: <b>{{ backup_status.free_bytes|size }}</b> z {{ backup_status.total_bytes|size }}</p>
-    {% if backup_status.low_space %}<div class="flash error">Na dysku z kopią zostało mniej niż 10% miejsca.</div>{% endif %}
-  {% endif %}
-  <p class="small muted">Codziennie: baza danych (14 dni wstecz), pliki klientów i pliki do linków. Pliki usunięte w portalu zostają w kopii.</p>
-</section>
-{% endif %}
 
-<div class="row"><h2>Komputery pracowników (kopie zapasowe)</h2><a class="button" href="/admin/devices/new">+ Dodaj komputer</a></div>
+<div class="grid g-main mb">
+  <section class="card">
+    <div class="card-head"><h2>Przesłane pliki — ostatnie 30 dni</h2><span class="spacer"></span><span class="muted small">liczba plików dziennie</span></div>
+    {{ charts.stacked_columns(days, [("client", "Od klientów"), ("agency", "Od BSK Media")], "Przesłane pliki w ostatnich 30 dniach") }}
+  </section>
+  <section class="card">
+    <div class="card-head">{{ ui.icon("drive") }}<h2>Dyski NAS</h2></div>
+    {% for d in disks %}
+    <div class="disk">
+      <div class="disk-head"><b>{{ d.label }}</b><span class="muted num">{{ d.free|size }} wolne</span></div>
+      {{ charts.meter(d.used, d.total, d.label) }}
+      <div class="small muted num">{{ d.used|size }} z {{ d.total|size }}</div>
+    </div>
+    {% else %}{{ ui.empty("Brak danych o dyskach.", "drive") }}{% endfor %}
+    {% if backup_status is not none %}
+    <div class="disk">
+      <div class="disk-head"><b>Kopia na drugi dysk</b>
+        <form method="post" action="/admin/backup/run" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}">
+          <button class="btn-sm" {{ 'disabled' if backup_running }}>{{ 'Kopia trwa…' if backup_running else 'Zrób kopię teraz' }}</button></form></div>
+      {% if backup_status.error %}<div class="small {{ 'muted' if not backup_status.finished_at else 'danger' }}">{{ backup_status.error }}</div>
+      {% else %}<div class="small"><span class="tag ok">● OK</span> Ostatnia kopia {{ backup_status.finished_at|ago }} · skopiowano {{ backup_status.copied_files }} plików ({{ backup_status.copied_bytes|size }})</div>
+        {% if backup_status.low_space %}<div class="state critical">● Na dysku z kopią kończy się miejsce</div>{% endif %}{% endif %}
+    </div>
+    {% endif %}
+  </section>
+</div>
+
+<div class="grid g-main mb">
+  <section class="card">
+    <div class="card-head"><h2>Ostatnio przesłane pliki</h2><span class="spacer"></span><a href="/admin/clients" class="small">Wszyscy klienci →</a></div>
+    {% if recent %}
+    <div class="table-wrap"><table class="list"><tbody>
+      {% for f in recent %}
+      <tr>
+        <td><div class="file">{{ ui.ficon(f.original_name) }}<div><a href="/files/{{ f.id }}/download">{{ f.original_name }}</a>
+          <div class="meta">{{ f.size|size }} · <a href="/admin/clients/{{ f.client_id }}">{{ f.company or f.display_name or f.username }}</a></div></div></div></td>
+        <td class="hide-sm">{% if f.uploader_role == 'admin' %}<span class="tag agency">BSK Media</span>{% else %}<span class="tag">Klient</span>{% endif %}</td>
+        <td class="muted small nowrap" title="{{ f.uploaded_at|dt }}">{{ f.uploaded_at|ago }}</td>
+      </tr>
+      {% endfor %}
+    </tbody></table></div>
+    {% else %}{{ ui.empty("Nikt jeszcze nic nie przesłał.") }}{% endif %}
+  </section>
+  <section class="card">
+    <div class="card-head"><h2>Najwięcej miejsca zajmują</h2></div>
+    {% set items = [] %}{% for c in top if c.total_size %}{% set _ = items.append((c.company or c.display_name or c.username, c.total_size, "/admin/clients/" ~ c.id)) %}{% endfor %}
+    {{ charts.hbars(items) }}
+  </section>
+</div>
+
 <section class="card">
-<table class="list">
-  <thead><tr><th>Komputer</th><th>Pracownik</th><th>Pliki w kopii</th><th>Ostatni kontakt</th><th>Status</th></tr></thead>
-  <tbody>
-  {% for d in devices %}
-  <tr class="{{ '' if d.active else 'inactive' }}">
-    <td><a href="/admin/devices/{{ d.id }}">{{ d.name }}</a></td><td>{{ d.employee }}</td>
-    <td>{{ d.file_count }} ({{ d.total_size|size }}){% if d.quota_mb %}<br><span class="small muted">limit {{ (d.quota_mb * 1048576)|size }}</span>{% endif %}</td><td>{{ d.last_seen|dt or 'nigdy' }}</td>
-    <td>{{ 'aktywny' if d.active else 'wyłączony' }}</td>
-  </tr>
-  {% else %}<tr><td colspan="5" class="muted">Nie dodano jeszcze komputerów.</td></tr>{% endfor %}
-  </tbody>
-</table>
+  <div class="card-head"><h2>Pracownicy i kopie zapasowe</h2><span class="spacer"></span><a href="/admin/devices" class="small">Wszystkie →</a></div>
+  {% if devices %}
+  <div class="table-wrap"><table class="list"><tbody>
+    {% for d in devices[:6] %}
+    <tr class="{{ '' if d.active else 'inactive' }}">
+      <td><div class="person"><span class="avatar">{{ (d.employee or d.name)|initials }}</span><div><b><a href="/admin/devices/{{ d.id }}">{{ d.employee or d.name }}</a></b><span>{{ d.name }}</span></div></div></td>
+      <td class="nowrap"><span class="dot {{ 'on' if online(d.last_seen) }}"></span> <span class="small">{{ 'online' if online(d.last_seen) else 'offline' }} · {{ d.last_seen|ago }}</span></td>
+      <td>{% if d.quota_mb %}{{ charts.meter(d.total_size, d.quota_mb * 1048576, d.name) }}{% endif %}
+        <div class="small muted num">{{ d.total_size|size }}{% if d.quota_mb %} z {{ (d.quota_mb * 1048576)|size }}{% endif %} · {{ d.file_count }} plików</div></td>
+    </tr>
+    {% endfor %}
+  </tbody></table></div>
+  {% else %}{{ ui.empty("Dodaj pierwszego pracownika, aby jego komputer robił kopie na NAS.", "laptop") }}
+  <p class="center"><a class="button primary" href="/admin/devices/new">{{ ui.icon("plus") }}Dodaj pracownika</a></p>{% endif %}
 </section>
 {% endblock %}

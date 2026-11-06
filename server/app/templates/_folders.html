@@ -1,0 +1,13 @@
+{% macro folders_fields(special, chosen, extra) -%}
+<div class="full stack">
+  <span class="label-like">Co kopiować z komputera</span>
+  <div class="checks">
+    {% for key, label in special.items() %}
+    <label class="check"><input type="checkbox" name="special" value="{{ key }}" {{ 'checked' if key in chosen }}> {{ label }}</label>
+    {% endfor %}
+  </div>
+  <label>Dodatkowe foldery <span class="hint">(po jednym w linii, np. <code>C:\Projekty</code> albo <code>D:\Klienci</code>)</span>
+    <textarea name="extra_folders" rows="2" placeholder="C:\Projekty">{{ extra }}</textarea></label>
+  <span class="hint">Program BSK Backup pobierze te ustawienia sam (w ciągu godziny). Bez zaznaczenia kopiowane są Pulpit i Dokumenty.</span>
+</div>
+{%- endmacro %}

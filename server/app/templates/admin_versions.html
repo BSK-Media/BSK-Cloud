@@ -1,20 +1,21 @@
 {% extends "base.html" %}
+{% block heading %}Wersje pliku{% endblock %}
+{% block subtitle %}<div class="subtitle"><code>{{ rel }}</code> · {{ device.employee or device.name }}</div>{% endblock %}
+{% block actions %}<a class="button" href="/admin/devices/{{ device.id }}">{{ ui.icon("back") }}{{ device.employee or device.name }}</a>{% endblock %}
 {% block content %}
-<p><a href="/admin/devices/{{ device.id }}">← {{ device.name }}</a></p>
-<h1>{{ rel }}</h1>
 <section class="card">
-<table class="list">
+<div class="table-wrap"><table class="list">
   <thead><tr><th>Wersja</th><th>Rozmiar</th><th></th></tr></thead>
   <tbody>
   {% if current %}
-  <tr><td><b>Aktualna</b> ({{ current.uploaded_at|dt }})</td><td>{{ current.size|size }}</td>
-      <td><a href="/admin/devices/{{ device.id }}/download?path={{ rel|q }}">Pobierz</a></td></tr>
+  <tr><td><span class="tag ok">aktualna</span> {{ current.uploaded_at|dt }}</td><td>{{ current.size|size }}</td>
+      <td class="actions"><a class="button btn-sm" href="/admin/devices/{{ device.id }}/download?path={{ rel|q }}">{{ ui.icon("download") }}Pobierz</a></td></tr>
   {% endif %}
   {% for v in versions %}
-  <tr><td>{{ v.stamp }} (UTC)</td><td>{{ v.size|size }}</td>
-      <td><a href="/admin/devices/{{ device.id }}/download?path={{ rel|q }}&version={{ v.name|q }}">Pobierz</a></td></tr>
+  <tr><td>{{ v.stamp }} <span class="muted small">(UTC)</span></td><td>{{ v.size|size }}</td>
+      <td class="actions"><a class="button btn-sm" href="/admin/devices/{{ device.id }}/download?path={{ rel|q }}&version={{ v.name|q }}">{{ ui.icon("download") }}Pobierz</a></td></tr>
   {% endfor %}
   </tbody>
-</table>
+</table></div>
 </section>
 {% endblock %}

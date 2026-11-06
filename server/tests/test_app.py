@@ -1,4 +1,6 @@
 import hashlib
+import html
+import json
 import os
 import re
 
@@ -422,3 +424,129 @@ def test_backup_to_second_disk(tmp_path):
     assert "Kopia na drugi dysk" in page and "Ostatnia kopia" in page
     tok = csrf_of(c, "/admin")
     assert "Kopia uruchomiona" in c.post("/admin/backup/run", data={"csrf": tok}).text
+
+
+@pytest.fixture()
+def office_app(tmp_path):
+    s = Settings(data_dir=tmp_path, secret_key="x" * 40, cookie_secure=False, admin_username="admin",
+                 admin_password=ADMIN_PW, office_url="https://office.example", office_secret="s" * 32,
+                 app_internal_url="http://app:8000", public_url="https://cloud.example")
+    return create_app(s)
+
+
+def test_office_edit_and_save(office_app):
+    import http.server
+    import threading
+    import urllib.parse
+    from app import office
+    app = office_app
+    admin = TestClient(app)
+    login(admin, "admin", ADMIN_PW)
+    create_client_account(admin)
+    tok = csrf_of(admin, "/admin/clients/2")
+    r = admin.post("/admin/clients/2/new-doc", data={"csrf": tok, "kind": "xlsx", "title": "Budżet"},
+                   follow_redirects=False)
+    assert r.headers["location"] == "/files/1/edit"
+    page = admin.get("/files/1/edit")
+    assert page.status_code == 200 and "office.example/web-apps/apps/api/documents/api.js" in page.text
+    assert "frame-src https://office.example" in page.headers["content-security-policy"]
+    cfg = json.loads(html.unescape(re.search(r'data-config="([^"]+)"', page.text).group(1)))
+    assert cfg["document"]["key"] == "bsk-1-1" and cfg["editorConfig"]["mode"] == "edit"
+    assert office.jwt_decode(cfg["token"], "s" * 32)["document"]["title"] == "Budżet.xlsx"
+    # serwer dokumentów pobiera plik po podpisanym adresie (bez sesji)
+    file_url = urllib.parse.urlsplit(cfg["document"]["url"])
+    anon = TestClient(app)
+    assert anon.get(file_url.path + "?" + file_url.query).content[:2] == b"PK"
+    assert anon.get(file_url.path + "?sig=1.zly").status_code == 403
+    # klient też może edytować ten sam plik (współedycja)
+    c = TestClient(app)
+    login(c, "jan.kowalski", "KlientHaslo1")
+    change_pw(c, "KlientHaslo1")
+    ccfg = json.loads(html.unescape(re.search(r'data-config="([^"]+)"',
+                                               c.get("/files/1/edit").text).group(1)))
+    assert ccfg["document"]["key"] == cfg["document"]["key"]  # ta sama sesja edycji
+    # callback z nową wersją: serwer dokumentów udostępnia plik pod adresem url
+    new_content = b"PK-nowa-wersja"
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(new_content)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    cb = urllib.parse.urlsplit(cfg["editorConfig"]["callbackUrl"])
+    payload = {"key": "bsk-1-1", "status": 2, "url": f"http://127.0.0.1:{srv.server_port}/cache/x.xlsx", "users": ["2"]}
+    bad = anon.post(cb.path + "?" + cb.query, json={**payload, "token": office.jwt_encode(payload, "zly" * 11)})
+    assert bad.json()["error"] == 1
+    r = anon.post(cb.path + "?" + cb.query, json={**payload, "token": office.jwt_encode(payload, "s" * 32)})
+    srv.shutdown()
+    assert r.json() == {"error": 0}
+    stored = app.state.settings.clients_dir / "jan.kowalski" / "od BSK Media" / "Budżet.xlsx"
+    assert stored.read_bytes() == new_content
+    assert list((stored.parent / ".wersje").iterdir())  # poprzednia wersja zachowana
+    row = app.state.db.one("SELECT * FROM files WHERE id = 1")
+    assert row["office_version"] == 2 and row["modified_by"] == 2 and row["size"] == len(new_content)
+    assert "edytowano" in c.get("/files").text
+
+
+def test_blank_documents_are_valid():
+    import io
+    import zipfile
+    from xml.dom import minidom
+    from app import office
+    for kind in ("xlsx", "docx"):
+        data, ext = office.blank_document(kind)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        for name in z.namelist():
+            minidom.parseString(z.read(name))  # każda część to poprawny XML
+        assert "[Content_Types].xml" in z.namelist()
+
+
+def test_office_disabled_and_jwt(app, admin):
+    from app import office
+    create_client_account(admin)
+    tok = csrf_of(admin, "/admin/clients/2")
+    r = admin.post("/admin/clients/2/new-doc", data={"csrf": tok, "kind": "docx", "title": ""}, follow_redirects=False)
+    assert r.headers["location"] == "/admin/clients/2"  # bez serwera dokumentów: plik do pobrania
+    assert admin.get("/files/1/edit").status_code == 404
+    assert "Edytuj online" not in admin.get("/admin/clients/2").text
+    t = office.jwt_encode({"a": 1, "exp": 1}, "k")
+    with pytest.raises(ValueError):
+        office.jwt_decode(t, "k")  # wygasły
+
+
+def test_quota_in_gb_and_device_folders(app, admin):
+    tok = csrf_of(admin, "/admin/devices/new")
+    r = admin.post("/admin/devices/new", data={"name": "LAPTOP-OLAF", "employee": "Olaf", "quota_gb": "1024",
+                                               "special": ["@pulpit", "@dokumenty", "@zly"],
+                                               "extra_folders": "C:\\Projekty\n\n D:\\Klienci ", "csrf": tok})
+    token = re.search(r'class="token">([^<]+)<', r.text).group(1)
+    d = app.state.db.one("SELECT * FROM devices WHERE name = 'LAPTOP-OLAF'")
+    assert d["quota_mb"] == 1024 * 1024
+    assert d["folders"].splitlines() == ["@pulpit", "@dokumenty", "C:\\Projekty", "D:\\Klienci"]
+    cfg = TestClient(app).get("/api/agent/config", headers={"Authorization": f"Bearer {token}"}).json()
+    assert cfg["folders"] == ["@pulpit", "@dokumenty", "C:\\Projekty", "D:\\Klienci"]
+    page = admin.get("/admin/devices/1").text
+    assert "1 TB" in page and 'value="1024"' in page
+    assert "Olaf" in admin.get("/admin/devices").text
+    tok = csrf_of(admin, "/admin/clients/new")
+    admin.post("/admin/clients/new", data={"username": "firma", "password": "KlientHaslo1", "quota_gb": "2,5", "csrf": tok})
+    assert app.state.db.one("SELECT quota_mb FROM users WHERE username = 'firma'")["quota_mb"] == 2560
+
+
+def test_dashboard_and_lists_render(app, admin):
+    create_client_account(admin)
+    tok = csrf_of(admin, "/admin/clients/2")
+    admin.post("/admin/clients/2/upload", data={"csrf": tok}, files=[("files", ("logo.png", b"x" * 1000))])
+    page = admin.get("/admin").text
+    for text in ("Aktywni klienci", "Przesłane pliki", "Dyski NAS", "Najwięcej miejsca", "logo.png", "<svg"):
+        assert text in page, text
+    assert "ACME" in admin.get("/admin/clients").text
+    assert "ACME" in admin.get("/admin/clients?q=acme").text
+    assert "Brak klientów" in admin.get("/admin/clients?q=zzz").text
+    assert 'style="' not in page  # CSP: bez stylów inline

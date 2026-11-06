@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Klienci — {{ site_name }}{% endblock %}
+{% block heading %}Klienci{% endblock %}
+{% block subtitle %}<div class="subtitle">{{ clients|length }} kont · pliki, wiadomości i miejsce na dysku</div>{% endblock %}
+{% block actions %}<a class="button primary" href="/admin/clients/new">{{ ui.icon("plus") }}Nowy klient</a>{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <form method="get" class="search">{{ ui.icon("search") }}<input name="q" value="{{ q }}" placeholder="Szukaj klienta, firmy, e-maila…"></form>
+  </div>
+  {% if clients %}
+  <div class="table-wrap"><table class="list">
+    <thead><tr><th>Klient</th><th>Pliki</th><th>Miejsce</th><th class="hide-sm">Ostatnia aktywność</th><th class="hide-sm">Status</th></tr></thead>
+    <tbody>
+    {% for c in clients %}
+    <tr class="{{ '' if c.active else 'inactive' }}">
+      <td><div class="person"><span class="avatar">{{ (c.company or c.display_name or c.username)|initials }}</span>
+        <div><b><a href="/admin/clients/{{ c.id }}">{{ c.company or c.display_name or c.username }}</a></b>
+        <span>{{ c.display_name }}{% if c.display_name and c.company %} · {% endif %}{{ c.username }}</span></div></div></td>
+      <td class="num">{{ c.file_count }}<div class="small muted">{{ c.total_size|size }}</div></td>
+      <td>{% if c.quota_mb %}{{ charts.meter(c.own_size, c.quota_mb * 1048576, "Miejsce klienta") }}
+        <div class="small muted num">{{ c.own_size|size }} z {{ (c.quota_mb * 1048576)|size }}</div>
+        {% else %}<span class="small muted">bez limitu</span>{% endif %}</td>
+      <td class="hide-sm small muted">{% set last = [c.last_upload or '', c.last_message or '']|max %}{{ last|ago if last else 'brak' }}</td>
+      <td class="hide-sm">{% if c.active %}<span class="tag ok">aktywne</span>{% else %}<span class="tag off">zablokowane</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}{{ ui.empty("Brak klientów" ~ (" pasujących do „" ~ q ~ "”" if q else "") ~ ".", "users") }}{% endif %}
+</section>
+{% endblock %}

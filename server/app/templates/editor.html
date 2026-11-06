@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ file.original_name }} — {{ site_name }}{% endblock %}
+{% block heading %}<span class="row">{{ ui.ficon(file.original_name) }}{{ file.original_name }}</span>{% endblock %}
+{% block subtitle %}<div class="subtitle">Zmiany zapisują się automatycznie · osoby, które mają plik otwarty, widzą je na żywo</div>{% endblock %}
+{% block actions %}
+<a class="button" href="/files/{{ file.id }}/download">{{ ui.icon("download") }}Pobierz</a>
+<a class="button primary" href="{{ back }}">{{ ui.icon("back") }}Zamknij</a>
+{% endblock %}
+{% block content %}
+<div class="editor-wrap"><div id="office-editor" data-config="{{ config }}"></div></div>
+<script src="{{ office_url }}/web-apps/apps/api/documents/api.js"></script>
+<script src="/static/office.js"></script>
+{% endblock %}

@@ -242,6 +242,22 @@ Kopie komputerów pracowników są pomijane, bo to już są kopie. Stan ostatnie
 i przycisk **Zrób kopię teraz** znajdziesz w panelu admina. Odtworzenie bazy polega na zatrzymaniu portalu
 i skopiowaniu wybranego `bsk-kopie/baza/bskcloud-RRRR-MM-DD.db` jako `bsk-cloud/baza/bskcloud.db`.
 
+# Edycja dokumentów online (Excel, Word, PowerPoint)
+Ty i klient możecie otworzyć ten sam plik w przeglądarce i edytować go jednocześnie. Zmiany drugiej
+osoby widać na żywo, a po zamknięciu edytora nowa wersja trafia na NAS (poprzednie w `.wersje/`).
+Działa na serwerze dokumentów **ONLYOFFICE Docs** (wersja Community, darmowa, do 20 jednoczesnych
+połączeń). Potrzebuje ok. 2–3 GB RAM.
+
+Uruchomienie:
+1. W `.env` ustaw `BSK_OFFICE_URL=https://office.bskmedia.pl` i `BSK_OFFICE_SECRET`
+   (losowy, np. `od -An -tx1 -N24 /dev/urandom | tr -d ' \n'`).
+2. W Cloudflare, w tunelu, dodaj trasę: `office.bskmedia.pl` → `HTTP` → `office:80`.
+3. `sudo docker compose --profile tunnel --profile office up -d --build`. Pierwszy start serwera
+   dokumentów trwa 1–3 minuty.
+
+Przy plikach `.xlsx`, `.docx`, `.pptx`, `.ods`, `.odt`, `.csv` pojawi się przycisk **Edytuj online**.
+W panelu klienta jest też **Nowy arkusz / Nowy dokument**.
+
 # Bezpieczeństwo i utrzymanie
 - Ruch jest szyfrowany (HTTPS). Hasła są zapisane jako bcrypt, a po wielu błędnych logowaniach
   następuje blokada. Formularze mają ochronę CSRF, strona ma nagłówki bezpieczeństwa (CSP, HSTS).

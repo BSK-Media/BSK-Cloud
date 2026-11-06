@@ -125,3 +125,26 @@ document.querySelectorAll("[data-copy]").forEach((btn) => {
     setTimeout(() => { btn.textContent = "Kopiuj"; }, 2000);
   });
 });
+
+// Zakładki filtrujące listę plików (Wszystkie / od klienta / od BSK Media)
+document.querySelectorAll("[data-filter-tabs]").forEach((tabs) => {
+  const table = tabs.closest(".card").querySelector("table[data-filterable]");
+  if (!table) return;
+  tabs.querySelectorAll("button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      tabs.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
+      table.querySelectorAll("tbody tr").forEach((tr) => {
+        tr.hidden = btn.dataset.f !== "all" && tr.dataset.from !== btn.dataset.f;
+      });
+    });
+  });
+});
+
+// Wątek wiadomości zaczyna się od najnowszej
+document.querySelectorAll("[data-scroll-end]").forEach((el) => { el.scrollTop = el.scrollHeight; });
+
+// Zamknij menu boczne na telefonie po wyborze pozycji
+document.querySelectorAll(".sidebar a").forEach((a) => a.addEventListener("click", () => {
+  const t = document.getElementById("nav-toggle");
+  if (t) t.checked = false;
+}));

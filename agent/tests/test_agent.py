@@ -176,3 +176,37 @@ def test_lan_preferred_when_available(tmp_path, server):
     agent.scan()
     agent.work_once()
     assert (settings.backups_dir / "pc-test" / "Biuro" / "a.txt").read_text() == "z biura"
+
+
+def test_folders_from_admin_panel(tmp_path, server):
+    """Admin ustawia foldery w panelu -> agent je pobiera i zaczyna kopiować."""
+    url, token, settings, _ = server
+    from app.db import Database  # noqa: F401
+    projekty = tmp_path / "Projekty"
+    projekty.mkdir()
+    (projekty / "plan.txt").write_text("plan")
+    os.utime(projekty / "plan.txt", (time.time() - 60, time.time() - 60))
+    import sqlite3
+    con = sqlite3.connect(settings.db_path)
+    con.execute("UPDATE devices SET folders = ? WHERE name = 'PC-TEST'", (f"{projekty}\n@nieznany",))
+    con.commit()
+    con.close()
+    start = tmp_path / "Stary"
+    start.mkdir()
+    agent, state = make_agent(tmp_path, url, token, start)
+    assert agent.refresh_remote_config() is True
+    assert [str(r) for r, _ in agent.roots] == [str(projekty)]
+    assert agent.refresh_remote_config() is False  # bez zmian
+    agent.scan()
+    agent.work_once()
+    assert (settings.backups_dir / "pc-test" / "Projekty" / "plan.txt").read_text() == "plan"
+
+
+def test_resolve_special_folders(tmp_path, monkeypatch):
+    monkeypatch.setattr(bsk_backup.Path, "home", classmethod(lambda cls: tmp_path))
+    (tmp_path / "OneDrive" / "Pulpit").mkdir(parents=True)
+    (tmp_path / "Documents").mkdir()
+    assert bsk_backup.resolve_folder("@pulpit") == tmp_path / "OneDrive" / "Pulpit"
+    assert bsk_backup.resolve_folder("@dokumenty") == tmp_path / "Documents"
+    assert bsk_backup.resolve_folder("@obrazy") is None
+    assert bsk_backup.resolve_folder("@cos") is None
