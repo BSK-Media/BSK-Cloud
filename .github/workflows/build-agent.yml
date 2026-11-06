@@ -1,0 +1,53 @@
+# Buduje BSK Backup dla Windows (.exe) i testuje serwer.
+# Gotowy program: zakładka Actions -> ostatnie uruchomienie -> Artifacts -> "BSK-Backup-windows"
+# albo (po wypchnięciu tagu v1.0.0 itp.) zakładka Releases.
+name: Testy i build BSK Backup
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - run: pip install -r server/requirements-dev.txt -r agent/requirements.txt
+      - run: cd server && python -m pytest -q
+      - run: cd agent && python -m pytest -q
+
+  windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - name: Build
+        working-directory: agent
+        run: |
+          python -m pip install -r requirements.txt pyinstaller
+          pyinstaller --noconfirm --onefile --name bsk-backup bsk_backup.py
+          pyinstaller --noconfirm --onefile --noconsole --name bsk-backup-agent bsk_backup.py
+          Copy-Item install-windows.ps1, uninstall-windows.ps1 dist\
+          .\dist\bsk-backup.exe version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BSK-Backup-windows
+          path: agent/dist/*
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd agent/dist && 7z a ../../BSK-Backup-windows.zip . >/dev/null && cd ../..
+          gh release create "${GITHUB_REF_NAME}" BSK-Backup-windows.zip --title "BSK Backup ${GITHUB_REF_NAME}" --notes "Rozpakuj do folderu instalator/ na NAS."

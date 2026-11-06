@@ -17,6 +17,7 @@
       <a href="/admin">Klienci i kopie</a>
       <a href="/admin/clients/new">+ Klient</a>
       <a href="/admin/devices/new">+ Komputer</a>
+      <a href="/admin/shares">Linki do pobrania</a>
       <a href="/admin/log">Dziennik</a>
     {% else %}
       <a href="/files">Moje pliki</a>
@@ -31,6 +32,14 @@
 </header>
 <main>
   {% for kind, msg in flashes %}<div class="flash {{ kind }}">{{ msg }}</div>{% endfor %}
+  {% if new_links %}
+  <div class="flash ok">
+    <b>Link do pobrania gotowy</b> — skopiuj i wyślij klientowi:
+    {% for url in new_links %}
+    <div class="copyrow"><input readonly value="{{ url }}" data-copy-source><button type="button" data-copy>Kopiuj</button></div>
+    {% endfor %}
+  </div>
+  {% endif %}
   {% block content %}{% endblock %}
 </main>
 <footer>© BSK Media</footer>

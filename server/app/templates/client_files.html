@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Witaj, {{ user.display_name or user.username }}</h1>
+{% include "_quota.html" %}
 <div class="grid">
   <section class="card">
     <h2>Wyślij pliki do BSK Media</h2>

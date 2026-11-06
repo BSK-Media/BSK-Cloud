@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Instalacja BSK Backup — {{ site_name }}{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>BSK Backup</h1>
+  <p>Program do automatycznej kopii zapasowej plików na serwer BSK Media dla komputera
+    <b>{{ link.device_name }}</b>{% if link.employee %} ({{ link.employee }}){% endif %}.</p>
+  {% if ready %}
+  <ol class="steps">
+    <li><a class="button primary" href="/instaluj/{{ code }}/BSK-Backup.zip">Pobierz BSK-Backup.zip</a></li>
+    <li>Otwórz pobrany plik → <b>Wyodrębnij wszystkie</b>.</li>
+    <li>W rozpakowanym folderze kliknij dwukrotnie <b>ZAINSTALUJ.cmd</b>.</li>
+    <li>Jeśli Windows pokaże „System Windows ochronił ten komputer”, kliknij <b>Więcej informacji → Uruchom mimo to</b>.</li>
+  </ol>
+  <p class="small muted">Nie są potrzebne uprawnienia administratora. Program działa w tle i włącza się sam po zalogowaniu.
+    Kopiowane są Pulpit i Dokumenty. Link jest jednorazowy dla tego komputera — nie przekazuj go dalej.</p>
+  {% else %}
+  <div class="flash warn">Instalator nie jest jeszcze dostępny na serwerze. Daj znać administratorowi.</div>
+  {% endif %}
+</section>
+{% endblock %}

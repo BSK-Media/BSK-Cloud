@@ -2,11 +2,12 @@
 {% block content %}
 <section class="card narrow">
   <h1>Dodaj komputer pracownika</h1>
-  <p class="muted">Po zapisaniu zobaczysz token, który wpisujesz w programie „BSK Backup” na tym komputerze.</p>
+  <p class="muted">Po zapisaniu dostaniesz link instalacyjny dla pracownika (ważny 7 dni) — pracownik otwiera go na swoim komputerze, pobiera program i instaluje dwoma kliknięciami.</p>
   <form method="post" action="/admin/devices/new" class="stack">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label>Nazwa komputera (np. LAPTOP-ANNA) <input name="name" required maxlength="80"></label>
     <label>Pracownik <input name="employee" maxlength="120"></label>
+    <label>Limit miejsca na kopie (MB, 0 = bez limitu) <input name="quota_mb" type="number" min="0" step="1024" value="0"></label>
     <button class="primary">Dodaj i wygeneruj token</button>
   </form>
 </section>

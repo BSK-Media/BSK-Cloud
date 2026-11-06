@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ link.name }} — {{ site_name }}{% endblock %}
+{% block content %}
+<section class="card narrow center">
+  <p class="muted small">BSK Media udostępnia Ci plik</p>
+  <h1 class="filename">{{ link.name }}</h1>
+  <p class="muted">{{ link.size|size }}{% if link.expires_at %} · link ważny do {{ link.expires_at|dt }} (UTC){% endif %}</p>
+  {% if link.note %}<p>{{ link.note }}</p>{% endif %}
+  {% if unlocked %}
+    <a class="button primary big" href="/s/{{ token }}/pobierz">Pobierz plik</a>
+    <p class="small muted">Duży plik? Jeśli pobieranie się przerwie, większość przeglądarek pozwala je wznowić.</p>
+  {% else %}
+    <form method="post" action="/s/{{ token }}" class="stack">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label>Hasło do pliku <input name="password" type="password" required autofocus></label>
+      <button class="primary">Dalej</button>
+    </form>
+  {% endif %}
+</section>
+{% endblock %}

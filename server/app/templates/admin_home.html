@@ -9,7 +9,7 @@
   <tr class="{{ '' if c.active else 'inactive' }}">
     <td><a href="/admin/clients/{{ c.id }}">{{ c.display_name or c.username }}</a></td>
     <td>{{ c.company }}</td><td>{{ c.username }}</td>
-    <td>{{ c.file_count }} ({{ c.total_size|size }})</td>
+    <td>{{ c.file_count }} ({{ c.total_size|size }}){% if c.quota_mb %}<br><span class="small muted">limit: {{ c.own_size|size }} / {{ (c.quota_mb * 1048576)|size }}</span>{% endif %}</td>
     <td>{{ c.last_upload|dt }}</td><td>{{ c.last_message|dt }}</td>
     <td>{{ 'aktywne' if c.active else 'zablokowane' }}</td>
   </tr>
@@ -40,7 +40,7 @@
   {% for d in devices %}
   <tr class="{{ '' if d.active else 'inactive' }}">
     <td><a href="/admin/devices/{{ d.id }}">{{ d.name }}</a></td><td>{{ d.employee }}</td>
-    <td>{{ d.file_count }} ({{ d.total_size|size }})</td><td>{{ d.last_seen|dt or 'nigdy' }}</td>
+    <td>{{ d.file_count }} ({{ d.total_size|size }}){% if d.quota_mb %}<br><span class="small muted">limit {{ (d.quota_mb * 1048576)|size }}</span>{% endif %}</td><td>{{ d.last_seen|dt or 'nigdy' }}</td>
     <td>{{ 'aktywny' if d.active else 'wyłączony' }}</td>
   </tr>
   {% else %}<tr><td colspan="5" class="muted">Nie dodano jeszcze komputerów.</td></tr>{% endfor %}

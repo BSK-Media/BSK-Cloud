@@ -54,6 +54,10 @@ def new_device_token() -> str:
     return "bsk_" + secrets.token_urlsafe(32)
 
 
+def new_link_token() -> str:
+    return secrets.token_urlsafe(18)
+
+
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
