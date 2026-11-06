@@ -13,6 +13,7 @@
 param(
   [Parameter(Mandatory = $true)][string]$Server,
   [Parameter(Mandatory = $true)][string]$Token,
+  [string]$LanServer = "",
   [string[]]$Folders = @()
 )
 $ErrorActionPreference = "Stop"
@@ -37,6 +38,7 @@ Copy-Item (Join-Path $src "uninstall-windows.ps1") $dest -Force -ErrorAction Sil
 
 $cli = Join-Path $dest "bsk-backup.exe"
 $cfgArgs = @("configure", "--server", $Server, "--token", $Token)
+if ($LanServer) { $cfgArgs += @("--lan-server", $LanServer) }
 if ($Folders.Count -eq 0) {
   # Prawdziwe położenie Pulpitu i Dokumentów (uwzględnia przekierowanie do OneDrive)
   $Folders = @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFolderPath("MyDocuments")) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique

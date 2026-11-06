@@ -1,4 +1,5 @@
 import hashlib
+import os
 import re
 
 import pytest
@@ -295,3 +296,96 @@ def test_db_on_separate_disk(tmp_path):
     assert (tmp_path / "ssd" / "bskcloud.db").exists()
     assert not (tmp_path / "hdd" / "app" / "bskcloud.db").exists()
     assert (tmp_path / "hdd" / "klienci").is_dir()
+
+
+def test_browser_chunked_upload_resume_and_quota(app, admin, monkeypatch):
+    from app import chunks
+    create_client_account(admin)
+    c = TestClient(app)
+    login(c, "jan.kowalski", "KlientHaslo1")
+    change_pw(c, "KlientHaslo1")
+    tok = csrf_of(c, "/files")
+    h = {"X-CSRF-Token": tok}
+    data = bytes(range(256)) * 4000  # ~1 MB
+    assert c.post("/api/uploads", json={"name": "film.mp4", "size": len(data)}).status_code == 400  # bez CSRF
+    up = c.post("/api/uploads", json={"name": "film.mp4", "size": len(data)}, headers=h).json()
+    uid = up["id"]
+    r = c.put(f"/api/uploads/{uid}", params={"offset": 0}, content=data[:300_000], headers=h)
+    assert r.json()["received"] == 300_000
+    # zły offset (np. po zerwanym połączeniu) -> serwer mówi, skąd wznowić
+    r = c.put(f"/api/uploads/{uid}", params={"offset": 999}, content=b"x", headers=h)
+    assert r.status_code == 409 and r.json()["received"] == 300_000
+    r = c.put(f"/api/uploads/{uid}", params={"offset": 300_000}, content=data[300_000:], headers=h)
+    assert r.json()["status"] == "done"
+    # cudza wysyłka nie do odebrania
+    other = TestClient(app)
+    login(other, "admin", ADMIN_PW)
+    t2 = csrf_of(other, "/admin/clients/2")
+    assert other.post("/admin/clients/2/upload", data={"csrf": t2, "upload_ids": uid}).status_code == 400
+    # odbiór przez formularz klienta
+    r = c.post("/files/upload", data={"csrf": tok, "note": "duży plik", "upload_ids": uid})
+    assert "Wysłano plików: 1" in r.text
+    stored = app.state.settings.clients_dir / "jan.kowalski" / "film.mp4"
+    assert stored.read_bytes() == data
+    assert not list((app.state.settings.tmp_dir / "chunks").glob("*.part"))
+    row = app.state.db.one("SELECT sha256 FROM files WHERE original_name = 'film.mp4'")
+    assert row["sha256"] == hashlib.sha256(data).hexdigest()
+    # limit miejsca sprawdzany już przy rozpoczęciu wysyłki
+    t3 = csrf_of(admin, "/admin/clients/2")
+    admin.post("/admin/clients/2/edit", data={"display_name": "", "company": "", "email": "", "quota_mb": 1, "csrf": t3})
+    r = c.post("/api/uploads", json={"name": "b.bin", "size": 200_000}, headers=h)
+    assert r.status_code == 413 and "Brak miejsca" in r.json()["detail"]
+
+
+def test_chunk_hash_rebuilt_after_restart(app, admin, tmp_path):
+    from app import chunks
+    store = chunks.ChunkStore(app.state.db, app.state.settings.tmp_dir)
+    data = b"abc" * 100_000
+    row = store.create(name="x", size=len(data), user_id=1)
+
+    async def stream(b):
+        yield b
+
+    import asyncio
+    asyncio.run(store.write(row, 0, stream(data[:100_000])))
+    fresh = chunks.ChunkStore(app.state.db, app.state.settings.tmp_dir)  # „restart”: brak stanu w pamięci
+    done = asyncio.run(fresh.write(fresh.get(row["id"]), 100_000, stream(data[100_000:])))
+    assert done["status"] == "done" and done["sha256"] == hashlib.sha256(data).hexdigest()
+
+
+def test_admin_share_upload_chunked(app, admin):
+    tok = csrf_of(admin, "/admin/shares")
+    h = {"X-CSRF-Token": tok}
+    up = admin.post("/api/uploads", json={"name": "billboard.tif", "size": 5}, headers=h).json()
+    admin.put(f"/api/uploads/{up['id']}", params={"offset": 0}, content=b"12345", headers=h)
+    r = admin.post("/admin/shares/upload", data={"csrf": tok, "expires_days": 7, "upload_ids": up["id"]})
+    assert "Link do pobrania gotowy" in r.text
+    assert (app.state.settings.shared_dir / "billboard.tif").read_bytes() == b"12345"
+
+
+def test_agent_chunked_upload(app, admin):
+    token = make_device(admin)
+    h = {"Authorization": f"Bearer {token}"}
+    api = TestClient(app)
+    data = os.urandom(250_000)
+    sha = hashlib.sha256(data).hexdigest()
+    body = {"path": "Wideo/klip.mov", "size": len(data), "sha256": sha, "mtime": 1700000000}
+    init = api.post("/api/agent/uploads", json=body, headers=h).json()
+    assert init["status"] == "upload" and init["received"] == 0
+    api.put(f"/api/agent/uploads/{init['id']}", params={"offset": 0}, content=data[:100_000], headers=h)
+    # wznowienie: ten sam plik -> ta sama wysyłka, od miejsca przerwania
+    again = api.post("/api/agent/uploads", json=body, headers=h).json()
+    assert again["id"] == init["id"] and again["received"] == 100_000
+    r = api.put(f"/api/agent/uploads/{init['id']}", params={"offset": 100_000}, content=data[100_000:], headers=h)
+    assert r.json()["status"] == "stored", r.text
+    assert (app.state.settings.backups_dir / "laptop-anna" / "Wideo" / "klip.mov").read_bytes() == data
+    assert api.post("/api/agent/uploads", json=body, headers=h).json()["status"] == "unchanged"
+    # plik zmienił się w trakcie -> 409, nic nie zapisane
+    bad = dict(body, path="Wideo/inny.mov", sha256="0" * 64)
+    b = api.post("/api/agent/uploads", json=bad, headers=h).json()
+    r = api.put(f"/api/agent/uploads/{b['id']}", params={"offset": 0}, content=data, headers=h)
+    assert r.status_code == 409
+    assert not (app.state.settings.backups_dir / "laptop-anna" / "Wideo" / "inny.mov").exists()
+    # cudze urządzenie nie dopisze do wysyłki
+    assert api.put(f"/api/agent/uploads/{b['id']}", params={"offset": 0}, content=b"x",
+                   headers={"Authorization": "Bearer zly"}).status_code == 401

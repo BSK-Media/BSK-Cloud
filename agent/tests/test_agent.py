@@ -1,4 +1,5 @@
 """Test end-to-end: prawdziwy serwer (uvicorn w wątku) + agent obserwujący folder."""
+import os
 import socket
 import sys
 import threading
@@ -137,3 +138,41 @@ def test_bad_token_pauses(tmp_path, server):
     agent.work_once()
     assert state.counts()["pending"] == 1
     assert agent.paused_until > time.time() + 600
+
+
+def test_big_file_chunked_and_lan_fallback(tmp_path, server, monkeypatch):
+    """Duży plik idzie w kawałkach; martwy adres biurowy -> automatycznie przez adres publiczny."""
+    from app import chunks
+    url, token, settings, _ = server
+    monkeypatch.setattr(bsk_backup, "CHUNK_THRESHOLD", 10_000)
+    monkeypatch.setattr(chunks, "CHUNK_SIZE", 7_000)
+    watched = tmp_path / "Projekty"
+    watched.mkdir()
+    big = watched / "render.mp4"
+    payload = os.urandom(50_000)
+    big.write_bytes(payload)
+    os.utime(big, (time.time() - 60, time.time() - 60))
+    agent, state = make_agent(tmp_path, url, token, watched)
+    agent.cfg.lan_server = f"http://127.0.0.1:{free_port()}"  # nikt tam nie słucha
+    puts = []
+    orig_put = agent.http.put
+    agent.http.put = lambda *a, **k: (puts.append(a[0]), orig_put(*a, **k))[1]
+    agent.scan()
+    agent.work_once()
+    assert (settings.backups_dir / "pc-test" / "Projekty" / "render.mp4").read_bytes() == payload
+    assert len(puts) == 8 and all("/api/agent/uploads/" in p for p in puts)  # 50 000 / 7 000 -> 8 kawałków
+    assert agent.base() == url
+
+
+def test_lan_preferred_when_available(tmp_path, server):
+    url, token, settings, _ = server
+    watched = tmp_path / "Biuro"
+    watched.mkdir()
+    f = watched / "a.txt"
+    f.write_text("z biura")
+    os.utime(f, (time.time() - 60, time.time() - 60))
+    agent, state = make_agent(tmp_path, f"http://127.0.0.1:{free_port()}", token, watched)  # publiczny niedostępny
+    agent.cfg.lan_server = url
+    agent.scan()
+    agent.work_once()
+    assert (settings.backups_dir / "pc-test" / "Biuro" / "a.txt").read_text() == "z biura"
