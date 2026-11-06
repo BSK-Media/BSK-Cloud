@@ -1,0 +1,24 @@
+<table class="list">
+  <thead><tr><th>Plik</th><th>Rozmiar</th><th>Od</th><th>Data</th><th>Opis</th><th></th></tr></thead>
+  <tbody>
+  {% for f in files %}
+  <tr>
+    <td><a href="/files/{{ f.id }}/download">{{ f.original_name }}</a></td>
+    <td>{{ f.size|size }}</td>
+    <td>{% if f.uploader_role == 'admin' %}<span class="tag">BSK Media</span>{% else %}<span class="tag client">Klient</span>{% endif %}</td>
+    <td>{{ f.uploaded_at|dt }}</td>
+    <td class="muted small">{{ f.note }}</td>
+    <td>
+      {% if user.role == 'admin' or f.uploaded_by == user.id %}
+      <form method="post" action="/files/{{ f.id }}/delete" class="inline" data-confirm="Usunąć plik {{ f.original_name }}?">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="link danger">Usuń</button>
+      </form>
+      {% endif %}
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6" class="muted">Brak plików.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>

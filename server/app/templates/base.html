@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{% block title %}{{ site_name }}{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">{{ site_name }}</a>
+  {% if user %}
+  <nav>
+    {% if user.role == 'admin' %}
+      <a href="/admin">Klienci i kopie</a>
+      <a href="/admin/clients/new">+ Klient</a>
+      <a href="/admin/devices/new">+ Komputer</a>
+      <a href="/admin/log">Dziennik</a>
+    {% else %}
+      <a href="/files">Moje pliki</a>
+    {% endif %}
+    <a href="/account">Konto ({{ user.username }})</a>
+    <form method="post" action="/logout" class="inline">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="link">Wyloguj</button>
+    </form>
+  </nav>
+  {% endif %}
+</header>
+<main>
+  {% for kind, msg in flashes %}<div class="flash {{ kind }}">{{ msg }}</div>{% endfor %}
+  {% block content %}{% endblock %}
+</main>
+<footer>© BSK Media</footer>
+</body>
+</html>

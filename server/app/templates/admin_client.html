@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row">
+  <h1>{{ client.display_name or client.username }} {% if client.company %}<span class="muted">— {{ client.company }}</span>{% endif %}</h1>
+  {% if not client.active %}<span class="tag danger">zablokowany</span>{% endif %}
+</div>
+
+{% if credentials %}
+<div class="flash warn">
+  <b>Dane logowania do przekazania klientowi</b> (widoczne tylko teraz):<br>
+  Adres: <code>{{ public_url }}</code><br>
+  Login: <code>{{ credentials[0] }}</code><br>
+  Hasło: <code>{{ credentials[1] }}</code>
+</div>
+{% endif %}
+
+<div class="grid">
+  <section class="card">
+    <h2>Udostępnij pliki klientowi</h2>
+    {% set upload_action = "/admin/clients/" ~ client.id ~ "/upload" %}{% include "_upload_form.html" %}
+  </section>
+  <section class="card">
+    <h2>Wiadomości</h2>
+    {% set message_action = "/admin/clients/" ~ client.id ~ "/message" %}{% include "_messages.html" %}
+  </section>
+</div>
+
+<section class="card">
+  <h2>Pliki</h2>
+  <p class="muted small">Folder na NAS: <code>{{ folder }}</code></p>
+  {% include "_files_table.html" %}
+</section>
+
+<section class="card">
+  <h2>Dane i dostęp</h2>
+  <form method="post" action="/admin/clients/{{ client.id }}/edit" class="stack narrow-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Login <input value="{{ client.username }}" disabled></label>
+    <label>Osoba kontaktowa <input name="display_name" value="{{ client.display_name }}"></label>
+    <label>Firma <input name="company" value="{{ client.company }}"></label>
+    <label>E-mail <input name="email" type="email" value="{{ client.email }}"></label>
+    <button>Zapisz</button>
+  </form>
+  <p class="muted small">Ostatnie logowanie: {{ client.last_login|dt or 'nigdy' }} · konto od {{ client.created_at|dt }}</p>
+  <div class="row left">
+    <form method="post" action="/admin/clients/{{ client.id }}/reset-password" data-confirm="Wygenerować nowe hasło? Obecne przestanie działać.">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><button>Nadaj nowe hasło</button>
+    </form>
+    <form method="post" action="/admin/clients/{{ client.id }}/toggle">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="{{ 'danger' if client.active else '' }}">{{ 'Zablokuj konto' if client.active else 'Odblokuj konto' }}</button>
+    </form>
+  </div>
+</section>
+{% endblock %}

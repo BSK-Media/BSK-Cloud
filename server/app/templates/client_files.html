@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Witaj, {{ user.display_name or user.username }}</h1>
+<div class="grid">
+  <section class="card">
+    <h2>Wyślij pliki do BSK Media</h2>
+    {% set upload_action = "/files/upload" %}{% include "_upload_form.html" %}
+  </section>
+  <section class="card">
+    <h2>Wiadomości i komentarze</h2>
+    {% set message_action = "/files/message" %}{% include "_messages.html" %}
+  </section>
+</div>
+<section class="card">
+  <h2>Pliki</h2>
+  <p class="muted small">Tutaj są pliki wysłane przez Ciebie oraz te, które udostępniliśmy Tobie (oznaczone „BSK Media”).</p>
+  {% include "_files_table.html" %}
+</section>
+{% endblock %}

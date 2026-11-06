@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card narrow">
+  <h1>Dodaj komputer pracownika</h1>
+  <p class="muted">Po zapisaniu zobaczysz token, który wpisujesz w programie „BSK Backup” na tym komputerze.</p>
+  <form method="post" action="/admin/devices/new" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Nazwa komputera (np. LAPTOP-ANNA) <input name="name" required maxlength="80"></label>
+    <label>Pracownik <input name="employee" maxlength="120"></label>
+    <button class="primary">Dodaj i wygeneruj token</button>
+  </form>
+</section>
+{% endblock %}

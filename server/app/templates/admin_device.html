@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row">
+  <h1>{{ device.name }} <span class="muted">{{ device.employee }}</span></h1>
+  {% if not device.active %}<span class="tag danger">wyłączony</span>{% endif %}
+</div>
+
+{% if token %}
+<div class="flash warn">
+  <b>Token urządzenia</b> — skopiuj teraz, później nie będzie widoczny:<br>
+  <code class="token">{{ token }}</code><br>
+  Instalacja na komputerze pracownika (PowerShell jako administrator, w folderze z programem):<br>
+  <code>.\install-windows.ps1 -Server "{{ public_url }}" -Token "{{ token }}"</code>
+</div>
+{% endif %}
+
+<p class="muted">W kopii: <b>{{ stats.n }}</b> plików, {{ stats.total|size }} · ostatni kontakt: {{ device.last_seen|dt or 'nigdy' }}{% if device.last_ip %} ({{ device.last_ip }}){% endif %} · folder na NAS: <code>kopie-pracownikow/{{ device.folder_name }}</code></p>
+
+<div class="row left">
+  <form method="post" action="/admin/devices/{{ device.id }}/token" data-confirm="Wygenerować nowy token? Stary przestanie działać i trzeba będzie go podmienić na komputerze.">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><button>Nowy token</button>
+  </form>
+  <form method="post" action="/admin/devices/{{ device.id }}/toggle">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button class="{{ 'danger' if device.active else '' }}">{{ 'Wyłącz urządzenie' if device.active else 'Włącz urządzenie' }}</button>
+  </form>
+</div>
+
+<section class="card">
+  <form method="get" class="row left">
+    <input name="q" value="{{ q }}" placeholder="Szukaj w ścieżkach…">
+    <button>Szukaj</button>
+  </form>
+  <table class="list">
+    <thead><tr><th>Ścieżka</th><th>Rozmiar</th><th>Kopia z</th><th>Wersje</th></tr></thead>
+    <tbody>
+    {% for f in files %}
+    <tr>
+      <td><a href="/admin/devices/{{ device.id }}/download?path={{ f.rel_path|q }}">{{ f.rel_path }}</a></td>
+      <td>{{ f.size|size }}</td><td>{{ f.uploaded_at|dt }}</td>
+      <td><a href="/admin/devices/{{ device.id }}/versions?path={{ f.rel_path|q }}">{{ f.versions }}</a></td>
+    </tr>
+    {% else %}<tr><td colspan="4" class="muted">Brak plików w kopii.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  <div class="row left">
+    {% if page > 1 %}<a href="?q={{ q|q }}&page={{ page - 1 }}">← Nowsze</a>{% endif %}
+    {% if has_more %}<a href="?q={{ q|q }}&page={{ page + 1 }}">Starsze →</a>{% endif %}
+  </div>
+</section>
+{% endblock %}

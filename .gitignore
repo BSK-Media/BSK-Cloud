@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+agent/build/
+agent/dist/
+agent/*.spec
+agent/.build-venv/
+server/dev-data/

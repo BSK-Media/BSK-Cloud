@@ -1,0 +1,17 @@
+# Automatyczny certyfikat HTTPS (Let's Encrypt) dla cloud.bskmedia.pl
+{$BSK_DOMAIN} {
+	encode gzip
+	request_body {
+		max_size 25GB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	reverse_proxy app:8000 {
+		transport http {
+			read_timeout 2h
+			write_timeout 2h
+		}
+	}
+}

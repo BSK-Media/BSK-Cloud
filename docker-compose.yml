@@ -1,0 +1,52 @@
+# BSK Media Cloud na Ugreen NAS (UGOS Pro, aplikacja Docker).
+# Uruchomienie:  docker compose up -d --build
+# Z tunelem Cloudflare zamiast przekierowania portów:  docker compose --profile tunnel up -d --build
+services:
+  app:
+    build:
+      context: ./server
+      args:
+        PUID: ${PUID:-1000}
+        PGID: ${PGID:-10}
+    container_name: bsk-cloud
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      BSK_DATA_DIR: /data
+    volumes:
+      - ${BSK_NAS_FOLDER:-/volume1/bsk-cloud}:/data
+    ports:
+      # Dostęp w sieci firmowej (np. http://192.168.1.50:8090) — przydaje się do testów
+      # i dla agentów kopii w biurze. Usuń, jeśli nie potrzebujesz.
+      - "8090:8000"
+
+  caddy:
+    image: caddy:2
+    container_name: bsk-caddy
+    restart: unless-stopped
+    depends_on: [app]
+    environment:
+      BSK_DOMAIN: ${BSK_DOMAIN:-cloud.bskmedia.pl}
+    ports:
+      # Na routerze przekieruj: zewnętrzny 80 -> NAS:8880, zewnętrzny 443 -> NAS:8443
+      - "8880:80"
+      - "8443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  # Alternatywa dla przekierowania portów (np. gdy operator daje CGNAT / brak publicznego IP).
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: bsk-tunnel
+    profiles: [tunnel]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on: [app]
+
+volumes:
+  caddy_data:
+  caddy_config:

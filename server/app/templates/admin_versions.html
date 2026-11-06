@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<p><a href="/admin/devices/{{ device.id }}">← {{ device.name }}</a></p>
+<h1>{{ rel }}</h1>
+<section class="card">
+<table class="list">
+  <thead><tr><th>Wersja</th><th>Rozmiar</th><th></th></tr></thead>
+  <tbody>
+  {% if current %}
+  <tr><td><b>Aktualna</b> ({{ current.uploaded_at|dt }})</td><td>{{ current.size|size }}</td>
+      <td><a href="/admin/devices/{{ device.id }}/download?path={{ rel|q }}">Pobierz</a></td></tr>
+  {% endif %}
+  {% for v in versions %}
+  <tr><td>{{ v.stamp }} (UTC)</td><td>{{ v.size|size }}</td>
+      <td><a href="/admin/devices/{{ device.id }}/download?path={{ rel|q }}&version={{ v.name|q }}">Pobierz</a></td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</section>
+{% endblock %}

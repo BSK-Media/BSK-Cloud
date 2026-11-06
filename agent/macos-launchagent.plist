@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Autostart na macOS: skopiuj do ~/Library/LaunchAgents/pl.bskmedia.backup.plist,
+     popraw ścieżki i wykonaj: launchctl load ~/Library/LaunchAgents/pl.bskmedia.backup.plist -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>pl.bskmedia.backup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/NAZWA/bsk-backup/venv/bin/python</string>
+    <string>/Users/NAZWA/bsk-backup/bsk_backup.py</string>
+    <string>run</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict>
+</plist>

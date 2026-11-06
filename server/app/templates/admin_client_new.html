@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card narrow">
+  <h1>Nowe konto klienta</h1>
+  <form method="post" action="/admin/clients/new" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Login (np. jan.kowalski) <input name="username" required pattern="[a-zA-Z0-9._\-]{3,40}"></label>
+    <label>Imię i nazwisko / osoba kontaktowa <input name="display_name"></label>
+    <label>Firma <input name="company"></label>
+    <label>E-mail <input name="email" type="email"></label>
+    <label>Hasło startowe <input name="password" value="{{ suggested }}" required minlength="10"></label>
+    <p class="muted small">Klient przy pierwszym logowaniu musi ustawić własne hasło.</p>
+    <button class="primary">Utwórz konto</button>
+  </form>
+</section>
+{% endblock %}

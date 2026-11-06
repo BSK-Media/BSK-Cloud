@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row"><h1>Klienci</h1><a class="button primary" href="/admin/clients/new">+ Nowy klient</a></div>
+<section class="card">
+<table class="list">
+  <thead><tr><th>Klient</th><th>Firma</th><th>Login</th><th>Pliki</th><th>Ostatni plik</th><th>Ostatnia wiadomość</th><th>Status</th></tr></thead>
+  <tbody>
+  {% for c in clients %}
+  <tr class="{{ '' if c.active else 'inactive' }}">
+    <td><a href="/admin/clients/{{ c.id }}">{{ c.display_name or c.username }}</a></td>
+    <td>{{ c.company }}</td><td>{{ c.username }}</td>
+    <td>{{ c.file_count }} ({{ c.total_size|size }})</td>
+    <td>{{ c.last_upload|dt }}</td><td>{{ c.last_message|dt }}</td>
+    <td>{{ 'aktywne' if c.active else 'zablokowane' }}</td>
+  </tr>
+  {% else %}<tr><td colspan="7" class="muted">Nie ma jeszcze klientów.</td></tr>{% endfor %}
+  </tbody>
+</table>
+</section>
+
+<h2>Ostatnio przesłane pliki</h2>
+<section class="card">
+<table class="list">
+  <thead><tr><th>Plik</th><th>Klient</th><th>Rozmiar</th><th>Data</th></tr></thead>
+  <tbody>
+  {% for f in recent %}
+  <tr><td><a href="/files/{{ f.id }}/download">{{ f.original_name }}</a></td>
+      <td><a href="/admin/clients/{{ f.client_id }}">{{ f.display_name or f.username }}</a> {{ f.company }}</td>
+      <td>{{ f.size|size }}</td><td>{{ f.uploaded_at|dt }}</td></tr>
+  {% else %}<tr><td colspan="4" class="muted">Brak.</td></tr>{% endfor %}
+  </tbody>
+</table>
+</section>
+
+<div class="row"><h2>Komputery pracowników (kopie zapasowe)</h2><a class="button" href="/admin/devices/new">+ Dodaj komputer</a></div>
+<section class="card">
+<table class="list">
+  <thead><tr><th>Komputer</th><th>Pracownik</th><th>Pliki w kopii</th><th>Ostatni kontakt</th><th>Status</th></tr></thead>
+  <tbody>
+  {% for d in devices %}
+  <tr class="{{ '' if d.active else 'inactive' }}">
+    <td><a href="/admin/devices/{{ d.id }}">{{ d.name }}</a></td><td>{{ d.employee }}</td>
+    <td>{{ d.file_count }} ({{ d.total_size|size }})</td><td>{{ d.last_seen|dt or 'nigdy' }}</td>
+    <td>{{ 'aktywny' if d.active else 'wyłączony' }}</td>
+  </tr>
+  {% else %}<tr><td colspan="5" class="muted">Nie dodano jeszcze komputerów.</td></tr>{% endfor %}
+  </tbody>
+</table>
+</section>
+{% endblock %}

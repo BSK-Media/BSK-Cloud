@@ -1,0 +1,15 @@
+<div class="thread" id="wiadomosci">
+  {% for m in messages %}
+  <div class="msg {{ 'mine' if m.author_id == user.id else '' }} {{ m.role }}">
+    <div class="meta">{{ m.display_name or m.username }}{% if m.role == 'admin' %} (BSK Media){% endif %} · {{ m.created_at|dt }}</div>
+    <div class="body">{{ m.body }}</div>
+  </div>
+  {% else %}
+  <p class="muted">Brak wiadomości.</p>
+  {% endfor %}
+</div>
+<form method="post" action="{{ message_action }}" class="stack">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <textarea name="body" rows="3" maxlength="5000" required placeholder="Napisz wiadomość lub komentarz…"></textarea>
+  <button>Wyślij wiadomość</button>
+</form>

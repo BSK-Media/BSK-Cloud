@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Logowanie — {{ site_name }}{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Zaloguj się</h1>
+  <p class="muted">Strefa wymiany plików dla klientów BSK Media.</p>
+  <form method="post" action="/login" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Login <input name="username" autocomplete="username" required autofocus></label>
+    <label>Hasło <input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="primary">Zaloguj</button>
+  </form>
+  <p class="muted small">Nie masz konta? Konta zakłada administrator BSK Media.</p>
+</section>
+{% endblock %}
