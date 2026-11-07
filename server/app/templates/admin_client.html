@@ -41,7 +41,8 @@
 <div class="grid g-2 mb">
   <section class="card">
     <div class="card-head">{{ ui.icon("upload") }}<h2>Udostępnij pliki klientowi</h2></div>
-    {{ ui.upload_form("/admin/clients/" ~ client.id ~ "/upload", csrf, max_upload_mb, "Wyślij do klienta", folder=space.folder) }}
+    {% set review_box %}<label class="check"><input type="checkbox" name="review" value="1"> Prześlij do akceptacji — klient zobaczy przyciski „Akceptuję” i „Poprawki”</label>{% endset %}
+    {{ ui.upload_form("/admin/clients/" ~ client.id ~ "/upload", csrf, max_upload_mb, "Wyślij do klienta", review_box, folder=space.folder) }}
     <div class="card-head mt"><h3>albo utwórz nowy dokument</h3></div>
     <form method="post" action="/admin/clients/{{ client.id }}/new-doc" class="row">
       <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -57,6 +58,41 @@
     {{ ui.thread(messages, user, csrf, "/admin/clients/" ~ client.id ~ "/message", client.id) }}
   </section>
 </div>
+
+<section class="card" id="osoby">
+  <div class="card-head">{{ ui.icon("users") }}<h2>Osoby z dostępem</h2><span class="spacer"></span>
+    <span class="hint">Każda osoba ma własny login, wszyscy widzą te same pliki i wiadomości firmy</span></div>
+  {% if member_credentials %}
+  <div class="flash warn"><b>Dane logowania do przekazania</b> (widoczne tylko teraz):
+    <div class="copyrow"><input readonly value="Adres: {{ public_url }}   Login: {{ member_credentials[0] }}   Hasło: {{ member_credentials[1] }}" data-copy-source><button type="button" data-copy>{{ ui.icon("copy") }}Kopiuj</button></div></div>
+  {% endif %}
+  <div class="table-wrap"><table class="list">
+    <tbody>
+      <tr><td><div class="person"><span class="avatar">{{ (client.display_name or client.username)|initials }}</span>
+        <div><b>{{ client.display_name or client.username }}</b><span>{{ client.username }}{% if client.email %} · {{ client.email }}{% endif %}</span></div></div></td>
+        <td><span class="tag">konto główne</span></td><td class="small muted">{{ client.last_login|ago }}</td><td></td></tr>
+      {% for m in members %}
+      <tr class="{{ '' if m.active else 'inactive' }}"><td><div class="person"><span class="avatar">{{ (m.display_name or m.username)|initials }}</span>
+        <div><b>{{ m.display_name or m.username }}</b><span>{{ m.username }}{% if m.email %} · {{ m.email }}{% endif %}</span></div></div></td>
+        <td>{% if m.active %}<span class="tag ok">aktywne</span>{% else %}<span class="tag off">zablokowane</span>{% endif %}</td>
+        <td class="small muted">{{ m.last_login|ago }}</td>
+        <td class="actions">
+          <form method="post" action="/admin/members/{{ m.id }}/reset-password" class="inline" data-confirm="Nadać nowe hasło dla {{ m.username }}?"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-sm ghost" title="Nowe hasło">{{ ui.icon("key") }}</button></form>
+          <form method="post" action="/admin/members/{{ m.id }}/toggle" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-sm ghost" title="{{ 'Zablokuj' if m.active else 'Odblokuj' }}">{{ ui.icon("lock") }}</button></form>
+          <form method="post" action="/admin/members/{{ m.id }}/delete" class="inline" data-confirm="Usunąć dostęp dla {{ m.username }}? Pliki i wiadomości zostaną."><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-sm ghost danger" title="Usuń dostęp">{{ ui.icon("trash") }}</button></form>
+        </td></tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+  <details class="mt"><summary class="button btn-sm">{{ ui.icon("plus") }}Dodaj osobę z firmy</summary>
+    <form method="post" action="/admin/clients/{{ client.id }}/members" class="form-grid mt">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label>Imię i nazwisko <input name="display_name" placeholder="np. Piotr Wiśniewski"></label>
+      <label>Login <input name="username" required pattern="[a-zA-Z0-9][a-zA-Z0-9._\-]{2,39}" placeholder="np. imie.nazwisko"></label>
+      <label>E-mail <input name="email" type="email" placeholder="do powiadomień (opcjonalnie)"></label>
+      <div class="row"><button class="primary">Dodaj i wygeneruj hasło</button></div>
+    </form></details>
+</section>
 
 <section class="card">
   <div class="card-head">{{ ui.icon("user") }}<h2>Dane i dostęp</h2></div>

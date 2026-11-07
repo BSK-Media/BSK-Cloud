@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Transfery — {{ site_name }}{% endblock %}
+{% block heading %}Transfery{% endblock %}
+{% block subtitle %}<div class="subtitle">Wyślij pliki jednym linkiem — jak WeTransfer, ale prosto z Twojego NAS</div>{% endblock %}
+{% block actions %}<a class="button" href="/admin/shares">{{ ui.icon("link") }}Linki do pojedynczych plików</a>{% endblock %}
+{% block content %}
+<div class="grid g-main mb">
+  <section class="card">
+    <div class="card-head">{{ ui.icon("upload") }}<h2>Nowy transfer</h2></div>
+    <form method="post" action="/admin/transfers" enctype="multipart/form-data" class="stack upload" data-upload>
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label class="drop"><input type="file" name="files" multiple required>{{ ui.icon("upload") }}
+        <span><b>Przeciągnij pliki tutaj</b> albo kliknij, aby wybrać</span>
+        <small class="hint">Dowolna liczba plików · do {{ (max_upload_mb / 1024)|round(0)|int }} GB każdy · wysyłka wznawia się po przerwie</small></label>
+      <div class="form-grid">
+        <label class="full">Tytuł <input name="title" maxlength="150" placeholder="np. Kampania jesień — pliki do druku"></label>
+        <label class="full">Wiadomość dla odbiorcy <textarea name="message" rows="3" maxlength="3000" placeholder="Dzień dobry, przesyłamy finalne pliki…"></textarea></label>
+        <label class="full">E-mail odbiorcy <span class="hint">(opcjonalnie, kilka adresów rozdziel przecinkiem — dostaną link e-mailem)</span>
+          <input name="recipients" placeholder="anna@firma.pl, druk@drukarnia.pl"></label>
+        <label>Ważny przez
+          <select name="expires_days"><option value="3">3 dni</option><option value="7" selected>7 dni</option><option value="14">14 dni</option>
+            <option value="30">30 dni</option><option value="90">90 dni</option></select></label>
+        <label>Hasło (opcjonalnie) <input name="password" autocomplete="off"></label>
+      </div>
+      {% if not mail_ok %}<p class="hint">Poczta nie jest skonfigurowana — link skopiujesz i wyślesz sam.</p>{% endif %}
+      <progress value="0" max="100" hidden></progress>
+      <button class="primary">{{ ui.icon("link") }}Utwórz transfer</button>
+    </form>
+  </section>
+  <section class="card" id="tla">
+    <div class="card-head">{{ ui.icon("img") }}<h2>Tła strony pobierania</h2></div>
+    <p class="small muted">Odbiorca zobaczy jedno z tych zdjęć w tle — pokaż swoje realizacje. Bez zdjęć strona ma elegancki gradient.</p>
+    {% if backgrounds %}
+    <div class="bg-grid">{% for b in backgrounds %}<div class="bg-tile"><img src="/t/tlo/{{ b|q }}" alt="" loading="lazy">
+      <form method="post" action="/admin/transfers/backgrounds/{{ b|q }}/delete" data-confirm="Usunąć to tło?"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="iconbtn" title="Usuń">{{ ui.icon("trash") }}</button></form></div>{% endfor %}</div>
+    {% endif %}
+    <form method="post" action="/admin/transfers/backgrounds" enctype="multipart/form-data" class="stack upload mt" data-upload>
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label class="drop"><input type="file" name="files" multiple accept="image/jpeg,image/png,image/webp" required>{{ ui.icon("img") }}<span><b>Dodaj zdjęcia</b> (JPG, PNG, WEBP, najlepiej poziome)</span></label>
+      <progress value="0" max="100" hidden></progress>
+      <button>Dodaj tła</button>
+    </form>
+  </section>
+</div>
+
+<section class="card">
+  <div class="card-head"><h2>Wysłane transfery</h2></div>
+  {% if transfers %}
+  <div class="table-wrap"><table class="list">
+    <thead><tr><th>Transfer</th><th>Link</th><th class="hide-sm">Ważny do</th><th>Pobrania</th><th></th></tr></thead>
+    <tbody>
+    {% for t in transfers %}
+    {% set dead = t.revoked or t.files_deleted or t.expires_at <= now %}
+    <tr class="{{ 'inactive' if dead }}">
+      <td><b>{{ t.title or 'Bez tytułu' }}</b>
+        <div class="small muted">{{ t.n_files }} plików · {{ t.total|size }}{% if t.recipients %} · do: {{ t.recipients }}{% endif %}{% if t.password_hash %} · {{ ui.icon("lock") }} hasło{% endif %}</div></td>
+      <td>{% if not dead %}<div class="copyrow"><input readonly value="{{ public_url }}/t/{{ t.token }}" data-copy-source><button type="button" class="btn-sm" data-copy>{{ ui.icon("copy") }}</button></div>
+        {% else %}<span class="tag off">{{ 'wyłączony' if t.revoked else ('usunięty' if t.files_deleted else 'wygasł') }}</span>{% endif %}</td>
+      <td class="hide-sm small">{{ t.expires_at|dt }}</td>
+      <td class="num">{% if t.downloads %}<span class="tag ok">{{ t.downloads }}×</span><div class="small muted">{{ t.last_download|ago }}</div>{% else %}<span class="tag off">jeszcze nie</span>{% endif %}</td>
+      <td class="actions">
+        {% if not dead %}<a class="button ghost btn-sm" href="/t/{{ t.token }}" target="_blank" rel="noopener" title="Podgląd strony">{{ ui.icon("search") }}</a>
+        <form method="post" action="/admin/transfers/{{ t.id }}/revoke" class="inline" data-confirm="Wyłączyć ten transfer?"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="ghost btn-sm" title="Wyłącz">{{ ui.icon("lock") }}</button></form>{% endif %}
+        <form method="post" action="/admin/transfers/{{ t.id }}/delete" class="inline" data-confirm="Usunąć transfer razem z plikami?"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="ghost btn-sm danger" title="Usuń">{{ ui.icon("trash") }}</button></form>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}{{ ui.empty("Nie wysłano jeszcze żadnego transferu.", "link") }}{% endif %}
+</section>
+{% endblock %}

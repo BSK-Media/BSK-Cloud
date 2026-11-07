@@ -32,9 +32,8 @@ def _html(settings: Settings, title: str, lines: list[str], link: str, button: s
     return f"""<!doctype html><html><body style="margin:0;background:#f5f6f8;font-family:Segoe UI,Arial,sans-serif;color:#111827">
 <table width="100%" cellpadding="0" cellspacing="0" style="padding:28px 12px"><tr><td align="center">
 <table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border:1px solid #e7e9ee;border-radius:14px">
-<tr><td style="padding:22px 26px;border-bottom:1px solid #f1f3f6">
-<span style="display:inline-block;background:#2a78d6;color:#fff;font-weight:800;font-size:12px;padding:7px 8px;border-radius:8px">BSK</span>
-<b style="font-size:15px;margin-left:8px">{html.escape(settings.site_name)}</b></td></tr>
+<tr><td style="padding:20px 26px;border-bottom:1px solid #f1f3f6">
+<img src="{html.escape(settings.public_url)}/static/icons/logo-email.png" width="110" height="70" alt="BSK Cloud" style="display:block;border:0"></td></tr>
 <tr><td style="padding:24px 26px;font-size:15px;line-height:1.55">
 <h2 style="margin:0 0 14px;font-size:18px">{html.escape(title)}</h2>{body}
 <p style="margin:22px 0 4px"><a href="{html.escape(link)}" style="background:#2a78d6;color:#fff;text-decoration:none;padding:11px 20px;border-radius:10px;font-weight:600;display:inline-block">{html.escape(button)}</a></p>

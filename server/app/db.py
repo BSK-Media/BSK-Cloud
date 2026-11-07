@@ -91,6 +91,41 @@ CREATE TABLE IF NOT EXISTS file_versions (
     uploaded_at TEXT NOT NULL,
     note TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS annotations (
+    id INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL DEFAULT 1,
+    author_id INTEGER NOT NULL REFERENCES users(id),
+    x REAL,
+    y REAL,
+    body TEXT NOT NULL,
+    resolved INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_annotations_file ON annotations(file_id);
+CREATE TABLE IF NOT EXISTS transfers (
+    id INTEGER PRIMARY KEY,
+    token TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    recipients TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL DEFAULT '',
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    downloads INTEGER NOT NULL DEFAULT 0,
+    last_download TEXT,
+    revoked INTEGER NOT NULL DEFAULT 0,
+    files_deleted INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS transfer_files (
+    id INTEGER PRIMARY KEY,
+    transfer_id INTEGER NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    rel_path TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS seen (
     user_id INTEGER NOT NULL REFERENCES users(id),
     client_id INTEGER NOT NULL REFERENCES users(id),
@@ -132,11 +167,15 @@ MIGRATIONS = [
     ("devices", "quota_mb", "INTEGER NOT NULL DEFAULT 0"),
     ("devices", "folders", "TEXT NOT NULL DEFAULT ''"),
     ("users", "notify_email", "INTEGER NOT NULL DEFAULT 1"),
+    ("users", "space_id", "INTEGER"),
     ("files", "folder_id", "INTEGER"),
     ("files", "deleted_at", "TEXT"),
     ("files", "deleted_by", "INTEGER"),
     ("files", "trash_path", "TEXT"),
     ("files", "version", "INTEGER NOT NULL DEFAULT 1"),
+    ("files", "review_status", "TEXT NOT NULL DEFAULT ''"),
+    ("files", "review_by", "INTEGER"),
+    ("files", "review_at", "TEXT"),
     ("files", "office_version", "INTEGER NOT NULL DEFAULT 1"),
     ("files", "modified_at", "TEXT"),
     ("files", "modified_by", "INTEGER"),

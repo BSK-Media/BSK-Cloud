@@ -33,14 +33,15 @@
 <input type="checkbox" id="nav-toggle">
 <div class="shell">
   <aside class="sidebar">
-    <a class="brand" href="/"><span class="brand-mark">BSK</span><span>{{ site_name }}<small>{{ 'Panel administratora' if user.role == 'admin' else 'Strefa klienta' }}</small></span></a>
+    <a class="brand logo" href="/" title="{{ site_name }}"><img src="/static/logo-light.svg?v={{ asset_v }}" alt="BSK Cloud" width="150" height="96">
+      <small>{{ 'Panel administratora' if user.role == 'admin' else 'Strefa klienta' }}</small></a>
     <nav class="nav">
       {% if user.role == 'admin' %}
         <a href="/admin" class="{{ 'active' if nav == 'dashboard' }}">{{ ui.icon("home") }}Pulpit</a>
         <a href="/admin/clients" class="{{ 'active' if nav == 'clients' }}">{{ ui.icon("users") }}Klienci<span class="badge" data-unread-badge {{ 'hidden' if not unread_total }}>{{ unread_total }}</span></a>
         <a href="/admin/my" class="{{ 'active' if nav == 'my' }}">{{ ui.icon("lock") }}Mój dysk</a>
         <a href="/admin/devices" class="{{ 'active' if nav == 'devices' }}">{{ ui.icon("laptop") }}Pracownicy i kopie</a>
-        <a href="/admin/shares" class="{{ 'active' if nav == 'shares' }}">{{ ui.icon("link") }}Linki do pobrania</a>
+        <a href="/admin/transfers" class="{{ 'active' if nav in ['transfers', 'shares'] }}">{{ ui.icon("link") }}Transfery</a>
         <div class="nav-label">System</div>
         <a href="/admin/trash" class="{{ 'active' if nav == 'trash' }}">{{ ui.icon("trash") }}Kosz</a>
         <a href="/admin/log" class="{{ 'active' if nav == 'log' }}">{{ ui.icon("list") }}Dziennik zdarzeń</a>
@@ -99,11 +100,22 @@
   <button type="button" class="lb-nav prev" data-lb-prev title="Poprzedni (←)">‹</button>
   <div class="lb-stage" data-lb-stage></div>
   <button type="button" class="lb-nav next" data-lb-next title="Następny (→)">›</button>
+  <aside class="lb-side" data-lb-side hidden>
+    <div class="lb-review" data-lb-review></div>
+    <div class="lb-comments" data-lb-comments></div>
+    <form class="lb-compose" data-lb-compose>
+      <div class="lb-pinhint" data-lb-pinhint hidden>📌 Kliknij na obrazie miejsce, którego dotyczy uwaga</div>
+      <textarea rows="2" maxlength="2000" placeholder="Dodaj komentarz…" data-lb-text></textarea>
+      <div class="row"><button type="button" class="lb-btn" data-lb-pin title="Zaznacz miejsce na obrazie">📌 Zaznacz na obrazie</button>
+        <span class="spacer"></span><button class="lb-btn primary-lb">Dodaj</button></div>
+    </form>
+  </aside>
+  <button type="button" class="lb-btn lb-side-toggle" data-lb-side-toggle>{{ ui.icon("message") }}<span>Komentarze</span></button>
   <div class="lb-strip" data-lb-strip></div>
 </div>
 {% else %}
 <div class="auth"><div class="auth-box">
-  <a class="brand" href="/"><span class="brand-mark">BSK</span><span>{{ site_name }}<small>BSK Media</small></span></a>
+  <a class="brand logo-auth" href="/" title="{{ site_name }}"><img src="/static/logo.svg?v={{ asset_v }}" alt="BSK Cloud" width="220" height="141"></a>
   {{ flashes_block() }}
   {% block auth %}{% endblock %}
   <footer class="foot">© BSK Media · połączenie szyfrowane</footer>
