@@ -18,7 +18,7 @@ from pathlib import Path
 
 log = logging.getLogger("bskcloud.thumbs")
 
-IMAGE_EXT = {"jpg", "jpeg", "png", "webp", "gif", "tif", "tiff", "bmp", "heic", "heif", "psd"}
+IMAGE_EXT = {"jpg", "jpeg", "png", "webp", "gif", "tif", "tiff", "bmp", "heic", "heif", "psd", "thm"}  # THM = JPEG z GoPro
 VIDEO_EXT = {"mp4", "mov", "m4v", "webm", "mkv", "avi"}
 PDF_EXT = {"pdf", "ai"}
 BROWSER_VIDEO = {"mp4", "m4v", "webm", "mov"}
@@ -88,6 +88,11 @@ def _save(img, dest: Path, max_px: int) -> None:
     tmp.replace(dest)
 
 
+def _nice() -> list[str]:
+    """Narzędzia zewnętrzne z niższym priorytetem — strona i odtwarzanie filmów mają pierwszeństwo."""
+    return ["nice", "-n", "15"] if shutil.which("nice") else []
+
+
 def _frame(src: Path, workdir: Path) -> Path | None:
     """Klatka wideo albo 1. strona PDF jako PNG (narzędzia zewnętrzne, z limitem czasu)."""
     k = kind(src.name)
@@ -95,14 +100,16 @@ def _frame(src: Path, workdir: Path) -> Path | None:
     try:
         if k == "video":
             for ss in ("1", "0"):
-                subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", ss, "-i", str(src), "-frames:v", "1",
-                                "-vf", "scale=2000:-2:force_original_aspect_ratio=decrease", str(out)],
-                               check=False, timeout=60, capture_output=True)
+                # tylko klatki kluczowe: 4K/HEVC (np. GoPro) bez dekodowania całej sekundy filmu
+                subprocess.run(_nice() + ["ffmpeg", "-v", "error", "-y", "-threads", "2", "-skip_frame", "nokey",
+                                          "-ss", ss, "-i", str(src), "-frames:v", "1", "-an",
+                                          "-vf", "scale=2000:-2:force_original_aspect_ratio=decrease", str(out)],
+                               check=False, timeout=90, capture_output=True)
                 if out.exists() and out.stat().st_size:
                     return out
         elif k == "pdf":
-            subprocess.run(["pdftoppm", "-png", "-r", "110", "-f", "1", "-l", "1", "-singlefile",
-                            str(src), str(workdir / "frame")], check=False, timeout=60, capture_output=True)
+            subprocess.run(_nice() + ["pdftoppm", "-png", "-r", "110", "-f", "1", "-l", "1", "-singlefile",
+                                      str(src), str(workdir / "frame")], check=False, timeout=60, capture_output=True)
             if out.exists():
                 return out
     except (OSError, subprocess.TimeoutExpired):
@@ -135,25 +142,35 @@ def generate(src: Path, cache_dir: Path, file_id: int, sha: str) -> bool:
             return False
 
 
-_queue: "queue.Queue[tuple]" = queue.Queue()
+# Kolejka z priorytetem: miniatury, które ktoś właśnie ogląda (0), przed masowym importem (1).
+_queue: "queue.PriorityQueue[tuple]" = queue.PriorityQueue()
+_queued: dict[int, int] = {}  # file_id -> najlepszy priorytet w kolejce (bez dublowania zadań)
+_failed: set[tuple] = set()  # (plik, wersja), z których nie da się zrobić miniatury (do restartu)
+_counter = 0
 _workers_started = False
 _workers_lock = threading.Lock()
 
 
 def _worker() -> None:
     while True:
-        args = _queue.get()
+        _prio, _n, args = _queue.get()
+        file_id = args[2]
         try:
-            generate(*args)
+            with _workers_lock:
+                if _queued.get(file_id) == _prio:
+                    _queued.pop(file_id, None)
+            if not generate(*args):
+                with _workers_lock:
+                    _failed.add((file_id, args[3]))
         except Exception:  # noqa: BLE001
             log.warning("Błąd kolejki miniatur", exc_info=True)
         finally:
             _queue.task_done()
 
 
-def generate_async(src: Path, cache_dir: Path, file_id: int, sha: str) -> None:
+def generate_async(src: Path, cache_dir: Path, file_id: int, sha: str, priority: int = 1) -> None:
     """Miniatura w tle — przez kolejkę z 2 wątkami (tysiące plików nie tworzą tysięcy wątków)."""
-    global _workers_started
+    global _workers_started, _counter
     if not can_thumb(src.name):
         return
     with _workers_lock:
@@ -161,7 +178,24 @@ def generate_async(src: Path, cache_dir: Path, file_id: int, sha: str) -> None:
             for _ in range(2):
                 threading.Thread(target=_worker, daemon=True, name="miniatury").start()
             _workers_started = True
-    _queue.put((src, cache_dir, file_id, sha))
+        if file_id in _queued and _queued[file_id] <= priority:
+            return
+        _queued[file_id] = priority
+        _counter += 1
+        _queue.put((priority, _counter, (src, cache_dir, file_id, sha)))
+
+
+def request(src: Path, cache_dir: Path, file_id: int, sha: str) -> str:
+    """Miniatura dla strony, bez czekania: 'ready', 'pending' (w kolejce, z pierwszeństwem) albo 'none'."""
+    if not can_thumb(src.name):
+        return "none"
+    if all(cache_path(cache_dir, file_id, sha, s).exists() for s in SIZES):
+        return "ready"
+    with _workers_lock:
+        if (file_id, sha) in _failed:
+            return "none"
+    generate_async(src, cache_dir, file_id, sha, priority=0)
+    return "pending"
 
 
 def pending() -> int:
