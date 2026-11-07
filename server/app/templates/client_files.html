@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_browser.html" import browser with context %}
 {% block title %}Pulpit — {{ site_name }}{% endblock %}
 {% block heading %}Witaj, {{ (user.display_name or user.username).split()[0] }}{% endblock %}
 {% block subtitle %}<div class="subtitle">{{ user.company or 'Twoja strefa wymiany plików z BSK Media' }}</div>{% endblock %}
@@ -26,7 +27,7 @@
 <div class="grid g-2 mb">
   <section class="card" id="wyslij">
     <div class="card-head">{{ ui.icon("upload") }}<h2>Wyślij pliki do BSK Media</h2></div>
-    {{ ui.upload_form("/files/upload", csrf, max_upload_mb) }}
+    {{ ui.upload_form("/files/upload", csrf, max_upload_mb, folder=space.folder) }}
     {% if office_enabled %}
     <div class="card-head mt"><h3>albo utwórz nowy dokument online</h3></div>
     <form method="post" action="/files/new-doc" class="row">
@@ -44,10 +45,7 @@
   </section>
 </div>
 
-<section class="card" id="pliki">
-  <div class="card-head"><h2>Pliki</h2><span class="spacer"></span>
-    <div class="tabs" data-filter-tabs><button class="on" data-f="all">Wszystkie</button><button data-f="client">Wysłane przeze mnie</button><button data-f="agency">Od BSK Media</button></div>
-  </div>
-  {{ ui.files_table(files, user, csrf) }}
+<section class="card">
+  {{ browser(space, user, csrf, base_url) }}
 </section>
 {% endblock %}

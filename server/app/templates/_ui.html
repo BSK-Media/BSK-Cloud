@@ -52,9 +52,10 @@
 <div class="empty">{{ icon(ico) }}<div>{{ text }}</div></div>
 {%- endmacro %}
 
-{% macro upload_form(action, csrf, max_upload_mb, button="Wyślij pliki", extra="") -%}
+{% macro upload_form(action, csrf, max_upload_mb, button="Wyślij pliki", extra="", folder=None) -%}
 <form method="post" action="{{ action }}" enctype="multipart/form-data" class="stack upload" data-upload>
   <input type="hidden" name="csrf" value="{{ csrf }}">
+  {% if folder %}<input type="hidden" name="folder_id" value="{{ folder.id }}"><div class="hint">Pliki trafią do katalogu <b>{{ folder.name }}</b></div>{% endif %}
   <label class="drop">
     <input type="file" name="files" multiple required>
     {{ icon("upload") }}

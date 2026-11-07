@@ -71,6 +71,26 @@ CREATE TABLE IF NOT EXISTS events (
     detail TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+CREATE TABLE IF NOT EXISTS folders (
+    id INTEGER PRIMARY KEY,
+    owner_id INTEGER NOT NULL REFERENCES users(id),
+    parent_id INTEGER REFERENCES folders(id),
+    name TEXT NOT NULL,
+    created_by INTEGER,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_folders_owner ON folders(owner_id, parent_id);
+CREATE TABLE IF NOT EXISTS file_versions (
+    id INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL,
+    rel_path TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    uploaded_by INTEGER,
+    uploaded_at TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS seen (
     user_id INTEGER NOT NULL REFERENCES users(id),
     client_id INTEGER NOT NULL REFERENCES users(id),
@@ -112,6 +132,11 @@ MIGRATIONS = [
     ("devices", "quota_mb", "INTEGER NOT NULL DEFAULT 0"),
     ("devices", "folders", "TEXT NOT NULL DEFAULT ''"),
     ("users", "notify_email", "INTEGER NOT NULL DEFAULT 1"),
+    ("files", "folder_id", "INTEGER"),
+    ("files", "deleted_at", "TEXT"),
+    ("files", "deleted_by", "INTEGER"),
+    ("files", "trash_path", "TEXT"),
+    ("files", "version", "INTEGER NOT NULL DEFAULT 1"),
     ("files", "office_version", "INTEGER NOT NULL DEFAULT 1"),
     ("files", "modified_at", "TEXT"),
     ("files", "modified_by", "INTEGER"),

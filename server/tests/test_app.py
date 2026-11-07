@@ -650,3 +650,162 @@ def test_email_test_button(mail_app):
 def test_email_not_configured(app, admin):
     tok = csrf_of(admin, "/account")
     assert "Poczta nie jest skonfigurowana" in admin.post("/admin/test-email", data={"csrf": tok}).text
+
+
+def _png(w=800, h=600, color=(42, 120, 214)):
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), color).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_folders_versions_move_and_trash(app, admin):
+    create_client_account(admin)
+    s = app.state.settings
+    tok = csrf_of(admin, "/admin/clients/2")
+    r = admin.post("/spaces/2/folders", data={"csrf": tok, "name": "Kampania jesień"})
+    assert "Utworzono katalog" in r.text
+    fid = app.state.db.one("SELECT id FROM folders WHERE name = 'Kampania jesień'")["id"]
+    assert "już istnieje" in admin.post("/spaces/2/folders", data={"csrf": tok, "name": "kampania JESIEŃ"}).text
+    admin.post("/spaces/2/folders", data={"csrf": tok, "name": "Zdjęcia", "parent_id": fid})
+    sub = app.state.db.one("SELECT id FROM folders WHERE name = 'Zdjęcia'")["id"]
+    # wysyłka do podkatalogu -> plik w odpowiednim miejscu na NAS
+    admin.post("/admin/clients/2/upload", data={"csrf": tok, "folder_id": sub}, files=[("files", ("plakat.png", _png()))])
+    path = s.clients_dir / "jan.kowalski" / "Kampania jesień" / "Zdjęcia" / "plakat.png"
+    assert path.exists()
+    page = admin.get(f"/admin/clients/2?folder={sub}").text
+    assert "plakat.png" in page and "Kampania jesień" in page and 'class="gcard"' in page
+    # ta sama nazwa w tym samym katalogu -> nowa wersja (to samo id, stara w .wersje)
+    admin.post("/admin/clients/2/upload", data={"csrf": tok, "folder_id": sub},
+               files=[("files", ("plakat.png", _png(color=(235, 104, 52))))])
+    rows = app.state.db.all("SELECT * FROM files WHERE original_name = 'plakat.png'")
+    assert len(rows) == 1 and rows[0]["version"] == 2
+    assert app.state.db.one("SELECT COUNT(*) AS n FROM file_versions")["n"] == 1
+    assert list((path.parent / ".wersje").iterdir())
+    assert "v2" in admin.get(f"/admin/clients/2?folder={sub}").text
+    file_id = rows[0]["id"]
+    # zmiana nazwy katalogu nadrzędnego przenosi pliki na dysku i w bazie
+    admin.post(f"/folders/{fid}/rename", data={"csrf": tok, "name": "Kampania 2026"})
+    moved = s.clients_dir / "jan.kowalski" / "Kampania 2026" / "Zdjęcia" / "plakat.png"
+    assert moved.exists() and not path.exists()
+    assert admin.get(f"/files/{file_id}/download").status_code == 200
+    # przeniesienie do katalogu głównego
+    admin.post(f"/files/{file_id}/move", data={"csrf": tok, "folder_id": ""})
+    f = app.state.db.one("SELECT * FROM files WHERE id = ?", file_id)
+    assert f["folder_id"] is None and (s.clients_dir / f["rel_path"]).exists()
+    # kosz: usunięcie, niewidoczne dla klienta, przywrócenie
+    admin.post(f"/files/{file_id}/delete", data={"csrf": tok})
+    assert admin.get(f"/files/{file_id}/download").status_code == 404
+    trash = admin.get("/admin/trash").text
+    assert "plakat.png" in trash and "30 dni" in trash
+    admin.post(f"/admin/trash/{file_id}/restore", data={"csrf": csrf_of(admin, "/admin/trash")})
+    assert admin.get(f"/files/{file_id}/download").status_code == 200
+    # usunięcie katalogu -> pliki do kosza, opróżnienie kosza usuwa na zawsze
+    admin.post(f"/files/{file_id}/move", data={"csrf": tok, "folder_id": sub})
+    admin.post(f"/folders/{fid}/delete", data={"csrf": tok})
+    assert app.state.db.one("SELECT COUNT(*) AS n FROM folders")["n"] == 0
+    assert app.state.db.one("SELECT deleted_at FROM files WHERE id = ?", file_id)["deleted_at"]
+    admin.post("/admin/trash/empty", data={"csrf": csrf_of(admin, "/admin/trash")})
+    assert app.state.db.one("SELECT COUNT(*) AS n FROM files")["n"] == 0
+    assert not any(s.trash_dir.iterdir())
+
+
+def test_trash_auto_purge_after_30_days(app, admin):
+    create_client_account(admin)
+    tok = csrf_of(admin, "/admin/clients/2")
+    admin.post("/admin/clients/2/upload", data={"csrf": tok}, files=[("files", ("stary.txt", b"x"))])
+    admin.post("/files/1/delete", data={"csrf": tok})
+    app.state.db.run("UPDATE files SET deleted_at = '2020-01-01T00:00:00+00:00' WHERE id = 1")
+    admin.get("/admin/trash")
+    assert app.state.db.one("SELECT COUNT(*) AS n FROM files")["n"] == 0
+
+
+def test_my_drive_is_private(app, admin):
+    create_client_account(admin)
+    tok = csrf_of(admin, "/admin/my")
+    admin.post("/spaces/1/folders", data={"csrf": tok, "name": "Prywatne"})
+    folder = app.state.db.one("SELECT id FROM folders WHERE owner_id = 1")["id"]
+    admin.post("/admin/my/upload", data={"csrf": tok, "folder_id": folder}, files=[("files", ("paszport.jpg", _png()))])
+    s = app.state.settings
+    assert (s.clients_dir / "_prywatne" / "admin" / "Prywatne" / "paszport.jpg").exists()
+    page = admin.get(f"/admin/my?folder={folder}").text
+    assert "paszport.jpg" in page and "Mój dysk" in page
+    # nie pojawia się w statystykach klientów ani na pulpicie
+    assert "paszport.jpg" not in admin.get("/admin").text
+    c = TestClient(app)
+    login(c, "jan.kowalski", "KlientHaslo1")
+    change_pw(c, "KlientHaslo1")
+    assert c.get("/files/1/download").status_code == 404
+    assert c.get("/files/1/thumb").status_code == 404
+    assert "paszport.jpg" not in c.get("/search", params={"q": "paszport"}).text
+    assert c.post("/spaces/1/folders", data={"csrf": csrf_of(c, "/files"), "name": "x"}).status_code == 403
+    assert "paszport.jpg" in admin.get("/search", params={"q": "paszp"}).text
+
+
+def test_thumbnails_and_safe_preview(app, admin):
+    import shutil as sh
+    import subprocess
+    create_client_account(admin)
+    tok = csrf_of(admin, "/admin/clients/2")
+    files = [("files", ("zdjecie.png", _png(3000, 2000))), ("files", ("strona.html", b"<script>alert(1)</script>")),
+             ("files", ("grafika.svg", b"<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>"))]
+    if sh.which("pdftoppm"):
+        from PIL import Image
+        import io
+        buf = io.BytesIO()
+        Image.new("RGB", (600, 800), (255, 255, 255)).save(buf, "PDF")
+        files.append(("files", ("oferta.pdf", buf.getvalue())))
+    admin.post("/admin/clients/2/upload", data={"csrf": tok}, files=files)
+    ids = {r["original_name"]: r["id"] for r in app.state.db.all("SELECT id, original_name FROM files")}
+    r = admin.get(f"/files/{ids['zdjecie.png']}/thumb")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/webp"
+    from PIL import Image
+    import io
+    assert max(Image.open(io.BytesIO(r.content)).size) == 520
+    big = admin.get(f"/files/{ids['zdjecie.png']}/thumb", params={"s": "preview"})
+    assert max(Image.open(io.BytesIO(big.content)).size) == 2000
+    assert "max-age" in r.headers["cache-control"]
+    if "oferta.pdf" in ids:
+        assert admin.get(f"/files/{ids['oferta.pdf']}/thumb").status_code == 200
+        v = admin.get(f"/files/{ids['oferta.pdf']}/view")
+        assert v.status_code == 200 and v.headers["content-disposition"].startswith("inline")
+        assert v.headers["x-frame-options"] == "SAMEORIGIN"
+    # HTML i SVG nigdy nie są wyświetlane w przeglądarce (ochrona przed XSS) — tylko pobranie
+    assert admin.get(f"/files/{ids['strona.html']}/view").status_code == 404
+    assert admin.get(f"/files/{ids['grafika.svg']}/view").status_code == 404
+    assert admin.get(f"/files/{ids['strona.html']}/thumb").status_code == 404
+    if sh.which("ffmpeg"):
+        vid = app.state.settings.tmp_dir / "klip.mp4"
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=orange:s=320x240:d=2", "-pix_fmt", "yuv420p",
+                        str(vid)], check=True, timeout=60)
+        admin.post("/admin/clients/2/upload", data={"csrf": tok}, files=[("files", ("klip.mp4", vid.read_bytes()))])
+        vid_id = app.state.db.one("SELECT id FROM files WHERE original_name = 'klip.mp4'")["id"]
+        assert admin.get(f"/files/{vid_id}/thumb").status_code == 200
+        rng = admin.get(f"/files/{vid_id}/view", headers={"Range": "bytes=0-99"})
+        assert rng.status_code == 206
+    page = admin.get("/admin/clients/2").text
+    assert 'data-kind="image"' in page and "data-lightbox" in page
+
+
+def test_search_scope(app, admin):
+    create_client_account(admin, "a.klient", "KlientHaslo1")
+    create_client_account(admin, "b.klient", "KlientHaslo2")
+    tok = csrf_of(admin, "/admin/clients/2")
+    admin.post("/admin/clients/2/upload", data={"csrf": tok}, files=[("files", ("logo_final_A.ai", b"x"))])
+    admin.post("/admin/clients/3/upload", data={"csrf": tok}, files=[("files", ("logo_final_B.ai", b"x"))])
+    r = admin.get("/search", params={"q": "logo_final"}).text
+    assert "logo_final_A.ai" in r and "logo_final_B.ai" in r
+    b = TestClient(app)
+    login(b, "b.klient", "KlientHaslo2")
+    change_pw(b, "KlientHaslo2")
+    r = b.get("/search", params={"q": "logo"}).text
+    assert "logo_final_B.ai" in r and "logo_final_A.ai" not in r
+    assert "Wpisz co najmniej 2 znaki" in b.get("/search", params={"q": "l"}).text
+    assert "Nic nie znaleziono" in b.get("/search", params={"q": "%%"}).text  # % to zwykły znak, nie „wszystko”
+
+
+def test_username_cannot_start_with_underscore(app, admin):
+    tok = csrf_of(admin, "/admin/clients/new")
+    r = admin.post("/admin/clients/new", data={"username": "_prywatne", "password": "KlientHaslo1", "csrf": tok})
+    assert "Login" in r.text and not app.state.db.one("SELECT 1 FROM users WHERE username = '_prywatne'")

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% from "_browser.html" import browser with context %}
+{% block title %}Mój dysk — {{ site_name }}{% endblock %}
+{% block heading %}Mój dysk{% endblock %}
+{% block subtitle %}<div class="subtitle">Prywatna przestrzeń — widzisz ją tylko Ty · {{ used.n }} plików, {{ used.b|size }} · folder na NAS <code>bsk-dane{{ folder_path }}</code></div>{% endblock %}
+{% block content %}
+<section class="card">
+  {{ browser(space, user, csrf, base_url, can_manage=True, show_source=False) }}
+</section>
+<section class="card" id="wyslij">
+  <div class="card-head">{{ ui.icon("upload") }}<h2>Wgraj pliki{% if space.folder %} do „{{ space.folder.name }}”{% endif %}</h2></div>
+  {{ ui.upload_form(upload_action, csrf, max_upload_mb, "Zapisz na moim dysku", folder=space.folder) }}
+  <p class="hint">Plik o tej samej nazwie w tym samym katalogu zapisze się jako nowa wersja (poprzednia zostaje w historii).</p>
+</section>
+{% endblock %}

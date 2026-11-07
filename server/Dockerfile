@@ -2,6 +2,9 @@ FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /srv
+# miniaturki: ffmpeg (klatka z wideo), poppler (1. strona PDF / AI)
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app

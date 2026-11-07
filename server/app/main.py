@@ -11,6 +11,7 @@ import urllib.request
 from datetime import date, datetime, timedelta, timezone
 import os
 import re
+import secrets
 import tempfile
 import threading
 import zipfile
@@ -24,7 +25,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import backup, charts, chunks, office, security, storage
+from . import backup, charts, chunks, office, security, storage, thumbs
 from .config import Settings
 from .db import Database, iso_in, now_iso
 from . import notify
@@ -32,7 +33,8 @@ from .notify import notify_admin
 
 log = logging.getLogger("bskcloud")
 BASE = Path(__file__).parent
-USERNAME_RE = re.compile(r"^[a-zA-Z0-9._-]{3,40}$")
+USERNAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{2,39}$")
+TRASH_DAYS = 30
 SPECIAL_FOLDERS = {
     "@pulpit": "Pulpit",
     "@dokumenty": "Dokumenty",
@@ -241,13 +243,113 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return c
 
     def client_dir(client) -> Path:
+        """Przestrzeń na NAS: klient -> klienci/<login>, administrator (Mój dysk) -> klienci/_prywatne/<login>."""
+        if client["role"] == "admin":
+            return settings.clients_dir / "_prywatne" / storage.safe_slug(client["username"])
         return settings.clients_dir / storage.safe_slug(client["username"])
+
+    # ------------------------------------------------------------------ katalogi, kosz, wersje
+
+    def folder_row(owner_id: int, folder_id: int | None):
+        if not folder_id:
+            return None
+        f = db.one("SELECT * FROM folders WHERE id = ? AND owner_id = ?", folder_id, owner_id)
+        if not f:
+            raise HTTPException(404, "Nie ma takiego katalogu.")
+        return f
+
+    def folder_chain(folder) -> list:
+        chain = []
+        while folder is not None:
+            chain.insert(0, folder)
+            folder = db.one("SELECT * FROM folders WHERE id = ?", folder["parent_id"]) if folder["parent_id"] else None
+            if len(chain) > 32:
+                break
+        return chain
+
+    def folder_dir(owner, folder) -> Path:
+        base = client_dir(owner)
+        for f in folder_chain(folder):
+            base = base / storage.safe_name(f["name"], "katalog")
+        return base
+
+    def subtree_ids(folder_id: int) -> list[int]:
+        ids, todo = [], [folder_id]
+        while todo:
+            fid = todo.pop()
+            ids.append(fid)
+            todo += [r["id"] for r in db.all("SELECT id FROM folders WHERE parent_id = ?", fid)]
+        return ids
+
+    def all_folders(owner_id: int) -> list[dict]:
+        """Wszystkie katalogi przestrzeni z pełną ścieżką (do „Przenieś do…”)."""
+        rows = {r["id"]: dict(r) for r in db.all("SELECT * FROM folders WHERE owner_id = ?", owner_id)}
+
+        def path(r):
+            parts, cur, guard = [], r, 0
+            while cur and guard < 32:
+                parts.insert(0, cur["name"])
+                cur, guard = rows.get(cur["parent_id"]), guard + 1
+            return " / ".join(parts)
+        out = [{"id": r["id"], "path": path(r)} for r in rows.values()]
+        return sorted(out, key=lambda r: r["path"].lower())
+
+    def trash_file(f, user) -> None:
+        """Do kosza: plik fizycznie trafia do kosz/, wiersz zostaje (można przywrócić przez 30 dni)."""
+        src = settings.clients_dir / f["rel_path"]
+        dest = settings.trash_dir / f"{f['id']}_{storage.safe_name(f['original_name'])}"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_file():
+            shutil.move(str(src), dest)
+        db.run("UPDATE files SET deleted_at = ?, deleted_by = ?, trash_path = ? WHERE id = ?",
+               now_iso(), user["id"], dest.name, f["id"])
+        db.log(user["id"], "trash", f["rel_path"])
+
+    def restore_file(f, user) -> None:
+        owner = db.one("SELECT * FROM users WHERE id = ?", f["client_id"])
+        folder = db.one("SELECT * FROM folders WHERE id = ?", f["folder_id"]) if f["folder_id"] else None
+        target = settings.clients_dir / f["rel_path"]
+        if folder is None and f["folder_id"]:
+            target = client_dir(owner) / Path(f["rel_path"]).name  # katalog już nie istnieje
+        if target.exists():
+            target = storage.unique_path(target.parent, target.name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        src = settings.trash_dir / (f["trash_path"] or "")
+        if src.is_file():
+            shutil.move(str(src), target)
+        db.run("UPDATE files SET deleted_at = NULL, deleted_by = NULL, trash_path = NULL, rel_path = ?, folder_id = ?"
+               " WHERE id = ?", target.relative_to(settings.clients_dir).as_posix(),
+               f["folder_id"] if folder else None, f["id"])
+        db.log(user["id"], "restore", f["original_name"])
+
+    def purge_file(f) -> None:
+        if f["trash_path"]:
+            (settings.trash_dir / f["trash_path"]).unlink(missing_ok=True)
+        for v in db.all("SELECT rel_path FROM file_versions WHERE file_id = ?", f["id"]):
+            (settings.clients_dir / v["rel_path"]).unlink(missing_ok=True)
+        thumbs.remove(settings.thumbs_dir, f["id"])
+        db.run("DELETE FROM files WHERE id = ?", f["id"])
+
+    def space_url(user, owner_id: int, folder_id: int | None = None) -> str:
+        """Adres przestrzeni w panelu (klient / karta klienta u admina / Mój dysk)."""
+        if user["role"] == "admin":
+            base = "/admin/my" if owner_id == user["id"] else f"/admin/clients/{owner_id}"
+        else:
+            base = "/files"
+        return base + (f"?folder={folder_id}" if folder_id else "") + "#pliki"
+
+    def purge_old_trash() -> int:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=TRASH_DAYS)).isoformat()
+        old = db.all("SELECT * FROM files WHERE deleted_at IS NOT NULL AND deleted_at < ?", cutoff)
+        for f in old:
+            purge_file(f)
+        return len(old)
 
     def client_usage(client_id: int) -> int:
         """Miejsce zajęte przez pliki wysłane przez samego klienta (to, co udostępnia admin, się nie liczy)."""
         row = db.one(
-            "SELECT COALESCE(SUM(size), 0) AS used FROM files WHERE client_id = ? AND uploaded_by = ?",
-            client_id, client_id,
+            "SELECT COALESCE(SUM(size), 0) AS used FROM files WHERE client_id = ? AND uploaded_by = ?"
+            " AND deleted_at IS NULL", client_id, client_id,
         )
         return row["used"]
 
@@ -284,39 +386,74 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return row["size"], row["sha256"]
         return storage.copy_hashed(source.file, dest, settings.tmp_dir, limit)
 
-    def save_upload(client, uploader, upload, note: str) -> int:
+    def save_upload(client, uploader, upload, note: str, folder_id: int | None = None) -> int:
+        """Zapis pliku w przestrzeni (klienta lub Mój dysk). Ta sama nazwa w tym samym katalogu = nowa wersja."""
         limit = max_upload
         quota_exceeded = False
         if uploader["role"] == "client" and client["quota_mb"]:
             remaining = client["quota_mb"] * 1024 * 1024 - client_usage(client["id"])
             if remaining < limit:
                 limit, quota_exceeded = max(0, remaining), True
-        target_dir = client_dir(client)
-        if uploader["role"] == "admin":
-            target_dir = target_dir / "od BSK Media"
+        folder = folder_row(client["id"], folder_id)
         name = storage.safe_name(upload.filename or "plik")
-        dest = storage.unique_path(target_dir, name)
+        wanted = (upload.filename or name).casefold()  # casefold: także polskie znaki (SQLite lower() zna tylko ASCII)
+        existing = next((r for r in db.all(
+            "SELECT * FROM files WHERE client_id = ? AND deleted_at IS NULL AND folder_id IS ?",
+            client["id"], folder["id"] if folder else None) if r["original_name"].casefold() == wanted), None)
+        if folder:
+            target_dir = folder_dir(client, folder)
+        else:
+            target_dir = client_dir(client) / ("od BSK Media" if uploader["role"] == "admin" and client["role"] == "client" else "")
+        tmp_dest = storage.unique_path(settings.tmp_dir, f"in-{secrets.token_hex(6)}")
         try:
-            size, sha = place(upload, dest, limit)
+            size, sha = place(upload, tmp_dest, limit)
         except storage.TooLarge:
             if quota_exceeded:
                 raise HTTPException(
                     413, f"Brak miejsca na koncie (limit {client['quota_mb']} MB). Skontaktuj się z BSK Media."
                 )
             raise HTTPException(413, f"Plik przekracza limit {settings.max_upload_mb} MB.")
+        if existing and (settings.clients_dir / existing["rel_path"]).is_file():
+            # nowa wersja istniejącego pliku: poprzednia trafia do .wersje/, wiersz (i linki) zostają
+            cur = settings.clients_dir / existing["rel_path"]
+            vdir = cur.parent / ".wersje"
+            vdir.mkdir(parents=True, exist_ok=True)
+            stem, dot, ext = cur.name.rpartition(".")
+            old = vdir / (f"{stem}.v{existing['version']}.{ext}" if dot else f"{cur.name}.v{existing['version']}")
+            old = storage.unique_path(vdir, old.name)
+            shutil.move(str(cur), old)
+            shutil.move(str(tmp_dest), cur)
+            db.run("INSERT INTO file_versions (file_id, version, rel_path, size, sha256, uploaded_by, uploaded_at, note)"
+                   " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", existing["id"], existing["version"],
+                   old.relative_to(settings.clients_dir).as_posix(), existing["size"], existing["sha256"],
+                   existing["uploaded_by"], existing["uploaded_at"], existing["note"])
+            db.run("UPDATE files SET size = ?, sha256 = ?, uploaded_by = ?, uploaded_at = ?, note = ?, version = version + 1"
+                   " WHERE id = ?", size, sha, uploader["id"], now_iso(), note[:500], existing["id"])
+            db.log(uploader["id"], "upload_version", f"{existing['rel_path']} v{existing['version'] + 1}")
+            thumbs.generate_async(cur, settings.thumbs_dir, existing["id"], sha)
+            return existing["id"]
+        dest = storage.unique_path(target_dir, name)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(tmp_dest), dest)
         rel = dest.relative_to(settings.clients_dir).as_posix()
         fid = db.run(
-            "INSERT INTO files (client_id, rel_path, original_name, size, sha256, uploaded_by, uploaded_at, note)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO files (client_id, rel_path, original_name, size, sha256, uploaded_by, uploaded_at, note, folder_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             client["id"], rel, upload.filename or name, size, sha, uploader["id"], now_iso(), note[:500],
+            folder["id"] if folder else None,
         )
         db.log(uploader["id"], "upload", f"{rel} ({size} B)")
+        thumbs.generate_async(dest, settings.thumbs_dir, fid, sha)
         return fid
 
     def file_for(user, file_id: int):
-        f = db.one("SELECT * FROM files WHERE id = ?", file_id)
+        f = db.one("SELECT * FROM files WHERE id = ? AND deleted_at IS NULL", file_id)
         if not f or (user["role"] != "admin" and f["client_id"] != user["id"]):
             raise HTTPException(404, "Nie znaleziono pliku.")
+        if user["role"] == "admin" and f["client_id"] != user["id"]:
+            owner = db.one("SELECT role FROM users WHERE id = ?", f["client_id"])
+            if owner and owner["role"] == "admin":
+                raise HTTPException(404, "Nie znaleziono pliku.")  # prywatny dysk innego administratora
         path = settings.clients_dir / f["rel_path"]
         if not storage.inside(settings.clients_dir, path) or not path.is_file():
             raise HTTPException(404, "Plik nie istnieje na dysku.")
@@ -340,7 +477,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rows = db.all(
             "SELECT x.client_id, COUNT(*) AS n FROM ("
             " SELECT m.client_id, m.created_at AS ts FROM messages m JOIN users a ON a.id = m.author_id WHERE a.role = 'client'"
-            " UNION ALL SELECT f.client_id, f.uploaded_at FROM files f WHERE f.uploaded_by = f.client_id) x"
+            " UNION ALL SELECT f.client_id, f.uploaded_at FROM files f JOIN users c ON c.id = f.client_id"
+            " WHERE f.uploaded_by = f.client_id AND f.deleted_at IS NULL AND c.role = 'client') x"
             " LEFT JOIN seen s ON s.client_id = x.client_id AND s.user_id = ?"
             " WHERE s.seen_at IS NULL OR x.ts > s.seen_at GROUP BY x.client_id",
             admin_id,
@@ -355,7 +493,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return db.one(
             "SELECT (SELECT COUNT(*) FROM messages m JOIN users a ON a.id = m.author_id"
             "        WHERE m.client_id = ? AND a.role = 'admin' AND m.created_at > ?)"
-            " + (SELECT COUNT(*) FROM files f WHERE f.client_id = ? AND f.uploaded_by != ? AND f.uploaded_at > ?) AS n",
+            " + (SELECT COUNT(*) FROM files f WHERE f.client_id = ? AND f.uploaded_by != ? AND f.uploaded_at > ?"
+            "    AND f.deleted_at IS NULL) AS n",
             user["id"], since, user["id"], user["id"], since,
         )["n"]
 
@@ -376,12 +515,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             client_id,
         )
 
-    def client_files(client_id: int):
-        return db.all(
-            "SELECT f.*, u.role AS uploader_role FROM files f JOIN users u ON u.id = f.uploaded_by"
-            " WHERE f.client_id = ? ORDER BY f.uploaded_at DESC, f.id DESC",
-            client_id,
-        )
+    def client_files(client_id: int, folder_id: int | None | str = "all"):
+        """Pliki przestrzeni: wszystkie (folder_id='all'), z katalogu głównego (None) albo z danego katalogu."""
+        sql = ("SELECT f.*, u.role AS uploader_role, u.display_name AS uploader_name FROM files f"
+               " JOIN users u ON u.id = f.uploaded_by WHERE f.client_id = ? AND f.deleted_at IS NULL")
+        args: list = [client_id]
+        if folder_id is None:
+            sql += " AND f.folder_id IS NULL"
+        elif folder_id != "all":
+            sql += " AND f.folder_id = ?"
+            args.append(folder_id)
+        return db.all(sql + " ORDER BY f.uploaded_at DESC, f.id DESC", *args)
 
     # ------------------------------------------------------------------ statystyki i dyski
 
@@ -399,7 +543,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         sql = ("SELECT substr(f.uploaded_at, 1, 10) AS d,"
                " SUM(CASE WHEN u.role = 'client' THEN 1 ELSE 0 END) AS c,"
                " SUM(CASE WHEN u.role = 'admin' THEN 1 ELSE 0 END) AS a"
-               " FROM files f JOIN users u ON u.id = f.uploaded_by WHERE substr(f.uploaded_at, 1, 10) >= ?")
+               " FROM files f JOIN users u ON u.id = f.uploaded_by JOIN users c ON c.id = f.client_id"
+               " WHERE c.role = 'client' AND substr(f.uploaded_at, 1, 10) >= ?")
         args: list = [start]
         if client_id is not None:
             sql += " AND f.client_id = ?"
@@ -442,10 +587,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def client_rows():
         return db.all(
-            "SELECT u.*, (SELECT COUNT(*) FROM files f WHERE f.client_id = u.id) AS file_count,"
-            " (SELECT COALESCE(SUM(size), 0) FROM files f WHERE f.client_id = u.id) AS total_size,"
-            " (SELECT COALESCE(SUM(size), 0) FROM files f WHERE f.client_id = u.id AND f.uploaded_by = u.id) AS own_size,"
-            " (SELECT MAX(uploaded_at) FROM files f WHERE f.client_id = u.id) AS last_upload,"
+            "SELECT u.*, (SELECT COUNT(*) FROM files f WHERE f.client_id = u.id AND f.deleted_at IS NULL) AS file_count,"
+            " (SELECT COALESCE(SUM(size), 0) FROM files f WHERE f.client_id = u.id AND f.deleted_at IS NULL) AS total_size,"
+            " (SELECT COALESCE(SUM(size), 0) FROM files f WHERE f.client_id = u.id AND f.uploaded_by = u.id AND f.deleted_at IS NULL) AS own_size,"
+            " (SELECT MAX(uploaded_at) FROM files f WHERE f.client_id = u.id AND f.deleted_at IS NULL) AS last_upload,"
             " (SELECT MAX(created_at) FROM messages m WHERE m.client_id = u.id) AS last_message"
             " FROM users u WHERE u.role = 'client' ORDER BY u.active DESC, u.company, u.display_name"
         )
@@ -459,6 +604,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return False
 
     templates.env.globals["online"] = online
+
+    def space_ctx(owner, folder_id: int | None) -> dict:
+        """Dane do przeglądarki plików: bieżący katalog, okruszki, podkatalogi z okładkami, pliki."""
+        folder = folder_row(owner["id"], folder_id) if folder_id else None
+        subs = []
+        for d in db.all(
+            "SELECT d.*, (SELECT COUNT(*) FROM files x WHERE x.folder_id = d.id AND x.deleted_at IS NULL) AS n_files,"
+            " (SELECT COUNT(*) FROM folders y WHERE y.parent_id = d.id) AS n_dirs"
+            " FROM folders d WHERE d.owner_id = ? AND d.parent_id IS ? ORDER BY lower(d.name)",
+            owner["id"], folder["id"] if folder else None,
+        ):
+            recent = db.all("SELECT id, original_name, sha256 FROM files WHERE folder_id = ? AND deleted_at IS NULL"
+                            " ORDER BY uploaded_at DESC LIMIT 30", d["id"])
+            covers = [r for r in recent if thumbs.can_thumb(r["original_name"])][:3]
+            subs.append({**dict(d), "covers": covers})
+        return {
+            "owner": owner, "folder": folder, "crumbs": folder_chain(folder) if folder else [],
+            "subfolders": subs, "files": client_files(owner["id"], folder["id"] if folder else None),
+            "all_folders": all_folders(owner["id"]),
+        }
+
+    templates.env.globals["thumb_kind"] = thumbs.kind
+    templates.env.globals["can_thumb"] = thumbs.can_thumb
 
     # ------------------------------------------------------------------ public
 
@@ -545,9 +713,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ------------------------------------------------------------------ klient
 
     @app.get("/files", response_class=HTMLResponse)
-    def my_files(request: Request):
+    def my_files(request: Request, folder: int | None = None):
         user = require_user(request, "client")
         files = client_files(user["id"])
+        space = space_ctx(user, folder)
         unread = unread_for(user)
         mark_seen(user, user["id"])
         sent = [f for f in files if f["uploaded_by"] == user["id"]]
@@ -556,7 +725,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request, "client_files.html", files=files, messages=thread(user["id"]), quota=quota_info(user),
             days=daily_files(user["id"]), sent=sent, received=received, nav="files",
             sent_size=sum(f["size"] for f in sent), received_size=sum(f["size"] for f in received),
-            new_count=unread, unread_total=0,
+            new_count=unread, unread_total=0, space=space, base_url="/files",
+            upload_action="/files/upload",
         )
 
     @app.post("/files/upload")
@@ -565,13 +735,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         files: list[UploadFile] | None = File(None),
         upload_ids: list[str] = Form([]),
         note: str = Form(""),
+        folder_id: int | None = Form(None),
         csrf: str = Form(""),
     ):
         check_csrf(request, csrf)
         user = require_user(request, "client")
         names = []
         for up in incoming(user, files, upload_ids):
-            save_upload(user, user, up, note)
+            save_upload(user, user, up, note, folder_id)
             names.append(up.filename)
         if note.strip():
             add_message(user["id"], user, note)
@@ -583,7 +754,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "Pliki: " + ", ".join(names) + (f"\n\nKomentarz: {note}" if note.strip() else ""),
                 link=f"{settings.public_url}/admin/clients/{user['id']}", throttle_key=f"admin:{user['id']}",
             )
-        return RedirectResponse("/files", 303)
+        return RedirectResponse(space_url(user, user["id"], folder_id), 303)
 
     @app.post("/files/message")
     def client_message(request: Request, body: str = Form(...), csrf: str = Form("")):
@@ -613,12 +784,254 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         f, path = file_for(user, file_id)
         if user["role"] != "admin" and f["uploaded_by"] != user["id"]:
             raise HTTPException(403, "Możesz usuwać tylko pliki wysłane przez siebie.")
-        path.unlink(missing_ok=True)
-        db.run("DELETE FROM files WHERE id = ?", file_id)
-        db.log(user["id"], "delete", f["rel_path"])
-        flash(request, f"Usunięto plik {f['original_name']}.")
-        back = f"/admin/clients/{f['client_id']}" if user["role"] == "admin" else "/files"
-        return RedirectResponse(back, 303)
+        trash_file(f, user)
+        flash(request, f"Plik {f['original_name']} trafił do kosza"
+              + (" — możesz go przywrócić w zakładce Kosz." if user["role"] == "admin" else "."))
+        return RedirectResponse(space_url(user, f["client_id"], f["folder_id"]), 303)
+
+    # ------------------------------------------------------------------ Mój dysk, katalogi, galeria, kosz, wyszukiwarka
+
+    @app.get("/admin/my", response_class=HTMLResponse)
+    def my_drive(request: Request, folder: int | None = None):
+        admin = require_user(request, "admin")
+        space = space_ctx(admin, folder)
+        used = db.one("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS b FROM files WHERE client_id = ?"
+                      " AND deleted_at IS NULL", admin["id"])
+        return render(request, "my_drive.html", space=space, base_url="/admin/my", upload_action="/admin/my/upload",
+                      used=used, nav="my", folder_path=client_dir(admin).as_posix().replace(settings.data_dir.as_posix(), "", 1))
+
+    @app.post("/admin/my/upload")
+    def my_upload(
+        request: Request,
+        files: list[UploadFile] | None = File(None),
+        upload_ids: list[str] = Form([]),
+        note: str = Form(""),
+        folder_id: int | None = Form(None),
+        csrf: str = Form(""),
+    ):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        count = 0
+        for up in incoming(admin, files, upload_ids):
+            save_upload(admin, admin, up, note, folder_id)
+            count += 1
+        flash(request, f"Zapisano plików na Twoim dysku: {count}.")
+        return RedirectResponse(space_url(admin, admin["id"], folder_id), 303)
+
+    def space_owner_for_admin(admin, owner_id: int):
+        owner = db.one("SELECT * FROM users WHERE id = ?", owner_id)
+        if not owner or (owner["role"] == "admin" and owner["id"] != admin["id"]):
+            raise HTTPException(404, "Nie ma takiej przestrzeni.")
+        return owner
+
+    @app.post("/spaces/{owner_id}/folders")
+    def create_folder(request: Request, owner_id: int, name: str = Form(...), parent_id: int | None = Form(None),
+                      csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        owner = space_owner_for_admin(admin, owner_id)
+        parent = folder_row(owner_id, parent_id)
+        clean = storage.safe_name(name.strip(), "")[:80]
+        if not clean or clean.startswith("."):
+            flash(request, "Podaj nazwę katalogu.", "error")
+        elif any(r["name"].casefold() == clean.casefold() for r in db.all(
+                "SELECT name FROM folders WHERE owner_id = ? AND parent_id IS ?", owner_id, parent["id"] if parent else None)):
+            flash(request, f"Katalog „{clean}” już istnieje.", "error")
+        else:
+            fid = db.run("INSERT INTO folders (owner_id, parent_id, name, created_by, created_at) VALUES (?, ?, ?, ?, ?)",
+                         owner_id, parent["id"] if parent else None, clean, admin["id"], now_iso())
+            folder_dir(owner, db.one("SELECT * FROM folders WHERE id = ?", fid)).mkdir(parents=True, exist_ok=True)
+            db.log(admin["id"], "folder_created", clean)
+            flash(request, f"Utworzono katalog „{clean}”.")
+        return RedirectResponse(space_url(admin, owner_id, parent["id"] if parent else None), 303)
+
+    @app.post("/folders/{folder_id}/rename")
+    def rename_folder(request: Request, folder_id: int, name: str = Form(...), csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        folder = db.one("SELECT * FROM folders WHERE id = ?", folder_id)
+        if not folder:
+            raise HTTPException(404, "Nie ma takiego katalogu.")
+        owner = space_owner_for_admin(admin, folder["owner_id"])
+        clean = storage.safe_name(name.strip(), "")[:80]
+        if not clean or clean.startswith("."):
+            flash(request, "Podaj nazwę katalogu.", "error")
+            return RedirectResponse(space_url(admin, owner["id"], folder_id), 303)
+        old_dir = folder_dir(owner, folder)
+        db.run("UPDATE folders SET name = ? WHERE id = ?", clean, folder_id)
+        new_dir = folder_dir(owner, db.one("SELECT * FROM folders WHERE id = ?", folder_id))
+        if old_dir != new_dir:
+            if new_dir.exists():
+                db.run("UPDATE folders SET name = ? WHERE id = ?", folder["name"], folder_id)
+                flash(request, "Na dysku istnieje już katalog o tej nazwie.", "error")
+                return RedirectResponse(space_url(admin, owner["id"], folder_id), 303)
+            if old_dir.exists():
+                old_dir.rename(new_dir)
+            old_rel = old_dir.relative_to(settings.clients_dir).as_posix() + "/"
+            new_rel = new_dir.relative_to(settings.clients_dir).as_posix() + "/"
+            for table in ("files", "file_versions"):
+                db.run(f"UPDATE {table} SET rel_path = ? || substr(rel_path, ?) WHERE rel_path LIKE ? ESCAPE '\\'",
+                       new_rel, len(old_rel) + 1, old_rel.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
+        db.log(admin["id"], "folder_renamed", f"{folder['name']} -> {clean}")
+        flash(request, f"Zmieniono nazwę na „{clean}”.")
+        return RedirectResponse(space_url(admin, owner["id"], folder_id), 303)
+
+    @app.post("/folders/{folder_id}/delete")
+    def delete_folder(request: Request, folder_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        folder = db.one("SELECT * FROM folders WHERE id = ?", folder_id)
+        if not folder:
+            raise HTTPException(404, "Nie ma takiego katalogu.")
+        owner = space_owner_for_admin(admin, folder["owner_id"])
+        ids = subtree_ids(folder_id)
+        marks = ",".join("?" * len(ids))
+        moved = 0
+        for f in db.all(f"SELECT * FROM files WHERE folder_id IN ({marks}) AND deleted_at IS NULL", *ids):
+            trash_file(f, admin)
+            moved += 1
+        top_dir = folder_dir(owner, folder)
+        db.run(f"UPDATE files SET folder_id = NULL WHERE folder_id IN ({marks})", *ids)
+        db.run(f"DELETE FROM folders WHERE id IN ({marks})", *ids)
+        if top_dir.is_dir():
+            shutil.rmtree(top_dir, ignore_errors=True)  # puste katalogi i stare wersje
+        db.log(admin["id"], "folder_deleted", f"{folder['name']} ({moved} plików do kosza)")
+        flash(request, f"Usunięto katalog „{folder['name']}”" + (f", plików w koszu: {moved}." if moved else "."))
+        return RedirectResponse(space_url(admin, owner["id"], folder["parent_id"]), 303)
+
+    @app.post("/files/{file_id}/move")
+    def move_file(request: Request, file_id: int, folder_id: int | None = Form(None), csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        f, path = file_for(admin, file_id)
+        owner = space_owner_for_admin(admin, f["client_id"])
+        target = folder_row(owner["id"], folder_id)
+        if (f["folder_id"] or None) == (target["id"] if target else None):
+            return RedirectResponse(space_url(admin, owner["id"], f["folder_id"]), 303)
+        dest_dir = folder_dir(owner, target) if target else client_dir(owner) / (
+            "od BSK Media" if f["uploaded_by"] != owner["id"] and owner["role"] == "client" else "")
+        dest = storage.unique_path(dest_dir, path.name)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), dest)
+        db.run("UPDATE files SET folder_id = ?, rel_path = ? WHERE id = ?", target["id"] if target else None,
+               dest.relative_to(settings.clients_dir).as_posix(), file_id)
+        db.log(admin["id"], "file_moved", f"{f['original_name']} -> {target['name'] if target else '/'}")
+        flash(request, f"Przeniesiono „{f['original_name']}” do „{target['name'] if target else 'katalogu głównego'}”.")
+        return RedirectResponse(space_url(admin, owner["id"], target["id"] if target else None), 303)
+
+    @app.get("/files/{file_id}/thumb")
+    def file_thumb(request: Request, file_id: int, s: str = "thumb"):
+        user = require_user(request)
+        f, path = file_for(user, file_id)
+        size = "preview" if s == "preview" else "thumb"
+        cached = thumbs.cache_path(settings.thumbs_dir, f["id"], f["sha256"], size)
+        if not cached.exists() and not thumbs.generate(path, settings.thumbs_dir, f["id"], f["sha256"]):
+            raise HTTPException(404, "Brak podglądu.")
+        return FileResponse(cached, media_type="image/webp",
+                            headers={"Cache-Control": "private, max-age=2592000, immutable"})
+
+    @app.get("/files/{file_id}/view")
+    def file_view(request: Request, file_id: int):
+        """Podgląd w przeglądarce (PDF, wideo, audio, zdjęcia) — tylko bezpieczne typy, bez HTML/SVG."""
+        user = require_user(request)
+        f, path = file_for(user, file_id)
+        k = thumbs.kind(f["original_name"])
+        ext = thumbs.ext_of(f["original_name"])
+        if not (k in ("pdf", "audio") or thumbs.plays_in_browser(f["original_name"])
+                or ext in ("jpg", "jpeg", "png", "webp", "gif")) or ext == "ai":
+            raise HTTPException(404, "Tego pliku nie da się podejrzeć — pobierz go.")
+        return FileResponse(path, filename=f["original_name"], content_disposition_type="inline", headers={
+            "X-Frame-Options": "SAMEORIGIN", "Content-Security-Policy": "frame-ancestors 'self'",
+            "Cache-Control": "private, max-age=600"})
+
+    @app.get("/admin/trash", response_class=HTMLResponse)
+    def trash_page(request: Request):
+        admin = require_user(request, "admin")
+        purge_old_trash()
+        rows = db.all(
+            "SELECT f.*, o.username, o.company, o.display_name AS owner_name, o.role AS owner_role,"
+            " d.display_name AS deleter FROM files f JOIN users o ON o.id = f.client_id"
+            " LEFT JOIN users d ON d.id = f.deleted_by WHERE f.deleted_at IS NOT NULL"
+            " AND (o.role = 'client' OR o.id = ?) ORDER BY f.deleted_at DESC", admin["id"])
+        items = []
+        for r in rows:
+            try:
+                left = TRASH_DAYS - (datetime.now(timezone.utc) - datetime.fromisoformat(r["deleted_at"])).days
+            except ValueError:
+                left = TRASH_DAYS
+            items.append({**dict(r), "days_left": max(0, left)})
+        return render(request, "admin_trash.html", items=items, total=sum(i["size"] for i in items),
+                      trash_days=TRASH_DAYS, nav="trash")
+
+    def trashed_or_404(admin, file_id: int):
+        f = db.one("SELECT * FROM files WHERE id = ? AND deleted_at IS NOT NULL", file_id)
+        if not f:
+            raise HTTPException(404, "Nie ma takiego pliku w koszu.")
+        space_owner_for_admin(admin, f["client_id"])
+        return f
+
+    @app.post("/admin/trash/{file_id}/restore")
+    def trash_restore(request: Request, file_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        f = trashed_or_404(admin, file_id)
+        restore_file(f, admin)
+        flash(request, f"Przywrócono „{f['original_name']}”.")
+        return RedirectResponse("/admin/trash", 303)
+
+    @app.post("/admin/trash/{file_id}/purge")
+    def trash_purge(request: Request, file_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        f = trashed_or_404(admin, file_id)
+        purge_file(f)
+        db.log(admin["id"], "purge", f["original_name"])
+        flash(request, f"Usunięto na zawsze „{f['original_name']}”.")
+        return RedirectResponse("/admin/trash", 303)
+
+    @app.post("/admin/trash/empty")
+    def trash_empty(request: Request, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        rows = db.all("SELECT f.* FROM files f JOIN users o ON o.id = f.client_id WHERE f.deleted_at IS NOT NULL"
+                      " AND (o.role = 'client' OR o.id = ?)", admin["id"])
+        for f in rows:
+            purge_file(f)
+        db.log(admin["id"], "trash_emptied", f"{len(rows)} plików")
+        flash(request, f"Kosz opróżniony ({len(rows)} plików).")
+        return RedirectResponse("/admin/trash", 303)
+
+    @app.get("/search", response_class=HTMLResponse)
+    def search(request: Request, q: str = ""):
+        user = require_user(request)
+        q = q.strip()[:100]
+        res = {"files": [], "folders": [], "clients": [], "backups": []}
+        if len(q) >= 2:
+            like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            if user["role"] == "admin":
+                scope, args = "(o.role = 'client' OR o.id = ?)", [user["id"]]
+            else:
+                scope, args = "o.id = ?", [user["id"]]
+            res["files"] = db.all(
+                "SELECT f.*, o.username, o.company, o.display_name AS owner_name, o.role AS owner_role,"
+                " up.role AS uploader_role, d.name AS folder_name FROM files f JOIN users o ON o.id = f.client_id"
+                " JOIN users up ON up.id = f.uploaded_by LEFT JOIN folders d ON d.id = f.folder_id"
+                f" WHERE f.deleted_at IS NULL AND {scope} AND (f.original_name LIKE ? ESCAPE '\\' OR f.note LIKE ? ESCAPE '\\')"
+                " ORDER BY f.uploaded_at DESC LIMIT 120", *args, like, like)
+            res["folders"] = db.all(
+                "SELECT d.*, o.username, o.company, o.display_name AS owner_name, o.role AS owner_role FROM folders d"
+                f" JOIN users o ON o.id = d.owner_id WHERE {scope} AND d.name LIKE ? ESCAPE '\\' ORDER BY d.name LIMIT 40",
+                *args, like)
+            if user["role"] == "admin":
+                res["clients"] = db.all(
+                    "SELECT * FROM users WHERE role = 'client' AND (username LIKE ? ESCAPE '\\' OR display_name LIKE ?"
+                    " ESCAPE '\\' OR company LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\') LIMIT 20", like, like, like, like)
+                res["backups"] = db.all(
+                    "SELECT b.*, d.name AS device_name, d.employee FROM backup_files b JOIN devices d ON d.id = b.device_id"
+                    " WHERE b.rel_path LIKE ? ESCAPE '\\' ORDER BY b.uploaded_at DESC LIMIT 60", like)
+        total = sum(len(v) for v in res.values())
+        return render(request, "search.html", q=q, res=res, total=total,
+                      nav="search")
 
     # ------------------------------------------------------------------ admin: klienci
 
@@ -630,20 +1043,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "clients": db.one("SELECT COUNT(*) AS n FROM users WHERE role = 'client' AND active = 1")["n"],
             "client_files_30": db.one(
                 "SELECT COUNT(*) AS n, COALESCE(SUM(f.size), 0) AS b FROM files f JOIN users u ON u.id = f.uploaded_by"
-                " WHERE u.role = 'client' AND substr(f.uploaded_at, 1, 10) >= ?", since),
-            "storage": db.one("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS b FROM files"),
+                " WHERE u.role = 'client' AND f.deleted_at IS NULL AND substr(f.uploaded_at, 1, 10) >= ?", since),
+            "storage": db.one("SELECT COUNT(*) AS n, COALESCE(SUM(f.size), 0) AS b FROM files f JOIN users c"
+                              " ON c.id = f.client_id WHERE c.role = 'client' AND f.deleted_at IS NULL"),
             "backups": db.one("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS b FROM backup_files"),
             "links": db.one(
                 "SELECT COUNT(*) AS n, COALESCE(SUM(downloads), 0) AS d FROM share_links WHERE revoked = 0"
                 " AND (expires_at IS NULL OR expires_at > ?)", now_iso()),
         }
+        purge_old_trash()
         days = daily_files()
         clients = client_rows()
         top = sorted(clients, key=lambda c: c["total_size"], reverse=True)[:8]
         recent = db.all(
             "SELECT f.*, u.display_name, u.company, u.username, up.role AS uploader_role FROM files f"
             " JOIN users u ON u.id = f.client_id JOIN users up ON up.id = f.uploaded_by"
-            " ORDER BY f.uploaded_at DESC LIMIT 8"
+            " WHERE u.role = 'client' AND f.deleted_at IS NULL ORDER BY f.uploaded_at DESC LIMIT 8"
         )
         devices = device_rows()
         return render(
@@ -739,15 +1154,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return RedirectResponse(f"/admin/clients/{cid}", 303)
 
     @app.get("/admin/clients/{client_id}", response_class=HTMLResponse)
-    def admin_client(request: Request, client_id: int):
+    def admin_client(request: Request, client_id: int, folder: int | None = None):
         require_user(request, "admin")
         client = client_or_404(client_id)
+        space = space_ctx(client, folder)
         creds = request.session.pop("new_credentials", None)
         mark_seen(require_user(request, "admin"), client_id)
         return render(
             request, "admin_client.html", client=client, files=client_files(client_id),
             messages=thread(client_id), credentials=creds, public_url=settings.public_url,
-            quota=quota_info(client), days=daily_files(client_id), nav="clients",
+            quota=quota_info(client), days=daily_files(client_id), nav="clients", space=space,
+            base_url=f"/admin/clients/{client_id}", upload_action=f"/admin/clients/{client_id}/upload",
             folder=client_dir(client).as_posix().replace(settings.data_dir.as_posix(), "", 1),
         )
 
@@ -812,6 +1229,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         files: list[UploadFile] | None = File(None),
         upload_ids: list[str] = Form([]),
         note: str = Form(""),
+        folder_id: int | None = Form(None),
         csrf: str = Form(""),
     ):
         check_csrf(request, csrf)
@@ -819,7 +1237,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         client = client_or_404(client_id)
         count = 0
         for up in incoming(admin, files, upload_ids):
-            save_upload(client, admin, up, note)
+            save_upload(client, admin, up, note, folder_id)
             count += 1
         if note.strip():
             add_message(client_id, admin, note)
@@ -827,7 +1245,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             notify_client(client, "Nowe pliki od BSK Media",
                           [f"Udostępniliśmy Ci plików: {count}.", note.strip()])
         flash(request, f"Udostępniono klientowi plików: {count}.")
-        return RedirectResponse(f"/admin/clients/{client_id}", 303)
+        return RedirectResponse(space_url(admin, client_id, folder_id), 303)
 
     @app.post("/admin/clients/{client_id}/message")
     def admin_message(request: Request, client_id: int, body: str = Form(...), csrf: str = Form("")):
@@ -1229,7 +1647,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if problem:
             raise HTTPException(404, problem)
         if link["kind"] == "file":
-            f = db.one("SELECT rel_path FROM files WHERE id = ?", link["file_id"])
+            f = db.one("SELECT rel_path FROM files WHERE id = ? AND deleted_at IS NULL", link["file_id"])
             path = settings.clients_dir / f["rel_path"] if f else None
             base = settings.clients_dir
         else:
@@ -1305,7 +1723,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def office_file_or_404(file_id: int, purpose: str, sig: str):
         if not office_ready() or not office.check_url(settings.office_secret, file_id, purpose, sig):
             raise HTTPException(403, "Brak dostępu.")
-        f = db.one("SELECT * FROM files WHERE id = ?", file_id)
+        f = db.one("SELECT * FROM files WHERE id = ? AND deleted_at IS NULL", file_id)
         if not f:
             raise HTTPException(404, "Nie ma takiego pliku.")
         path = settings.clients_dir / f["rel_path"]

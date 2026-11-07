@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Szukaj: {{ q }} — {{ site_name }}{% endblock %}
+{% block heading %}Wyniki wyszukiwania{% endblock %}
+{% block subtitle %}<div class="subtitle">{% if q|length < 2 %}Wpisz co najmniej 2 znaki.{% else %}„{{ q }}” — {{ total }} {{ 'wynik' if total == 1 else 'wyników' }}{% endif %}</div>{% endblock %}
+{% macro where(r) -%}
+{%- if user.role == 'admin' -%}
+  {%- if r.owner_role == 'admin' -%}/admin/my{%- else -%}/admin/clients/{{ r.client_id or r.owner_id }}{%- endif -%}
+{%- else -%}/files{%- endif -%}
+{%- endmacro %}
+{% block content %}
+{% if res.clients %}
+<section class="card"><div class="card-head">{{ ui.icon("users") }}<h2>Klienci</h2></div>
+  <div class="chips">{% for c in res.clients %}<a class="person chip-link" href="/admin/clients/{{ c.id }}"><span class="avatar">{{ (c.company or c.display_name or c.username)|initials }}</span><span><b>{{ c.company or c.display_name or c.username }}</b><span>{{ c.display_name }} · {{ c.username }}</span></span></a>{% endfor %}</div>
+</section>
+{% endif %}
+{% if res.folders %}
+<section class="card"><div class="card-head">{{ ui.icon("folder") }}<h2>Katalogi</h2></div>
+  <div class="chips">{% for d in res.folders %}<a class="chip-link folder-chip" href="{{ where(d) }}?folder={{ d.id }}#pliki">{{ ui.icon("folder") }}<span><b>{{ d.name }}</b><span>{{ 'Mój dysk' if d.owner_role == 'admin' else (d.company or d.owner_name or d.username) }}</span></span></a>{% endfor %}</div>
+</section>
+{% endif %}
+{% if res.files %}
+<section class="card"><div class="card-head">{{ ui.icon("file") }}<h2>Pliki</h2></div>
+  <div class="table-wrap"><table class="list"><tbody>
+  {% for f in res.files %}
+  <tr>
+    <td><div class="file">{% if can_thumb(f.original_name) %}<img class="sthumb" src="/files/{{ f.id }}/thumb?v={{ f.sha256[:12] }}" alt="" loading="lazy">{% else %}{{ ui.ficon(f.original_name) }}{% endif %}
+      <div><a href="/files/{{ f.id }}/download">{{ f.original_name }}</a>
+      <div class="meta">{{ f.size|size }} · {{ f.uploaded_at|ago }}{% if f.note %} · {{ f.note }}{% endif %}</div></div></div></td>
+    <td class="small">{% if user.role == 'admin' %}<a href="{{ where(f) }}{{ '?folder=' ~ f.folder_id if f.folder_id else '' }}#pliki">{{ 'Mój dysk' if f.owner_role == 'admin' else (f.company or f.owner_name or f.username) }}</a>{% else %}<a href="/files{{ '?folder=' ~ f.folder_id if f.folder_id else '' }}#pliki">Pliki</a>{% endif %}{% if f.folder_name %} / {{ f.folder_name }}{% endif %}</td>
+    <td class="actions"><a class="button ghost btn-sm" href="/files/{{ f.id }}/download" title="Pobierz">{{ ui.icon("download") }}</a></td>
+  </tr>
+  {% endfor %}
+  </tbody></table></div>
+</section>
+{% endif %}
+{% if res.backups %}
+<section class="card"><div class="card-head">{{ ui.icon("shield") }}<h2>Kopie pracowników</h2></div>
+  <div class="table-wrap"><table class="list"><tbody>
+  {% for b in res.backups %}
+  <tr><td><div class="file">{{ ui.ficon(b.rel_path) }}<div><a href="/admin/devices/{{ b.device_id }}/download?path={{ b.rel_path|q }}">{{ b.rel_path.split('/')[-1] }}</a>
+    <div class="meta">{{ b.rel_path }} · {{ b.size|size }}</div></div></div></td>
+    <td class="small"><a href="/admin/devices/{{ b.device_id }}">{{ b.employee or b.device_name }}</a></td>
+    <td class="actions"><a class="button ghost btn-sm" href="/admin/devices/{{ b.device_id }}/versions?path={{ b.rel_path|q }}" title="Wersje">{{ ui.icon("clock") }}</a></td></tr>
+  {% endfor %}
+  </tbody></table></div>
+</section>
+{% endif %}
+{% if q|length >= 2 and not total %}<section class="card">{{ ui.empty("Nic nie znaleziono.", "search") }}</section>{% endif %}
+{% endblock %}

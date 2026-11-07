@@ -1,0 +1,111 @@
+{% import "_ui.html" as ui with context %}
+{# Przeglądarka plików: okruszki, katalogi z okładkami, galeria miniatur / lista, podgląd pełnoekranowy #}
+{% macro browser(space, user, csrf, base_url, can_manage=False, show_source=True) -%}
+{% set owner = space.owner %}
+{% set q = "&" if "?" in base_url else "?" %}
+<div class="browser" id="pliki" data-browser>
+  <div class="bar">
+    <nav class="crumbs" aria-label="Ścieżka">
+      <a href="{{ base_url }}#pliki" class="{{ 'here' if not space.folder }}">{{ ui.icon("folder") }}{{ 'Mój dysk' if owner.role == 'admin' else 'Pliki' }}</a>
+      {% for c in space.crumbs %}<span class="sep">/</span><a href="{{ base_url }}{{ q }}folder={{ c.id }}#pliki" class="{{ 'here' if loop.last }}">{{ c.name }}</a>{% endfor %}
+    </nav>
+    <span class="spacer"></span>
+    {% if show_source %}
+    <div class="tabs" data-filter-tabs><button class="on" data-f="all">Wszystkie</button><button data-f="client">{{ 'Ode mnie' if user.role == 'client' else 'Od klienta' }}</button><button data-f="agency">Od BSK Media</button></div>
+    {% endif %}
+    <div class="tabs" data-view-tabs><button class="on" data-v="grid" title="Galeria">{{ ui.icon("img") }}</button><button data-v="list" title="Lista">{{ ui.icon("list") }}</button></div>
+    {% if can_manage %}
+    <details class="pop">
+      <summary class="button btn-sm primary">{{ ui.icon("plus") }}Nowy katalog</summary>
+      <form method="post" action="/spaces/{{ owner.id }}/folders" class="pop-body stack">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        {% if space.folder %}<input type="hidden" name="parent_id" value="{{ space.folder.id }}">{% endif %}
+        <label>Nazwa katalogu <input name="name" required maxlength="80" placeholder="np. Kampania jesień 2026" autofocus></label>
+        <button class="primary">Utwórz</button>
+      </form>
+    </details>
+    {% endif %}
+  </div>
+
+  {% if space.subfolders %}
+  <div class="folders">
+    {% for d in space.subfolders %}
+    <div class="folder-tile">
+      <a class="folder-link" href="{{ base_url }}{{ q }}folder={{ d.id }}#pliki">
+        <div class="folder-cover covers-{{ d.covers|length }}">
+          {% for c in d.covers %}<img src="/files/{{ c.id }}/thumb?v={{ c.sha256[:12] }}" alt="" loading="lazy">{% else %}<span class="folder-ico">{{ ui.icon("folder") }}</span>{% endfor %}
+        </div>
+        <div class="folder-meta"><b>{{ d.name }}</b><span>{{ d.n_files }} {{ 'plik' if d.n_files == 1 else ('pliki' if d.n_files % 10 in [2,3,4] and d.n_files % 100 not in [12,13,14] else 'plików') }}{% if d.n_dirs %} · {{ d.n_dirs }} kat.{% endif %}</span></div>
+      </a>
+      {% if can_manage %}
+      <details class="menu">
+        <summary title="Więcej">⋯</summary>
+        <div class="menu-body">
+          <form method="post" action="/folders/{{ d.id }}/rename" class="stack">
+            <input type="hidden" name="csrf" value="{{ csrf }}"><input name="name" value="{{ d.name }}" maxlength="80" required>
+            <button class="btn-sm">Zmień nazwę</button></form>
+          <form method="post" action="/folders/{{ d.id }}/delete" data-confirm="Usunąć katalog „{{ d.name }}”? Pliki z niego trafią do kosza (można je przywrócić przez 30 dni).">
+            <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-sm danger">{{ ui.icon("trash") }}Usuń katalog</button></form>
+        </div>
+      </details>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if space.files %}
+  <div class="gallery" data-gallery>
+    {% for f in space.files %}
+    {% set k = thumb_kind(f.original_name) %}{% set dt = doc_type(f.original_name) %}
+    {% set ext = f.original_name.rsplit('.', 1)[-1]|upper if '.' in f.original_name else 'PLIK' %}
+    <article class="gcard" data-file data-from="{{ 'agency' if f.uploader_role == 'admin' else 'client' }}"
+      data-id="{{ f.id }}" data-name="{{ f.original_name }}" data-kind="{{ k }}" data-ext="{{ ext }}"
+      data-meta="{{ f.size|size }} · {{ f.uploaded_at|dt }}{% if f.version > 1 %} · wersja {{ f.version }}{% endif %}"
+      data-thumb="{{ '/files/' ~ f.id ~ '/thumb?v=' ~ f.sha256[:12] if can_thumb(f.original_name) else '' }}"
+      data-preview="{{ '/files/' ~ f.id ~ '/thumb?s=preview&v=' ~ f.sha256[:12] if can_thumb(f.original_name) else '' }}"
+      data-view="{{ '/files/' ~ f.id ~ '/view' if k in ['video', 'audio', 'pdf'] and ext not in ['AI'] else '' }}"
+      data-download="/files/{{ f.id }}/download" data-edit="{{ '/files/' ~ f.id ~ '/edit' if office_enabled and dt else '' }}">
+      <button type="button" class="gthumb kind-{{ k }} {{ (f.original_name|ftype) }}" data-open aria-label="Podgląd {{ f.original_name }}">
+        {% if can_thumb(f.original_name) %}<img src="/files/{{ f.id }}/thumb?v={{ f.sha256[:12] }}" alt="" loading="lazy" data-fallback>{% endif %}
+        <span class="gicon">{{ ui.icon(f.original_name|ftype) }}<em>{{ ext }}</em></span>
+        {% if k == 'video' %}<span class="play">▶</span>{% endif %}
+        {% if f.version > 1 %}<span class="chip">v{{ f.version }}</span>{% endif %}
+      </button>
+      <div class="ginfo">
+        <div class="gname" title="{{ f.original_name }}">{{ f.original_name }}</div>
+        <div class="gmeta"><span class="src {{ 'agency' if f.uploader_role == 'admin' else '' }}" title="{{ 'Od BSK Media' if f.uploader_role == 'admin' else 'Od klienta' }}"></span>{{ f.size|size }} · {% if f.modified_at %}edytowano {{ f.modified_at|ago }}{% else %}{{ f.uploaded_at|ago }}{% endif %}</div>
+        {% if f.note %}<div class="gnote" title="{{ f.note }}">{{ f.note }}</div>{% endif %}
+      </div>
+      <div class="gactions">
+        <a class="iconbtn" href="/files/{{ f.id }}/download" title="Pobierz">{{ ui.icon("download") }}</a>
+        {% if office_enabled and dt %}<a class="iconbtn" href="/files/{{ f.id }}/edit" title="{{ 'Edytuj online' if dt[2] else 'Podgląd' }}">{{ ui.icon("edit") }}</a>{% endif %}
+        {% if user.role == 'admin' or f.uploaded_by == user.id %}
+        <details class="menu">
+          <summary class="iconbtn" title="Więcej">⋯</summary>
+          <div class="menu-body">
+            {% if user.role == 'admin' %}
+            <form method="post" action="/admin/shares/new"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="file">
+              <input type="hidden" name="file_id" value="{{ f.id }}"><input type="hidden" name="expires_days" value="7"><input type="hidden" name="back" value="{{ base_url }}">
+              <button class="btn-sm">{{ ui.icon("link") }}Link do pobrania (7 dni)</button></form>
+            {% if space.all_folders or space.folder %}
+            <form method="post" action="/files/{{ f.id }}/move" class="stack"><input type="hidden" name="csrf" value="{{ csrf }}">
+              <select name="folder_id"><option value="">— katalog główny —</option>
+                {% for af in space.all_folders %}<option value="{{ af.id }}" {{ 'selected' if af.id == f.folder_id }}>{{ af.path }}</option>{% endfor %}</select>
+              <button class="btn-sm">{{ ui.icon("folder") }}Przenieś</button></form>
+            {% endif %}
+            {% endif %}
+            <form method="post" action="/files/{{ f.id }}/delete" data-confirm="Przenieść „{{ f.original_name }}” do kosza?">
+              <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-sm danger">{{ ui.icon("trash") }}Do kosza</button></form>
+          </div>
+        </details>
+        {% endif %}
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  {% elif not space.subfolders %}
+  {{ ui.empty("Ten katalog jest pusty — przeciągnij tu pliki w formularzu wysyłki.", "img") }}
+  {% endif %}
+</div>
+{%- endmacro %}
