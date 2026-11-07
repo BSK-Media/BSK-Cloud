@@ -381,6 +381,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         def __init__(self, row):
             self.row = row
             self.filename = row["name"]
+            self.subdir = row["target"] or ""  # podfolder przy wysyłce całego folderu, np. „Grecja 2021/Dzień 1”
+
+    SKIP_NAMES = {".ds_store", "thumbs.db", "desktop.ini"}
+
+    def clean_dir(raw: str) -> str:
+        """Bezpieczna ścieżka podfolderu z przeglądarki (pusta = bez podfolderu)."""
+        raw = raw.strip().strip("/\\")
+        return storage.safe_rel_path(raw) if raw else ""
+
+    def ensure_folder_path(owner, base_folder_id: int | None, subdir: str, creator) -> int | None:
+        """Zakłada brakujące katalogi z wysłanego folderu i zwraca id najgłębszego."""
+        parent = folder_row(owner["id"], base_folder_id)
+        parent_id = parent["id"] if parent else None
+        for part in [p for p in subdir.split("/") if p][:20]:
+            name = storage.safe_name(part, "katalog")[:80]
+            existing = next((r for r in db.all("SELECT * FROM folders WHERE owner_id = ? AND parent_id IS ?",
+                                               owner["id"], parent_id) if r["name"].casefold() == name.casefold()), None)
+            if existing:
+                parent_id = existing["id"]
+                continue
+            parent_id = db.run("INSERT INTO folders (owner_id, parent_id, name, created_by, created_at) VALUES (?, ?, ?, ?, ?)",
+                               owner["id"], parent_id, name, creator["id"], now_iso())
+            folder_dir(owner, db.one("SELECT * FROM folders WHERE id = ?", parent_id)).mkdir(parents=True, exist_ok=True)
+        return parent_id
+
+    def save_into(owner, uploader, src, note: str, folder_id: int | None) -> int | None:
+        """Zapis z uwzględnieniem podfolderu; pomija pliki systemowe (Thumbs.db, .DS_Store…)."""
+        if (src.filename or "").casefold() in SKIP_NAMES:
+            if isinstance(src, ChunkedFile):
+                chunk_store.remove(src.row["id"])
+            return None
+        sub = getattr(src, "subdir", "")
+        target = ensure_folder_path(owner, folder_id, sub, uploader) if sub else folder_id
+        return save_upload(owner, uploader, src, note, target)
 
     def incoming(user, files, upload_ids) -> list:
         out = [f for f in (files or []) if f.filename]
@@ -802,8 +836,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         owner = space_of(user)
         names = []
         for up in incoming(user, files, upload_ids):
-            save_upload(owner, user, up, note, folder_id)
-            names.append(up.filename)
+            if save_into(owner, user, up, note, folder_id):
+                names.append(up.filename)
         if note.strip():
             add_message(owner["id"], user, note)
         if names:
@@ -875,8 +909,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         admin = require_user(request, "admin")
         count = 0
         for up in incoming(admin, files, upload_ids):
-            save_upload(admin, admin, up, note, folder_id)
-            count += 1
+            if save_into(admin, admin, up, note, folder_id):
+                count += 1
         flash(request, f"Zapisano plików na Twoim dysku: {count}.")
         return RedirectResponse(space_url(admin, admin["id"], folder_id), 303)
 
@@ -960,6 +994,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.log(admin["id"], "folder_deleted", f"{folder['name']} ({moved} plików do kosza)")
         flash(request, f"Usunięto katalog „{folder['name']}”" + (f", plików w koszu: {moved}." if moved else "."))
         return RedirectResponse(space_url(admin, owner["id"], folder["parent_id"]), 303)
+
+    @app.post("/files/bulk")
+    def bulk_files(request: Request, ids: list[int] = Form([]), action: str = Form(...), folder_id: int | None = Form(None),
+                   back: str = Form("/"), csrf: str = Form("")):
+        """Działania na wielu plikach naraz: do kosza albo przeniesienie (przeniesienie tylko admin)."""
+        check_csrf(request, csrf)
+        user = require_user(request)
+        if action not in ("trash", "move"):
+            raise HTTPException(400, "Nieznana operacja.")
+        if action == "move" and user["role"] != "admin":
+            raise HTTPException(403, "Przenosić pliki może tylko BSK Media.")
+        done = skipped = 0
+        for fid in ids[:2000]:
+            try:
+                f, path = file_for(user, fid)
+            except HTTPException:
+                skipped += 1
+                continue
+            if action == "trash":
+                if user["role"] != "admin" and f["uploaded_by"] != user["id"]:
+                    skipped += 1
+                    continue
+                trash_file(f, user)
+                done += 1
+            elif action == "move" and user["role"] == "admin":
+                owner = space_owner_for_admin(user, f["client_id"])
+                target = folder_row(owner["id"], folder_id)
+                if (f["folder_id"] or None) == (target["id"] if target else None):
+                    continue
+                dest_dir = folder_dir(owner, target) if target else client_dir(owner) / (
+                    "od BSK Media" if f["uploaded_by"] != owner["id"] and owner["role"] == "client" else "")
+                dest = storage.unique_path(dest_dir, path.name)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(path), dest)
+                db.run("UPDATE files SET folder_id = ?, rel_path = ? WHERE id = ?", target["id"] if target else None,
+                       dest.relative_to(settings.clients_dir).as_posix(), f["id"])
+                done += 1
+            else:
+                raise HTTPException(400, "Nieznana operacja.")
+        db.log(user["id"], f"bulk_{action}", f"{done} plików")
+        verb = "Przeniesiono do kosza" if action == "trash" else "Przeniesiono"
+        flash(request, f"{verb}: {done} plików." + (f" Pominięto {skipped} (brak uprawnień)." if skipped else ""))
+        return RedirectResponse(back if back.startswith(("/files", "/admin/")) else "/", 303)
 
     @app.post("/files/{file_id}/move")
     def move_file(request: Request, file_id: int, folder_id: int | None = Form(None), csrf: str = Form("")):
@@ -1303,7 +1380,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         client = client_or_404(client_id)
         count, names = 0, []
         for up in incoming(admin, files, upload_ids):
-            fid = save_upload(client, admin, up, note, folder_id)
+            fid = save_into(client, admin, up, note, folder_id)
+            if not fid:
+                continue
             if review:
                 db.run("UPDATE files SET review_status = 'review', review_by = NULL, review_at = NULL WHERE id = ?", fid)
             names.append(up.filename)
@@ -2133,6 +2212,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             body = await request.json()
             name, size = str(body["name"]), int(body["size"])
+            folder_path = clean_dir(str(body.get("dir") or ""))
         except (ValueError, KeyError, TypeError):
             raise HTTPException(400, "Nieprawidłowe dane.")
         if size < 0:
@@ -2148,7 +2228,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(
                     413, f"Brak miejsca na koncie (limit {owner['quota_mb']} MB). Skontaktuj się z BSK Media."
                 )
-        row = chunk_store.create(name=name, size=size, user_id=user["id"])
+        row = chunk_store.create(name=name, size=size, user_id=user["id"], target=folder_path)
         return {"id": row["id"], "received": row["received"], "chunk_size": chunks.CHUNK_SIZE}
 
     @app.get("/api/uploads/{upload_id}")
@@ -2228,13 +2308,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             security.hash_password(password.strip()) if password.strip() else "", admin["id"], now_iso(), iso_in(days))
         tdir = settings.transfers_dir / str(tid)
         for src in sources:
-            dest = storage.unique_path(tdir, storage.safe_name(src.filename or "plik"))
+            if (src.filename or "").casefold() in SKIP_NAMES:
+                continue
+            sub = getattr(src, "subdir", "")
+            dest = storage.unique_path(tdir / sub if sub else tdir, storage.safe_name(src.filename or "plik"))
             try:
                 size, sha = place(src, dest, max_upload)
             except storage.TooLarge:
                 raise HTTPException(413, f"Plik przekracza limit {settings.max_upload_mb} MB.")
+            display = f"{sub}/{src.filename or dest.name}" if sub else (src.filename or dest.name)
             fid = db.run("INSERT INTO transfer_files (transfer_id, name, rel_path, size, sha256) VALUES (?, ?, ?, ?, ?)",
-                         tid, src.filename or dest.name, dest.relative_to(settings.transfers_dir).as_posix(), size, sha)
+                         tid, display, dest.relative_to(settings.transfers_dir).as_posix(), size, sha)
             thumbs.generate_async(dest, settings.thumbs_dir / "transfery", fid, sha)
         t = db.one("SELECT * FROM transfers WHERE id = ?", tid)
         tf = transfer_files_of(tid)
@@ -2382,7 +2466,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         t = transfer_ready(request, token)
         f, path = transfer_file_or_404(t, file_id)
         count_download(request, t, f["name"])
-        return FileResponse(path, filename=f["name"])
+        return FileResponse(path, filename=f["name"].rsplit("/", 1)[-1])
 
     @app.get("/t/{token}/thumb/{file_id}")
     def transfer_thumb(request: Request, token: str, file_id: int, s: str = "thumb"):
@@ -2402,7 +2486,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for f in transfer_files_of(t["id"]):
             path = settings.transfers_dir / f["rel_path"]
             if storage.inside(settings.transfers_dir, path) and path.is_file():
-                entries.append((storage.safe_name(f["name"]), path))
+                entries.append((storage.safe_rel_path(f["name"]), path))
         if not entries:
             raise HTTPException(404, "Brak plików.")
         count_download(request, t, f"wszystkie pliki (ZIP, {len(entries)})")

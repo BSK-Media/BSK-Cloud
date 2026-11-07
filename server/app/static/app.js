@@ -5,45 +5,97 @@ document.querySelectorAll("form[data-confirm]").forEach((form) => {
   });
 });
 
+// Wysyłka plików i całych folderów (struktura katalogów zostaje zachowana)
+const SKIP = new Set([".ds_store", "thumbs.db", "desktop.ini"]);
+
+function readAllEntries(reader) {
+  return new Promise((resolve) => {
+    const out = [];
+    const next = () => reader.readEntries((batch) => {
+      if (!batch.length) return resolve(out);
+      out.push(...batch); next();
+    }, () => resolve(out));
+    next();
+  });
+}
+
+async function walkEntry(entry, dir, out) {
+  if (entry.isFile) {
+    const file = await new Promise((res) => entry.file(res, () => res(null)));
+    if (file && !SKIP.has(file.name.toLowerCase())) out.push({ file, dir });
+  } else if (entry.isDirectory) {
+    const sub = dir ? `${dir}/${entry.name}` : entry.name;
+    for (const child of await readAllEntries(entry.createReader())) await walkEntry(child, sub, out);
+  }
+}
+
 document.querySelectorAll("form[data-upload]").forEach((form) => {
   const drop = form.querySelector(".drop");
-  const input = form.querySelector("input[type=file]");
+  const input = drop.querySelector("input[type=file]");
+  const folderInput = form.querySelector("[data-folder-input]");
   const label = drop.querySelector("span");
+  const summary = form.querySelector("[data-pick-summary]");
   const bar = form.querySelector("progress");
-  const button = form.querySelector("button");
-  const showNames = () => {
-    const n = input.files.length;
-    if (n) label.textContent = n === 1 ? input.files[0].name : `Wybrano plików: ${n}`;
+  const button = form.querySelector("button.primary") || form.querySelector("button");
+  const buttonText = button.textContent;
+  let picked = [];
+
+  const describe = () => {
+    const dirs = new Set(picked.filter((p) => p.dir).map((p) => p.dir.split("/")[0]));
+    const size = picked.reduce((n, p) => n + p.file.size, 0);
+    const mb = size > 1073741824 ? `${(size / 1073741824).toFixed(1)} GB` : `${(size / 1048576).toFixed(1)} MB`;
+    const text = !picked.length ? "" : picked.length === 1 && !dirs.size ? picked[0].file.name
+      : `Wybrano ${picked.length} plików${dirs.size ? ` z ${dirs.size} ${dirs.size === 1 ? "folderu" : "folderów"}` : ""} · ${mb}`;
+    label.textContent = text || "Przeciągnij pliki lub całe foldery albo kliknij, aby wybrać pliki";
+    if (summary) summary.textContent = text;
+    input.required = !picked.length;
   };
-  input.addEventListener("change", showNames);
+  const setPicked = (list) => { picked = list.filter((p) => !SKIP.has(p.file.name.toLowerCase())); describe(); };
+
+  input.addEventListener("change", () => setPicked(Array.from(input.files).map((file) => ({ file, dir: "" }))));
+  if (folderInput) folderInput.addEventListener("change", () => setPicked(Array.from(folderInput.files).map((file) => {
+    const parts = (file.webkitRelativePath || file.name).split("/");
+    parts.pop();
+    return { file, dir: parts.join("/") };
+  })));
   ["dragenter", "dragover"].forEach((ev) =>
     drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
   ["dragleave", "drop"].forEach((ev) =>
     drop.addEventListener(ev, () => drop.classList.remove("over")));
-  drop.addEventListener("drop", (e) => {
+  drop.addEventListener("drop", async (e) => {
     e.preventDefault();
-    input.files = e.dataTransfer.files;
-    showNames();
+    const items = Array.from(e.dataTransfer.items || []);
+    if (items.length && items[0].webkitGetAsEntry) {
+      label.textContent = "Odczytuję foldery…";
+      const entries = items.map((i) => i.webkitGetAsEntry()).filter(Boolean);
+      const out = [];
+      for (const entry of entries) await walkEntry(entry, "", out);
+      setPicked(out);
+    } else {
+      // starsze przeglądarki: same pliki (foldery mają rozmiar 0 i pusty typ — pomijamy)
+      setPicked(Array.from(e.dataTransfer.files).filter((f) => f.size > 0 || f.type).map((file) => ({ file, dir: "" })));
+    }
   });
 
   form.addEventListener("submit", async (e) => {
-    if (!window.fetch || !window.Blob || !input.files.length) return;
+    if (!window.fetch || !window.Blob) return;
+    if (!picked.length && input.files.length) setPicked(Array.from(input.files).map((file) => ({ file, dir: "" })));
+    if (!picked.length) { e.preventDefault(); alert("Wybierz pliki albo folder."); return; }
     e.preventDefault();
-    const files = Array.from(input.files);
     const csrf = form.querySelector("input[name=csrf]").value;
-    const total = files.reduce((n, f) => n + f.size, 0) || 1;
+    const total = picked.reduce((n, p) => n + p.file.size, 0) || 1;
     let done = 0;
     bar.hidden = false;
     button.disabled = true;
     const show = (i, extra) => {
       bar.value = Math.floor((done / total) * 100);
-      button.textContent = `Wysyłanie ${i + 1}/${files.length}… ${bar.value}%${extra || ""}`;
+      button.textContent = `Wysyłanie ${i + 1}/${picked.length}… ${bar.value}%${extra || ""}`;
     };
     try {
       const ids = [];
-      for (let i = 0; i < files.length; i++) {
-        ids.push(await sendChunked(files[i], csrf, (sent) => { done += sent; show(i); },
-                                   (msg) => show(i, msg)));
+      for (let i = 0; i < picked.length; i++) {
+        ids.push(await sendChunked(picked[i].file, csrf, (sent) => { done += sent; show(i); },
+                                   (msg) => show(i, msg), picked[i].dir));
       }
       const data = new FormData(form);
       data.delete("files");
@@ -57,7 +109,7 @@ document.querySelectorAll("form[data-upload]").forEach((form) => {
     } catch (err) {
       alert(err.message || "Wysyłka nie powiodła się.");
       button.disabled = false;
-      button.textContent = "Wyślij";
+      button.textContent = buttonText;
       bar.hidden = true;
     }
   });
@@ -81,10 +133,11 @@ async function errorText(res) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Wysyła plik w kawałkach (~50 MB). Po zerwaniu połączenia ponawia i wznawia od miejsca przerwania.
-async function sendChunked(file, csrf, onProgress, onStatus) {
+async function sendChunked(file, csrf, onProgress, onStatus, dir) {
   const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
   const init = await fetch("/api/uploads", {
-    method: "POST", credentials: "same-origin", headers, body: JSON.stringify({ name: file.name, size: file.size }),
+    method: "POST", credentials: "same-origin", headers,
+    body: JSON.stringify({ name: file.name, size: file.size, dir: dir || "" }),
   });
   if (!init.ok) throw new Error(await errorText(init));
   const up = await init.json();
@@ -633,3 +686,49 @@ document.querySelectorAll("[data-install]").forEach((b) => b.addEventListener("c
   box.addEventListener("click", (e) => { if (e.target !== img) close(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
 })();
+
+
+// ---------------------------------------------------------------- zaznaczanie wielu plików
+document.querySelectorAll("[data-browser]").forEach((browser) => {
+  const bar = browser.querySelector("[data-bulkbar]");
+  if (!bar) return;
+  const boxes = () => Array.from(browser.querySelectorAll("[data-select]"));
+  const count = bar.querySelector("[data-bulk-count]");
+  const update = () => {
+    const sel = boxes().filter((b) => b.checked);
+    boxes().forEach((b) => b.closest("[data-file]").classList.toggle("selected", b.checked));
+    const on = sel.length > 0 || browser.classList.contains("selecting");
+    browser.classList.toggle("selecting", on);
+    bar.hidden = !on;
+    count.textContent = `${sel.length} ${sel.length === 1 ? "zaznaczony" : "zaznaczonych"}`;
+  };
+  boxes().forEach((b) => b.addEventListener("change", update));
+  const toggle = browser.querySelector("[data-select-toggle]");
+  if (toggle) toggle.addEventListener("click", () => { browser.classList.toggle("selecting"); update(); });
+  bar.querySelector("[data-select-all]").addEventListener("click", () => {
+    const visible = boxes().filter((b) => !b.closest("[data-file]").hidden);
+    const all = visible.every((b) => b.checked);
+    visible.forEach((b) => { b.checked = !all; });
+    update();
+  });
+  bar.querySelector("[data-select-cancel]").addEventListener("click", () => {
+    boxes().forEach((b) => { b.checked = false; });
+    browser.classList.remove("selecting");
+    update();
+  });
+  // w trybie zaznaczania kliknięcie miniatury zaznacza plik zamiast otwierać podgląd
+  browser.querySelectorAll("[data-open]").forEach((btn) => btn.addEventListener("click", (e) => {
+    if (!browser.classList.contains("selecting")) return;
+    e.stopImmediatePropagation();
+    const box = btn.closest("[data-file]").querySelector("[data-select]");
+    box.checked = !box.checked;
+    update();
+  }, true));
+  bar.addEventListener("submit", (e) => {
+    const sel = boxes().filter((b) => b.checked);
+    if (!sel.length) { e.preventDefault(); alert("Zaznacz pliki."); return; }
+    if (e.submitter && e.submitter.value === "trash" && !confirm(`Przenieść do kosza ${sel.length} plików?`)) { e.preventDefault(); return; }
+    bar.querySelectorAll("input[name=ids]").forEach((x) => x.remove());
+    sel.forEach((b) => { const h = document.createElement("input"); h.type = "hidden"; h.name = "ids"; h.value = b.value; bar.append(h); });
+  });
+});

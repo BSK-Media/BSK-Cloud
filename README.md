@@ -267,6 +267,10 @@ W panelu klienta jest też **Nowy arkusz / Nowy dokument**.
 - **Galeria:** miniatury zdjęć (JPG, PNG, WEBP, TIFF, HEIC, PSD), pierwszej strony PDF/AI i klatki z wideo.
   Kliknięcie otwiera podgląd pełnoekranowy (strzałki ←/→, przesuwanie palcem, odtwarzanie wideo i audio,
   PDF). Można też przełączyć na widok listy.
+- **Całe foldery:** przeciągnij foldery z pulpitu albo kliknij **Wybierz folder**. Struktura podfolderów zostaje
+  odtworzona jako katalogi, a pliki systemowe (Thumbs.db, .DS_Store, desktop.ini) są pomijane.
+- **Zaznaczanie wielu plików:** przycisk **☑ Zaznacz** (albo pole wyboru na miniaturze), potem **Przenieś** do
+  katalogu albo **Do kosza**. Działa też **Zaznacz wszystko**.
 - **Wersje:** plik o tej samej nazwie w tym samym katalogu staje się nową wersją (v2, v3…), a poprzednia
   zostaje w `.wersje/`.
 - **Mój dysk:** prywatna przestrzeń administratora w `bsk-dane/klienci/_prywatne/<login>`, niewidoczna dla klientów.

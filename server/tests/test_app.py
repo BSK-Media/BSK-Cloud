@@ -997,3 +997,66 @@ def test_transfer_password_and_backgrounds(app, admin):
     anon.post(path, data={"csrf": t2, "password": "tajne123"})
     assert anon.get(f"{path}/f/{fid}").content == b"A"
     assert anon.get("/t/tlo/..%2Fapp%2Fbskcloud.db").status_code == 404
+
+
+def _chunk_upload(c, h, name, data, dir_=""):
+    up = c.post("/api/uploads", json={"name": name, "size": len(data), "dir": dir_}, headers=h).json()
+    if data:
+        c.put(f"/api/uploads/{up['id']}", params={"offset": 0}, content=data, headers=h)
+    return up["id"]
+
+
+def test_folder_upload_keeps_structure(app, admin):
+    tok = csrf_of(admin, "/admin/my")
+    h = {"X-CSRF-Token": tok}
+    ids = [_chunk_upload(admin, h, "IMG_001.jpg", _png(), "Grecja 2021"),
+           _chunk_upload(admin, h, "IMG_002.jpg", _png(), "Grecja 2021/Dzień 2"),
+           _chunk_upload(admin, h, "Thumbs.db", b"x", "Grecja 2021"),
+           _chunk_upload(admin, h, "licencja.txt", b"KEY", "Licencje")]
+    assert admin.post("/api/uploads", json={"name": "x", "size": 1, "dir": "../../etc"}, headers=h).status_code == 400
+    r = admin.post("/admin/my/upload", data={"csrf": tok, "upload_ids": ids})
+    assert "Zapisano plików na Twoim dysku: 3" in r.text
+    names = {r["name"]: r for r in app.state.db.all("SELECT * FROM folders WHERE owner_id = 1")}
+    assert set(names) == {"Grecja 2021", "Dzień 2", "Licencje"}
+    assert names["Dzień 2"]["parent_id"] == names["Grecja 2021"]["id"]
+    base = app.state.settings.clients_dir / "_prywatne" / "admin"
+    assert (base / "Grecja 2021" / "Dzień 2" / "IMG_002.jpg").exists() and (base / "Licencje" / "licencja.txt").exists()
+    assert not list(base.rglob("Thumbs.db"))
+    # druga wysyłka tego samego folderu trafia do istniejących katalogów (bez duplikatów)
+    ids = [_chunk_upload(admin, h, "IMG_003.jpg", _png(), "grecja 2021")]
+    admin.post("/admin/my/upload", data={"csrf": tok, "upload_ids": ids})
+    assert app.state.db.one("SELECT COUNT(*) AS n FROM folders WHERE owner_id = 1")["n"] == 3
+    page = admin.get(f"/admin/my?folder={names['Grecja 2021']['id']}").text
+    assert "IMG_001.jpg" in page and "IMG_003.jpg" in page and "Dzień 2" in page
+
+
+def test_bulk_trash_and_move(app, admin):
+    create_client_account(admin)
+    tok = csrf_of(admin, "/admin/clients/2")
+    admin.post("/spaces/2/folders", data={"csrf": tok, "name": "Archiwum"})
+    folder = app.state.db.one("SELECT id FROM folders")["id"]
+    admin.post("/admin/clients/2/upload", data={"csrf": tok},
+               files=[("files", (f"plik{i}.txt", b"x")) for i in range(5)])
+    ids = [r["id"] for r in app.state.db.all("SELECT id FROM files ORDER BY id")]
+    r = admin.post("/files/bulk", data={"csrf": tok, "ids": ids[:3], "action": "move", "folder_id": folder,
+                                        "back": "/admin/clients/2"})
+    assert "Przeniesiono: 3 plików" in r.text
+    assert app.state.db.one("SELECT COUNT(*) AS n FROM files WHERE folder_id = ?", folder)["n"] == 3
+    assert (app.state.settings.clients_dir / "jan.kowalski" / "Archiwum" / "plik0.txt").exists()
+    r = admin.post("/files/bulk", data={"csrf": tok, "ids": ids, "action": "trash", "back": "/admin/clients/2"})
+    assert "Przeniesiono do kosza: 5 plików" in r.text
+    assert app.state.db.one("SELECT COUNT(*) AS n FROM files WHERE deleted_at IS NULL")["n"] == 0
+    # klient: tylko własne pliki, bez przenoszenia
+    for f in ids:
+        app.state.db.run("UPDATE files SET deleted_at = NULL WHERE id = ?", f)
+    c = TestClient(app)
+    login(c, "jan.kowalski", "KlientHaslo1")
+    change_pw(c, "KlientHaslo1")
+    ctok = csrf_of(c, "/files")
+    c.post("/files/upload", data={"csrf": ctok}, files=[("files", ("moj.txt", b"m"))])
+    mine = app.state.db.one("SELECT id FROM files WHERE original_name = 'moj.txt'")["id"]
+    r = c.post("/files/bulk", data={"csrf": ctok, "ids": [mine, ids[0]], "action": "trash", "back": "/files"})
+    assert "Przeniesiono do kosza: 1 plików. Pominięto 1" in r.text
+    assert c.post("/files/bulk", data={"csrf": ctok, "ids": [mine], "action": "move", "back": "/files"}).status_code == 403
+    assert admin.post("/files/bulk", data={"csrf": tok, "ids": [mine], "action": "zly"}).status_code == 400
+    assert 'data-bulkbar' in c.get("/files").text and "Zaznacz" in c.get("/files").text
