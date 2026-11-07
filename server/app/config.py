@@ -71,6 +71,15 @@ class Settings:
         return self.data_dir / "instalator"
 
     @property
+    def trash_dir(self) -> Path:
+        return self.data_dir / "kosz"
+
+    @property
+    def thumbs_dir(self) -> Path:
+        """Miniaturki na szybkim dysku (obok bazy)."""
+        return self.db_path.parent / "miniatury"
+
+    @property
     def tmp_dir(self) -> Path:
         return self.data_dir / "app" / "tmp"
 

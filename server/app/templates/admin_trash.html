@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Kosz — {{ site_name }}{% endblock %}
+{% block heading %}Kosz{% endblock %}
+{% block subtitle %}<div class="subtitle">Usunięte pliki klientów i z Twojego dysku · {{ items|length }} plików, {{ total|size }} · usuwane na zawsze po {{ trash_days }} dniach</div>{% endblock %}
+{% block actions %}{% if items %}
+<form method="post" action="/admin/trash/empty" data-confirm="Usunąć na zawsze wszystkie pliki z kosza? Tego nie da się cofnąć.">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger">{{ ui.icon("trash") }}Opróżnij kosz</button></form>
+{% endif %}{% endblock %}
+{% block content %}
+<section class="card">
+  {% if items %}
+  <div class="table-wrap"><table class="list">
+    <thead><tr><th>Plik</th><th class="hide-sm">Skąd</th><th class="hide-sm">Usunięto</th><th>Zostało</th><th></th></tr></thead>
+    <tbody>
+    {% for f in items %}
+    <tr>
+      <td><div class="file">{{ ui.ficon(f.original_name) }}<div><b>{{ f.original_name }}</b><div class="meta">{{ f.size|size }}</div></div></div></td>
+      <td class="hide-sm small">{% if f.owner_role == 'admin' %}Mój dysk{% else %}<a href="/admin/clients/{{ f.client_id }}">{{ f.company or f.owner_name or f.username }}</a>{% endif %}</td>
+      <td class="hide-sm small muted">{{ f.deleted_at|ago }}{% if f.deleter %} · {{ f.deleter }}{% endif %}</td>
+      <td><span class="tag {{ 'danger' if f.days_left <= 3 else 'off' }}">{{ f.days_left }} dni</span></td>
+      <td class="actions">
+        <form method="post" action="/admin/trash/{{ f.id }}/restore" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}">
+          <button class="btn-sm primary">Przywróć</button></form>
+        <form method="post" action="/admin/trash/{{ f.id }}/purge" class="inline" data-confirm="Usunąć „{{ f.original_name }}” na zawsze?">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-sm ghost danger" title="Usuń na zawsze">{{ ui.icon("trash") }}</button></form>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}{{ ui.empty("Kosz jest pusty.", "trash") }}{% endif %}
+</section>
+{% endblock %}

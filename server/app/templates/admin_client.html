@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_browser.html" import browser with context %}
 {% block title %}{{ client.company or client.display_name or client.username }} — {{ site_name }}{% endblock %}
 {% block heading %}<span class="row"><span class="avatar">{{ (client.company or client.display_name or client.username)|initials }}</span>{{ client.company or client.display_name or client.username }}
   {% if not client.active %}<span class="tag danger">zablokowany</span>{% endif %}</span>{% endblock %}
@@ -33,17 +34,14 @@
   </section>
 </div>
 
-<section class="card" id="pliki">
-  <div class="card-head"><h2>Pliki klienta</h2><span class="spacer"></span>
-    <div class="tabs" data-filter-tabs><button class="on" data-f="all">Wszystkie</button><button data-f="client">Od klienta</button><button data-f="agency">Od BSK Media</button></div>
-  </div>
-  {{ ui.files_table(files, user, csrf) }}
+<section class="card">
+  {{ browser(space, user, csrf, base_url, can_manage=True) }}
 </section>
 
 <div class="grid g-2 mb">
   <section class="card">
     <div class="card-head">{{ ui.icon("upload") }}<h2>Udostępnij pliki klientowi</h2></div>
-    {{ ui.upload_form("/admin/clients/" ~ client.id ~ "/upload", csrf, max_upload_mb, "Wyślij do klienta") }}
+    {{ ui.upload_form("/admin/clients/" ~ client.id ~ "/upload", csrf, max_upload_mb, "Wyślij do klienta", folder=space.folder) }}
     <div class="card-head mt"><h3>albo utwórz nowy dokument</h3></div>
     <form method="post" action="/admin/clients/{{ client.id }}/new-doc" class="row">
       <input type="hidden" name="csrf" value="{{ csrf }}">

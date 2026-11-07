@@ -261,6 +261,18 @@ Uruchomienie:
 Przy plikach `.xlsx`, `.docx`, `.pptx`, `.ods`, `.odt`, `.csv` pojawi się przycisk **Edytuj online**.
 W panelu klienta jest też **Nowy arkusz / Nowy dokument**.
 
+# Galeria, katalogi, Mój dysk, kosz, wyszukiwarka
+- **Katalogi:** tworzysz je u klienta i na swoim dysku (np. „Kampania jesień 2026”), także zagnieżdżone.
+  Na NAS są zwykłymi folderami. Klient wrzuca pliki do katalogu, który ma otwarty.
+- **Galeria:** miniatury zdjęć (JPG, PNG, WEBP, TIFF, HEIC, PSD), pierwszej strony PDF/AI i klatki z wideo.
+  Kliknięcie otwiera podgląd pełnoekranowy (strzałki ←/→, przesuwanie palcem, odtwarzanie wideo i audio,
+  PDF). Można też przełączyć na widok listy.
+- **Wersje:** plik o tej samej nazwie w tym samym katalogu staje się nową wersją (v2, v3…), a poprzednia
+  zostaje w `.wersje/`.
+- **Mój dysk:** prywatna przestrzeń administratora w `bsk-dane/klienci/_prywatne/<login>`, niewidoczna dla klientów.
+- **Kosz:** usunięte pliki (także przez klienta) można przywrócić przez 30 dni, potem znikają.
+- **Wyszukiwarka** (u góry ekranu): pliki, katalogi, klienci i kopie pracowników. Klient przeszukuje tylko swoje pliki.
+
 # Wiadomości i powiadomienia
 - Rozmowa z klientem odświeża się sama co kilka sekund, a nowa wiadomość daje sygnał dźwiękowy.
   Po kliknięciu **Włącz powiadomienia** pojawiają się też powiadomienia systemowe przeglądarki.

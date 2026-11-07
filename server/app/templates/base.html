@@ -31,9 +31,11 @@
       {% if user.role == 'admin' %}
         <a href="/admin" class="{{ 'active' if nav == 'dashboard' }}">{{ ui.icon("home") }}Pulpit</a>
         <a href="/admin/clients" class="{{ 'active' if nav == 'clients' }}">{{ ui.icon("users") }}Klienci<span class="badge" data-unread-badge {{ 'hidden' if not unread_total }}>{{ unread_total }}</span></a>
+        <a href="/admin/my" class="{{ 'active' if nav == 'my' }}">{{ ui.icon("lock") }}Mój dysk</a>
         <a href="/admin/devices" class="{{ 'active' if nav == 'devices' }}">{{ ui.icon("laptop") }}Pracownicy i kopie</a>
         <a href="/admin/shares" class="{{ 'active' if nav == 'shares' }}">{{ ui.icon("link") }}Linki do pobrania</a>
         <div class="nav-label">System</div>
+        <a href="/admin/trash" class="{{ 'active' if nav == 'trash' }}">{{ ui.icon("trash") }}Kosz</a>
         <a href="/admin/log" class="{{ 'active' if nav == 'log' }}">{{ ui.icon("list") }}Dziennik zdarzeń</a>
         <a href="/account" class="{{ 'active' if nav == 'account' }}">{{ ui.icon("user") }}Moje konto</a>
       {% else %}
@@ -55,13 +57,27 @@
     <header class="topbar">
       <label for="nav-toggle" class="burger" title="Menu">{{ ui.icon("menu") }}</label>
       <div><h1>{% block heading %}{% endblock %}</h1>{% block subtitle %}{% endblock %}</div>
-      <div class="actions">{% block actions %}{% endblock %}</div>
+      <div class="actions">{% block actions %}{% endblock %}
+        <form method="get" action="/search" class="search topsearch">{{ ui.icon("search") }}<input name="q" value="{{ q if nav == 'search' else '' }}" placeholder="Szukaj plików…" aria-label="Szukaj plików"></form></div>
     </header>
     <main class="content">
       {{ flashes_block() }}
       {% block content %}{% endblock %}
     </main>
   </div>
+</div>
+<div class="lightbox" data-lightbox hidden>
+  <div class="lb-top">
+    <div class="lb-title"><b data-lb-name></b><span data-lb-meta></span></div>
+    <span class="lb-count" data-lb-count></span>
+    {% if office_enabled %}<a class="lb-btn" data-lb-edit hidden>{{ ui.icon("edit") }}<span class="hide-sm">Edytuj online</span></a>{% endif %}
+    <a class="lb-btn" data-lb-download>{{ ui.icon("download") }}<span class="hide-sm">Pobierz</span></a>
+    <button type="button" class="lb-btn" data-lb-close title="Zamknij (Esc)">✕</button>
+  </div>
+  <button type="button" class="lb-nav prev" data-lb-prev title="Poprzedni (←)">‹</button>
+  <div class="lb-stage" data-lb-stage></div>
+  <button type="button" class="lb-nav next" data-lb-next title="Następny (→)">›</button>
+  <div class="lb-strip" data-lb-strip></div>
 </div>
 {% else %}
 <div class="auth"><div class="auth-box">
