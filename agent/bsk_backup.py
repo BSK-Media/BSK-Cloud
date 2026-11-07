@@ -31,7 +31,7 @@ import requests
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 CONFIG_REFRESH_S = 3600
 CHUNK_THRESHOLD = 50 * 1024 * 1024  # większe pliki idą w kawałkach (limit Cloudflare: 100 MB na żądanie)
 LAN_RECHECK_S = 300
@@ -519,8 +519,9 @@ class Agent:
             data = r.json()
         except (requests.RequestException, ValueError):
             return False
-        if data.get("lan_server") and not self.cfg.lan_server:
-            self.cfg.lan_server = str(data["lan_server"]).rstrip("/")
+        lan = str(data.get("lan_server") or "").rstrip("/")
+        if lan and lan != self.cfg.lan_server:  # np. NAS zmienił adres w sieci biurowej — panel jest ważniejszy
+            self.cfg.lan_server = lan
             self.cfg.save()
         entries = [e for e in data.get("folders") or [] if isinstance(e, str) and e.strip()]
         if not entries:
@@ -720,7 +721,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("configure", help="ustaw serwer, token i foldery")
     c.add_argument("--server")
-    c.add_argument("--lan-server", help="adres serwera w sieci biurowej, np. http://192.168.50.42:8090")
+    c.add_argument("--lan-server", help="adres serwera w sieci biurowej, np. http://192.168.10.24:8090")
     c.add_argument("--token")
     c.add_argument("--folder", action="append", help="folder do kopiowania (można podać wiele razy)")
     c.add_argument("--insecure", action="store_true", help="nie sprawdzaj certyfikatu (tylko w LAN)")
