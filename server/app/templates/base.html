@@ -2,10 +2,17 @@
 <html lang="pl">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex, nofollow">
   <title>{% block title %}{{ site_name }}{% endblock %}</title>
   <link rel="icon" href="/static/favicon.svg?v={{ asset_v }}" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#0f1729">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="BSK Cloud">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
   <link rel="stylesheet" href="/static/style.css?v={{ asset_v }}">
   <script src="/static/app.js?v={{ asset_v }}" defer></script>
 </head>
@@ -46,6 +53,7 @@
       {% endif %}
     </nav>
     <div class="side-foot">
+      <button type="button" class="install-btn" data-install hidden>{{ ui.icon("download") }}Zainstaluj aplikację</button>
       <div class="me">
         <span class="avatar {{ 'agency' if user.role == 'admin' }}">{{ (user.display_name or user.username)|initials }}</span>
         <div class="who"><b>{{ user.display_name or user.username }}</b><span>{{ user.company or ('Administrator' if user.role == 'admin' else 'Klient') }}</span></div>
@@ -66,6 +74,20 @@
     </main>
   </div>
 </div>
+<nav class="tabbar" aria-label="Menu aplikacji">
+  {% if user.role == 'admin' %}
+    <a href="/admin" class="{{ 'active' if nav == 'dashboard' }}">{{ ui.icon("home") }}<span>Pulpit</span></a>
+    <a href="/admin/clients" class="{{ 'active' if nav == 'clients' }}">{{ ui.icon("users") }}<span>Klienci</span><b class="badge" data-unread-badge {{ 'hidden' if not unread_total }}>{{ unread_total }}</b></a>
+    <a href="/admin/my" class="{{ 'active' if nav == 'my' }}">{{ ui.icon("lock") }}<span>Mój dysk</span></a>
+    <a href="/search" class="{{ 'active' if nav == 'search' }}">{{ ui.icon("search") }}<span>Szukaj</span></a>
+  {% else %}
+    <a href="/files" class="{{ 'active' if nav == 'files' }}">{{ ui.icon("home") }}<span>Pulpit</span></a>
+    <a href="/files#pliki">{{ ui.icon("folder") }}<span>Pliki</span></a>
+    <a href="/files#wiadomosci">{{ ui.icon("message") }}<span>Wiadomości</span><b class="badge" data-unread-badge {{ 'hidden' if not unread_total }}>{{ unread_total }}</b></a>
+    <a href="/search" class="{{ 'active' if nav == 'search' }}">{{ ui.icon("search") }}<span>Szukaj</span></a>
+  {% endif %}
+  <label for="nav-toggle">{{ ui.icon("menu") }}<span>Więcej</span></label>
+</nav>
 <div class="lightbox" data-lightbox hidden>
   <div class="lb-top">
     <div class="lb-title"><b data-lb-name></b><span data-lb-meta></span></div>

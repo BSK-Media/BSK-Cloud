@@ -809,3 +809,53 @@ def test_username_cannot_start_with_underscore(app, admin):
     tok = csrf_of(admin, "/admin/clients/new")
     r = admin.post("/admin/clients/new", data={"username": "_prywatne", "password": "KlientHaslo1", "csrf": tok})
     assert "Login" in r.text and not app.state.db.one("SELECT 1 FROM users WHERE username = '_prywatne'")
+
+
+def test_pwa_manifest_service_worker_and_icons(app):
+    c = TestClient(app)
+    m = c.get("/manifest.webmanifest")
+    assert m.status_code == 200 and m.headers["content-type"].startswith("application/manifest+json")
+    data = m.json()
+    assert data["display"] == "standalone" and data["start_url"].startswith("/")
+    for icon in data["icons"]:
+        r = c.get(icon["src"])
+        assert r.status_code == 200 and r.content[:4] == b"\x89PNG", icon["src"]
+    sw = c.get("/sw.js")
+    assert sw.headers["content-type"].startswith("text/javascript") and "__VERSION__" not in sw.text
+    version = re.search(r'/static/style\.css\?v=([0-9a-f]{10})"', c.get("/login").text).group(1)
+    assert version in sw.text and sw.headers["service-worker-allowed"] == "/"
+    assert "Brak połączenia" in c.get("/offline").text
+    page = c.get("/login").text
+    assert 'rel="manifest"' in page and "apple-touch-icon" in page and "Zapamiętaj mnie" in page
+
+
+def test_remember_me_session_lifetime(app):
+    import time as _t
+    from itsdangerous import TimestampSigner
+    import base64
+    import json as _json
+
+    def session_exp(client):
+        raw = client.cookies.get("bsk_session")
+        data = TimestampSigner("x" * 40).unsign(raw.encode())
+        return _json.loads(base64.b64decode(data))["exp"]
+
+    short = TestClient(app)
+    tok = csrf_of(short, "/login")
+    short.post("/login", data={"username": "admin", "password": ADMIN_PW, "csrf": tok})
+    assert 11 * 3600 < session_exp(short) - _t.time() <= 12 * 3600
+    long = TestClient(app)
+    tok = csrf_of(long, "/login")
+    long.post("/login", data={"username": "admin", "password": ADMIN_PW, "csrf": tok, "remember": "1"})
+    assert 29 * 86400 < session_exp(long) - _t.time() <= 30 * 86400
+    assert long.get("/admin").status_code == 200
+
+
+def test_expired_session_logs_out(app, monkeypatch):
+    import time as _t
+    c = TestClient(app)
+    login(c, "admin", ADMIN_PW)
+    assert c.get("/admin", follow_redirects=False).status_code == 200
+    real = _t.time
+    monkeypatch.setattr("app.main.time.time", lambda: real() + 13 * 3600)
+    assert c.get("/admin", follow_redirects=False).headers["location"] == "/login"

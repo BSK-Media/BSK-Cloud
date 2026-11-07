@@ -21,6 +21,18 @@
   </form>
 </section>
 </div>
+<section class="card mt">
+  <div class="card-head">{{ ui.icon("laptop") }}<h2>Aplikacja na telefon</h2></div>
+  <p>Portal działa jak aplikacja: własna ikona na ekranie, pełny ekran i szybsze ładowanie miniatur.</p>
+  <div class="grid g-2">
+    <div><b>Android (Chrome)</b><ol class="steps small"><li>Otwórz <code>{{ request.url.hostname }}</code> w Chrome.</li>
+      <li>Kliknij <b>Zainstaluj aplikację</b> w menu po lewej albo w menu Chrome (⋮) → <b>Zainstaluj aplikację</b>.</li></ol>
+      <button type="button" class="primary" data-install hidden>{{ ui.icon("download") }}Zainstaluj teraz</button></div>
+    <div><b>iPhone / iPad (Safari)</b><ol class="steps small"><li>Otwórz <code>{{ request.url.hostname }}</code> w Safari.</li>
+      <li>Stuknij <b>Udostępnij</b> (kwadrat ze strzałką) → <b>Do ekranu początkowego</b> → <b>Dodaj</b>.</li></ol></div>
+  </div>
+  <p class="hint">Przy logowaniu zaznacz „Zapamiętaj mnie”, żeby nie wpisywać hasła przez 30 dni.</p>
+</section>
 {% if user.role == 'admin' %}
 <section class="card mt">
   <div class="card-head">{{ ui.icon("message") }}<h2>Powiadomienia e-mail</h2></div>

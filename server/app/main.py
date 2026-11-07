@@ -14,12 +14,13 @@ import re
 import secrets
 import tempfile
 import threading
+import time
 import zipfile
 from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
@@ -33,6 +34,7 @@ from .notify import notify_admin
 
 log = logging.getLogger("bskcloud")
 BASE = Path(__file__).parent
+REMEMBER_DAYS = 30
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{2,39}$")
 TRASH_DAYS = 30
 SPECIAL_FOLDERS = {
@@ -177,7 +179,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         SessionMiddleware,
         secret_key=settings.secret_key,
         session_cookie="bsk_session",
-        max_age=settings.session_hours * 3600,
+        max_age=REMEMBER_DAYS * 86400,  # górna granica; właściwa ważność w sesji („exp”)
         same_site="lax",
         https_only=settings.cookie_secure,
     )
@@ -210,7 +212,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not uid:
             return None
         user = db.one("SELECT * FROM users WHERE id = ?", uid)
-        if not user or not user["active"] or user["session_version"] != request.session.get("sv"):
+        if (not user or not user["active"] or user["session_version"] != request.session.get("sv")
+                or request.session.get("exp", 0) < time.time()):
             request.session.clear()
             return None
         return user
@@ -628,6 +631,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     templates.env.globals["thumb_kind"] = thumbs.kind
     templates.env.globals["can_thumb"] = thumbs.can_thumb
 
+    # ------------------------------------------------------------------ aplikacja mobilna (PWA)
+
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    def manifest():
+        return JSONResponse({
+            "name": settings.site_name, "short_name": "BSK Cloud", "lang": "pl",
+            "description": "Pliki, galeria i wiadomości BSK Media",
+            "start_url": "/?source=app", "scope": "/", "display": "standalone",
+            "background_color": "#0f1729", "theme_color": "#0f1729", "orientation": "any",
+            "icons": [
+                {"src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                {"src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png"},
+                {"src": "/static/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+            ],
+            "shortcuts": [
+                {"name": "Mój dysk", "url": "/admin/my", "icons": [{"src": "/static/icons/icon-192.png", "sizes": "192x192"}]},
+                {"name": "Szukaj", "url": "/search", "icons": [{"src": "/static/icons/icon-192.png", "sizes": "192x192"}]},
+            ],
+        }, media_type="application/manifest+json", headers={"Cache-Control": "public, max-age=3600"})
+
+    @app.get("/sw.js", include_in_schema=False)
+    def service_worker():
+        """Service worker z zakresem całej strony; wersja = skrót plików statycznych (nowa wersja po aktualizacji)."""
+        code = (BASE / "static" / "sw.js").read_text(encoding="utf-8").replace("__VERSION__", templates.env.globals["asset_v"])
+        return Response(code, media_type="text/javascript",
+                        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+
+    @app.get("/offline", response_class=HTMLResponse, include_in_schema=False)
+    def offline(request: Request):
+        return render(request, "offline.html", user=None)
+
     # ------------------------------------------------------------------ public
 
     @app.get("/", include_in_schema=False)
@@ -648,7 +682,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return render(request, "login.html")
 
     @app.post("/login")
-    def login(request: Request, username: str = Form(...), password: str = Form(...), csrf: str = Form("")):
+    def login(request: Request, username: str = Form(...), password: str = Form(...), remember: str = Form(""),
+              csrf: str = Form("")):
         check_csrf(request, csrf)
         ip = client_ip(request)
         username = username.strip()
@@ -665,7 +700,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return RedirectResponse("/login", 303)
         limiter.success(username)
         request.session.clear()
-        request.session.update(uid=user["id"], sv=user["session_version"], csrf=security.new_csrf())
+        ttl = REMEMBER_DAYS * 86400 if remember else settings.session_hours * 3600
+        request.session.update(uid=user["id"], sv=user["session_version"], csrf=security.new_csrf(),
+                               exp=int(time.time() + ttl))
         db.run("UPDATE users SET last_login = ? WHERE id = ?", now_iso(), user["id"])
         db.log(user["id"], "login", ip)
         return RedirectResponse("/", 303)
