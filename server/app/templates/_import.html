@@ -1,0 +1,22 @@
+{% import "_ui.html" as ui with context %}
+{% macro import_card(owner_id, folder, csrf) -%}
+<div class="import" data-import id="import">
+  <div class="card-head">{{ ui.icon("drive") }}<h2>Import z NAS — duże archiwa</h2></div>
+  <p class="small muted">Najszybciej przy dziesiątkach GB: w biurze skopiuj foldery w Eksploratorze Windows do
+    <code>\\{{ nas_host }}\bsk-dane\import</code>
+    (pełna prędkość sieci lokalnej), a potem zaznacz je tutaj i kliknij <b>Importuj</b>. Import działa na serwerze —
+    możesz zamknąć stronę. Struktura folderów zostaje zachowana, a pliki, które już są, zostaną pominięte.</p>
+  <form method="post" action="/admin/import" class="stack" data-import-form>
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="owner_id" value="{{ owner_id }}">
+    {% if folder %}<input type="hidden" name="folder_id" value="{{ folder.id }}">{% endif %}
+    <div class="import-list" data-import-list><span class="muted small">Sprawdzam folder import…</span></div>
+    <div class="row"><button class="primary" data-import-start disabled>{{ ui.icon("download") }}Importuj{% if folder %} do „{{ folder.name }}”{% endif %}</button>
+      <button type="button" class="btn-sm ghost" data-import-refresh>Odśwież listę</button></div>
+  </form>
+  <div class="import-job" data-import-job hidden>
+    <div class="row"><b data-job-title>Import</b><span class="spacer"></span><span class="small muted" data-job-detail></span></div>
+    <progress value="0" max="100" data-job-bar></progress>
+    <div class="small muted" data-job-current></div>
+  </div>
+</div>
+{%- endmacro %}

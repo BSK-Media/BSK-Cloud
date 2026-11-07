@@ -52,8 +52,9 @@
 <div class="empty">{{ icon(ico) }}<div>{{ text }}</div></div>
 {%- endmacro %}
 
-{% macro upload_form(action, csrf, max_upload_mb, button="Wyślij pliki", extra="", folder=None) -%}
-<form method="post" action="{{ action }}" enctype="multipart/form-data" class="stack upload" data-upload>
+{% macro upload_form(action, csrf, max_upload_mb, button="Wyślij pliki", extra="", folder=None, dest=None) -%}
+<form method="post" action="{{ action }}" enctype="multipart/form-data" class="stack upload" data-upload
+  {% if dest %}data-dest="{{ dest|tojson|forceescape }}"{% endif %}>
   <input type="hidden" name="csrf" value="{{ csrf }}">
   {% if folder %}<input type="hidden" name="folder_id" value="{{ folder.id }}"><div class="hint">Pliki trafią do katalogu <b>{{ folder.name }}</b></div>{% endif %}
   <label class="drop">
@@ -69,7 +70,9 @@
     <textarea name="note" rows="2" maxlength="500" placeholder="np. poprawiona wersja logo, wersja 3"></textarea>
   </label>
   <progress value="0" max="100" hidden></progress>
-  <button class="primary">{{ icon("upload") }}{{ button }}</button>
+  <div class="upload-status" data-upload-status hidden></div>
+  <div class="row"><button class="primary grow-btn">{{ icon("upload") }}{{ button }}</button>
+    {% if dest %}<span class="conn" data-connection title="Którędy idzie wysyłka"></span>{% endif %}</div>
 </form>
 {%- endmacro %}
 

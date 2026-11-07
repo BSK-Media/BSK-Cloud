@@ -1,0 +1,32 @@
+# Tryb biurowy: w sieci lokalnej cloud.bskmedia.pl wskazuje prosto na NAS (lokalny DNS),
+# więc wysyłanie, pobieranie, galeria i edytor działają z pełną prędkością sieci, bez Cloudflare.
+# Poza biurem ten sam adres działa jak dotąd przez tunel Cloudflare.
+{
+	admin off
+}
+
+{$BSK_DOMAIN} {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+		resolvers 1.1.1.1 1.0.0.1
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	handle_path /office/* {
+		reverse_proxy office:80 {
+			header_up X-Forwarded-Host {host}/office
+			header_up X-Forwarded-Proto https
+		}
+	}
+	redir /office /office/ 308
+	handle {
+		reverse_proxy app:8000 {
+			transport http {
+				read_timeout 4h
+				write_timeout 4h
+			}
+		}
+	}
+}

@@ -1060,3 +1060,93 @@ def test_bulk_trash_and_move(app, admin):
     assert c.post("/files/bulk", data={"csrf": ctok, "ids": [mine], "action": "move", "back": "/files"}).status_code == 403
     assert admin.post("/files/bulk", data={"csrf": tok, "ids": [mine], "action": "zly"}).status_code == 400
     assert 'data-bulkbar' in c.get("/files").text and "Zaznacz" in c.get("/files").text
+
+
+def test_big_upload_saves_each_file_immediately_and_resumes(app, admin):
+    tok = csrf_of(admin, "/admin/my")
+    h = {"X-CSRF-Token": tok}
+    dest = {"kind": "my", "folder_id": None}
+    data = _png()
+
+    def send(name, payload, dir_="", mtime=1700000000000):
+        r = admin.post("/api/uploads", json={"name": name, "size": len(payload), "dir": dir_, "mtime": mtime, "dest": dest},
+                       headers=h).json()
+        if r.get("status") in ("exists", "stored"):
+            return r
+        return admin.put(f"/api/uploads/{r['id']}", params={"offset": 0}, content=payload, headers=h).json()
+
+    r = send("zdjecie.png", data, "Archiwum/2019")
+    assert r["status"] == "stored" and r["file_id"]  # zapisany od razu, bez kończącego formularza
+    assert app.state.db.one("SELECT COUNT(*) AS n FROM files")["n"] == 1
+    assert (app.state.settings.clients_dir / "_prywatne" / "admin" / "Archiwum" / "2019" / "zdjecie.png").exists()
+    # ponowne przeciągnięcie tego samego folderu: ten plik zostaje pominięty
+    assert send("zdjecie.png", data, "Archiwum/2019")["status"] == "exists"
+    # inna data modyfikacji = zmieniony plik -> nowa wersja
+    assert send("zdjecie.png", data, "Archiwum/2019", mtime=1800000000000)["status"] == "stored"
+    assert app.state.db.one("SELECT version FROM files")["version"] == 2
+    assert send("pusty.txt", b"")["status"] == "stored"
+    r = admin.post("/api/uploads/finish", json={"dest": dest, "stored": 3, "skipped": 1, "failed": ["zly.psd"], "names": []},
+                   headers=h).json()
+    assert r["redirect"].startswith("/admin/my")
+    page = admin.get(r["redirect"]).text
+    assert "Zapisano plików: 3" in page and "Pominięto 1" in page and "zly.psd" in page
+    # klient nie może pisać do „Mojego dysku” ani do innego klienta
+    create_client_account(admin)
+    c = TestClient(app)
+    login(c, "jan.kowalski", "KlientHaslo1")
+    change_pw(c, "KlientHaslo1")
+    ch = {"X-CSRF-Token": csrf_of(c, "/files")}
+    assert c.post("/api/uploads", json={"name": "x", "size": 1, "dest": {"kind": "my"}}, headers=ch).status_code == 403
+    assert c.post("/api/uploads", json={"name": "x", "size": 1, "dest": {"kind": "client", "client_id": 2}}, headers=ch).status_code == 403
+    r = c.post("/api/uploads", json={"name": "od_klienta.png", "size": len(data), "mtime": 1, "dest": {"kind": "self"}}, headers=ch).json()
+    r = c.put(f"/api/uploads/{r['id']}", params={"offset": 0}, content=data, headers=ch).json()
+    assert r["status"] == "stored"
+    assert (app.state.settings.clients_dir / "jan.kowalski" / "od_klienta.png").exists()
+
+
+def test_import_from_nas_folder(app, admin):
+    import time
+    s = app.state.settings
+    src = s.import_dir / "Grecja 2021" / "Dzień 2"
+    src.mkdir(parents=True)
+    (src / "zachod.jpg").write_bytes(_png())
+    (s.import_dir / "Grecja 2021" / "plaza.png").write_bytes(_png())
+    (s.import_dir / "Grecja 2021" / "Thumbs.db").write_bytes(b"x")
+    (s.import_dir / "faktura.pdf").write_bytes(b"%PDF")
+    data = admin.get("/api/import").json()
+    names = {e["name"]: e for e in data["entries"]}
+    assert names["Grecja 2021"]["files"] == 2 and names["faktura.pdf"]["files"] == 1
+    tok = csrf_of(admin, "/admin/my")
+    r = admin.post("/admin/import", data={"csrf": tok, "owner_id": 1, "names": ["Grecja 2021", "faktura.pdf", "../app"]})
+    assert "Import ruszył" in r.text
+    for _ in range(100):
+        job = admin.get("/api/import").json()["job"]
+        if job["status"] != "running":
+            break
+        time.sleep(0.05)
+    assert job["status"] == "done" and job["total_files"] == 3 and job["done_files"] == 3
+    base = s.clients_dir / "_prywatne" / "admin"
+    assert (base / "Grecja 2021" / "Dzień 2" / "zachod.jpg").exists() and (base / "faktura.pdf").exists()
+    assert not (s.import_dir / "Grecja 2021" / "Dzień 2").exists()  # puste katalogi posprzątane
+    assert app.state.db.one("SELECT COUNT(*) AS n FROM files")["n"] == 3
+    fid = app.state.db.one("SELECT id FROM files WHERE original_name = 'zachod.jpg'")["id"]
+    assert admin.get(f"/files/{fid}/thumb").status_code == 200
+    # ponowny import tych samych plików -> pominięte, nic nie nadpisane
+    (s.import_dir / "faktura.pdf").write_bytes(b"%PDF")
+    admin.post("/admin/import", data={"csrf": tok, "owner_id": 1, "names": ["faktura.pdf"]})
+    for _ in range(100):
+        job = admin.get("/api/import").json()["job"]
+        if job["status"] != "running":
+            break
+        time.sleep(0.05)
+    assert job["skipped"] == 1 and app.state.db.one("SELECT COUNT(*) AS n FROM files")["n"] == 3
+    # klient nie ma dostępu do importu
+    create_client_account(admin)
+    c = TestClient(app)
+    login(c, "jan.kowalski", "KlientHaslo1")
+    assert c.get("/api/import", follow_redirects=False).status_code in (303, 403)
+
+
+def test_connection_indicator(app, admin):
+    assert admin.get("/api/connection").json() == {"lan": True}
+    assert admin.get("/api/connection", headers={"CF-Ray": "abc-WAW"}).json() == {"lan": False}

@@ -82,6 +82,7 @@ document.querySelectorAll("form[data-upload]").forEach((form) => {
     if (!picked.length && input.files.length) setPicked(Array.from(input.files).map((file) => ({ file, dir: "" })));
     if (!picked.length) { e.preventDefault(); alert("Wybierz pliki albo folder."); return; }
     e.preventDefault();
+    if (form.dataset.dest) { await bigUpload(form, picked, button, buttonText, bar); return; }
     const csrf = form.querySelector("input[name=csrf]").value;
     const total = picked.reduce((n, p) => n + p.file.size, 0) || 1;
     let done = 0;
@@ -113,6 +114,202 @@ document.querySelectorAll("form[data-upload]").forEach((form) => {
       bar.hidden = true;
     }
   });
+});
+
+// ---------------------------------------------------------------- duże wysyłki (zapis na bieżąco, kilka plików naraz)
+const PARALLEL = 3;
+
+function human(bytes) {
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0, v = bytes;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i += 1; }
+  return `${v.toFixed(i ? 1 : 0)} ${u[i]}`;
+}
+function duration(sec) {
+  if (!isFinite(sec) || sec <= 0) return "";
+  const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
+  return h ? `${h} godz. ${m} min` : m ? `${m} min` : "< 1 min";
+}
+
+// Jeden plik: rozpoczęcie (albo „już jest”), kawałki z ponawianiem; serwer zapisuje plik po ostatnim kawałku.
+async function uploadOne(item, dest, csrf, onBytes, onWait) {
+  const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
+  let init;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      init = await fetch("/api/uploads", { method: "POST", credentials: "same-origin", headers,
+        body: JSON.stringify({ name: item.file.name, size: item.file.size, dir: item.dir || "", mtime: item.file.lastModified, dest }) });
+      if (init.status >= 500 || init.status === 429) throw new TypeError("server");
+      break;
+    } catch (err) {
+      if (!(err instanceof TypeError) || attempt >= 20) throw err;
+      onWait(Math.min(30, 2 ** Math.min(attempt + 1, 5)));
+      await sleep(Math.min(30, 2 ** Math.min(attempt + 1, 5)) * 1000);
+    }
+  }
+  if (!init.ok) throw new Error(await errorText(init));
+  const up = await init.json();
+  if (up.status === "exists") { onBytes(item.file.size); return "skipped"; }
+  if (up.status === "stored") return "stored";
+  let offset = up.received || 0, failures = 0;
+  while (offset < item.file.size) {
+    const end = Math.min(offset + up.chunk_size, item.file.size);
+    try {
+      const res = await fetch(`/api/uploads/${up.id}?offset=${offset}`, { method: "PUT", credentials: "same-origin",
+        headers: { "X-CSRF-Token": csrf, "Content-Type": "application/octet-stream" }, body: item.file.slice(offset, end) });
+      if (res.status === 409) {
+        const info = await res.json();
+        if (typeof info.received === "number") { onBytes(info.received - offset); offset = info.received; continue; }
+      }
+      if (res.status >= 500 || res.status === 429) throw new TypeError("server");
+      if (!res.ok) throw new Error(await errorText(res));
+      const info = await res.json();
+      onBytes(info.received - offset);
+      offset = info.received;
+      failures = 0;
+      if (info.status === "stored") return "stored";
+    } catch (err) {
+      if (!(err instanceof TypeError)) throw err;
+      failures += 1;
+      if (failures > 40) throw new Error("brak połączenia z serwerem");
+      const wait = Math.min(30, 2 ** Math.min(failures, 5));
+      onWait(wait);
+      await sleep(wait * 1000);
+      try {
+        const st = await fetch(`/api/uploads/${up.id}`, { credentials: "same-origin", headers: { "X-CSRF-Token": csrf } });
+        if (st.ok) { const info = await st.json(); onBytes(info.received - offset); offset = info.received; }
+      } catch (_) { /* nadal offline */ }
+    }
+  }
+  return "stored";
+}
+
+async function bigUpload(form, picked, button, buttonText, bar) {
+  const csrf = form.querySelector("input[name=csrf]").value;
+  const statusBox = form.querySelector("[data-upload-status]");
+  const dest = JSON.parse(form.dataset.dest);
+  const note = form.querySelector("textarea[name=note]");
+  const review = form.querySelector("input[name=review]");
+  dest.note = note ? note.value : "";
+  dest.review = !!(review && review.checked);
+  const items = picked.slice().sort((a, b) => a.file.size - b.file.size); // najpierw małe — szybko widać postęp
+  const total = items.reduce((n, p) => n + p.file.size, 0) || 1;
+  let sent = 0, stored = 0, skipped = 0, next = 0, waiting = "";
+  const failed = [], names = [];
+  const t0 = Date.now();
+  let lock = null;
+  try { if (navigator.wakeLock) lock = await navigator.wakeLock.request("screen"); } catch (_) { /* brak zgody */ }
+  const guard = (e) => { e.preventDefault(); e.returnValue = ""; };
+  window.addEventListener("beforeunload", guard);
+  bar.hidden = false; statusBox.hidden = false; button.disabled = true;
+  const render = () => {
+    const done = stored + skipped + failed.length;
+    const secs = (Date.now() - t0) / 1000;
+    const speed = sent / Math.max(secs, 1);
+    bar.value = Math.floor((sent / total) * 100);
+    button.textContent = `Wysyłanie… ${bar.value}%`;
+    statusBox.innerHTML = "";
+    const line = (html) => { const d = document.createElement("div"); d.innerHTML = html; statusBox.append(d); };
+    line(`Pliki: <b>${done} / ${items.length}</b> · <b>${human(sent)}</b> z ${human(total)}${speed > 0 ? ` · ${human(speed)}/s` : ""}${speed > 0 && sent < total ? ` · zostało ok. ${duration((total - sent) / speed)}` : ""}`);
+    if (skipped) line(`Pominięte (już były na serwerze): <b>${skipped}</b>`);
+    if (failed.length) line(`<span class="err">Nie udało się: <b>${failed.length}</b> — wyślesz je ponownie, przeciągając folder jeszcze raz</span>`);
+    if (waiting) line(`<span class="err">${waiting}</span>`);
+    line("Nie zamykaj tej karty. Wysłane pliki są już zapisane — po przerwaniu wystarczy wysłać folder ponownie.");
+  };
+  const tick = setInterval(render, 1000);
+  async function worker() {
+    while (next < items.length) {
+      const item = items[next++];
+      const before = sent;
+      try {
+        const r = await uploadOne(item, dest, csrf, (b) => { sent += b; waiting = ""; },
+          (w) => { waiting = `Brak połączenia — ponawiam za ${w} s…`; });
+        if (r === "skipped") skipped += 1; else { stored += 1; if (names.length < 20) names.push(item.file.name); }
+      } catch (err) {
+        sent = before + item.file.size; // nie blokuj paska postępu
+        failed.push(`${item.dir ? item.dir + "/" : ""}${item.file.name}`);
+      }
+    }
+  }
+  try {
+    await Promise.all(Array.from({ length: Math.min(PARALLEL, items.length) }, worker));
+    render();
+    const res = await fetch("/api/uploads/finish", { method: "POST", credentials: "same-origin",
+      headers: { "X-CSRF-Token": csrf, "Content-Type": "application/json" },
+      body: JSON.stringify({ dest, stored, skipped, failed, names }) });
+    window.removeEventListener("beforeunload", guard);
+    const next2 = res.ok ? await res.json() : {};
+    goTo(next2.redirect);
+  } catch (err) {
+    window.removeEventListener("beforeunload", guard);
+    alert(err.message || "Wysyłka nie powiodła się.");
+    button.disabled = false; button.textContent = buttonText;
+  } finally {
+    clearInterval(tick);
+    if (lock) lock.release().catch(() => {});
+  }
+}
+
+// Wskaźnik połączenia: sieć biurowa (prosto do NAS) albo internet
+document.querySelectorAll("[data-connection]").forEach(async (el) => {
+  try {
+    const r = await fetch("/api/connection", { credentials: "same-origin" });
+    const { lan } = await r.json();
+    el.classList.add(lan ? "lan" : "net");
+    el.textContent = lan ? "⚡ Sieć biurowa — pełna prędkość" : "🌐 Przez internet";
+  } catch (_) { el.remove(); }
+});
+
+// Import z NAS: lista folderów w bsk-dane/import i postęp importu
+document.querySelectorAll("[data-import]").forEach((box) => {
+  const list = box.querySelector("[data-import-list]");
+  const start = box.querySelector("[data-import-start]");
+  const jobBox = box.querySelector("[data-import-job]");
+  let timer = null;
+  function renderList(entries, running) {
+    list.replaceChildren();
+    if (!entries.length) {
+      const p = document.createElement("span");
+      p.className = "muted small";
+      p.textContent = "Folder import jest pusty — skopiuj do niego pliki przez sieć (Eksplorator Windows).";
+      list.append(p);
+    }
+    entries.forEach((e) => {
+      const l = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.name = "names"; cb.value = e.name;
+      cb.addEventListener("change", () => { start.disabled = running || !list.querySelector("input:checked"); });
+      const icon = document.createElement("span"); icon.textContent = e.dir ? "📁" : "📄";
+      const name = document.createElement("span"); name.textContent = e.name;
+      const meta = document.createElement("span"); meta.className = "meta"; meta.textContent = `${e.files} plików · ${human(e.size)}`;
+      l.append(cb, icon, name, meta);
+      list.append(l);
+    });
+    start.disabled = running || !list.querySelector("input:checked");
+  }
+  function renderJob(job, running) {
+    if (!job) { jobBox.hidden = true; return; }
+    jobBox.hidden = false;
+    const pct = job.total_bytes ? Math.floor((job.done_bytes / job.total_bytes) * 100) : (job.status === "done" ? 100 : 0);
+    box.querySelector("[data-job-bar]").value = pct;
+    box.querySelector("[data-job-title]").textContent = job.status === "running" ? `Import trwa… ${pct}%`
+      : job.status === "done" ? "Import zakończony ✓" : "Import przerwany — błąd";
+    box.querySelector("[data-job-detail]").textContent =
+      `${job.done_files} / ${job.total_files} plików · ${human(job.done_bytes)} z ${human(job.total_bytes)}${job.skipped ? ` · pominięto ${job.skipped}` : ""}`;
+    box.querySelector("[data-job-current]").textContent = job.status === "error" ? job.error : (job.current || "");
+  }
+  async function refresh() {
+    try {
+      const r = await fetch("/api/import", { credentials: "same-origin" });
+      if (!r.ok) return;
+      const data = await r.json();
+      if (!list.querySelector("input:checked")) renderList(data.entries, data.running);
+      renderJob(data.job, data.running);
+      clearTimeout(timer);
+      if (data.running) timer = setTimeout(refresh, 2000);
+    } catch (_) { /* spróbujemy przy następnym odświeżeniu */ }
+  }
+  box.querySelector("[data-import-refresh]").addEventListener("click", () => { list.querySelectorAll("input").forEach((c) => { c.checked = false; }); refresh(); });
+  refresh();
 });
 
 // Przejście po wysyłce. Ten sam adres z innym „#” nie przeładowałby strony — wtedy przeładuj ręcznie.

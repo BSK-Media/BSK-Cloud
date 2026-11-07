@@ -297,6 +297,28 @@ termin ważności i hasło. Odbiorca dostaje link `https://cloud.bskmedia.pl/t/�
 Na karcie klienta: **Osoby z dostępem → Dodaj osobę z firmy**. Każda osoba ma własny login i hasło, ale
 wszyscy widzą te same pliki, katalogi i wiadomości firmy. Przy plikach i wiadomościach widać, kto je dodał.
 
+# Duże pliki i archiwa
+**Wysyłka z przeglądarki** (Ty i klienci): każdy plik zapisuje się od razu po wysłaniu, a trzy pliki lecą
+jednocześnie. Na ekranie widać postęp, prędkość i szacowany czas, a komputer nie usypia w trakcie. Jeśli
+wysyłka się przerwie, przeciągnij ten sam folder jeszcze raz: pliki, które już są na serwerze (ta sama nazwa,
+rozmiar i data), zostaną pominięte. Pliki, których nie udało się wysłać, są wymienione na końcu.
+
+**Import z NAS** (dziesiątki i setki GB): w biurze skopiuj foldery w Eksploratorze do
+`\\IP-NAS\bsk-dane\import`, potem w **Mój dysk** albo na karcie klienta zaznacz je w sekcji
+*Import z NAS* i kliknij **Importuj**. Pliki są przenoszone w obrębie dysku (bez ponownego kopiowania),
+struktura folderów zostaje zachowana, a import działa na serwerze, więc możesz zamknąć stronę.
+
+**Tryb biurowy (ten sam adres, pełna prędkość sieci lokalnej):**
+1. Cloudflare → *My Profile → API Tokens → Create Token → Edit zone DNS*: strefa `bskmedia.pl`.
+   Token wpisz do `.env` jako `CLOUDFLARE_API_TOKEN`.
+2. Sprawdź, czy port 443 na NAS jest wolny: `sudo ss -ltnp | grep ':443 '` (pusto = wolny).
+3. Uruchom: `sudo docker compose --profile tunnel --profile office --profile lan up -d --build`.
+4. W routerze (lokalny DNS / statyczne wpisy DNS) dodaj: `cloud.bskmedia.pl → IP NAS`.
+   Jeśli router tego nie ma, dopisz na komputerze w `C:\Windows\System32\drivers\etc\hosts`
+   linię `IP-NAS cloud.bskmedia.pl`.
+5. Przy formularzu wysyłki pojawi się znaczek **⚡ Sieć biurowa — pełna prędkość**. Poza biurem
+   **🌐 Przez internet**, a adres jest ten sam.
+
 # Aplikacja na telefon (PWA)
 Portal instaluje się jako aplikacja, bez sklepu z aplikacjami:
 - **Android (Chrome):** otwórz `https://cloud.bskmedia.pl` → **Zainstaluj aplikację** (w menu portalu albo w menu Chrome ⋮).
