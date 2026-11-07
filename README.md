@@ -273,6 +273,15 @@ W panelu klienta jest też **Nowy arkusz / Nowy dokument**.
 - **Kosz:** usunięte pliki (także przez klienta) można przywrócić przez 30 dni, potem znikają.
 - **Wyszukiwarka** (u góry ekranu): pliki, katalogi, klienci i kopie pracowników. Klient przeszukuje tylko swoje pliki.
 
+# Aplikacja na telefon (PWA)
+Portal instaluje się jako aplikacja, bez sklepu z aplikacjami:
+- **Android (Chrome):** otwórz `https://cloud.bskmedia.pl` → **Zainstaluj aplikację** (w menu portalu albo w menu Chrome ⋮).
+- **iPhone (Safari):** otwórz `https://cloud.bskmedia.pl` → **Udostępnij** → **Do ekranu początkowego**.
+
+Aplikacja ma ikonę BSK Cloud, działa na pełnym ekranie z dolnym menu (Pulpit, Klienci, Mój dysk, Szukaj),
+trzyma miniatury w pamięci telefonu i pokazuje ekran „Brak połączenia”, gdy nie ma internetu.
+Przy logowaniu zaznacz **Zapamiętaj mnie**, żeby sesja trwała 30 dni (domyślnie 12 godzin).
+
 # Wiadomości i powiadomienia
 - Rozmowa z klientem odświeża się sama co kilka sekund, a nowa wiadomość daje sygnał dźwiękowy.
   Po kliknięciu **Włącz powiadomienia** pojawiają się też powiadomienia systemowe przeglądarki.

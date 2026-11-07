@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Brak połączenia — {{ site_name }}{% endblock %}
+{% block auth %}
+<section class="card center">
+  <div class="big-file"><span class="ficon">{{ ui.icon("drive") }}</span>
+    <h1>Brak połączenia</h1>
+    <p class="muted">Nie możemy połączyć się z serwerem BSK Media. Sprawdź internet w telefonie i spróbuj ponownie.</p>
+    <a class="button primary big" href="/">Spróbuj ponownie</a>
+  </div>
+</section>
+{% endblock %}

@@ -436,3 +436,23 @@ document.addEventListener("click", (e) => {
     x0 = null;
   });
 })();
+
+// ---------------------------------------------------------------- aplikacja (PWA)
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => { /* bez SW działa jak zwykła strona */ });
+  });
+}
+let installPrompt = null;
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  document.querySelectorAll("[data-install]").forEach((b) => { b.hidden = false; });
+});
+document.querySelectorAll("[data-install]").forEach((b) => b.addEventListener("click", async () => {
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice;
+  installPrompt = null;
+  document.querySelectorAll("[data-install]").forEach((x) => { x.hidden = true; });
+}));
