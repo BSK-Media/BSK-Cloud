@@ -134,6 +134,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     templates.env.globals["charts"] = charts
     templates.env.globals["office_enabled"] = bool(settings.office_url and settings.office_secret)
     templates.env.globals["doc_type"] = office.doc_type
+    templates.env.globals["nas_host"] = urllib.parse.urlsplit(settings.lan_url).hostname or "IP-NAS"
     templates.env.globals["site_name"] = settings.site_name
     app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
     # numer wersji plików statycznych — po aktualizacji przeglądarka i Cloudflare pobiorą nowe style
@@ -406,7 +407,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             folder_dir(owner, db.one("SELECT * FROM folders WHERE id = ?", parent_id)).mkdir(parents=True, exist_ok=True)
         return parent_id
 
-    def save_into(owner, uploader, src, note: str, folder_id: int | None) -> int | None:
+    def find_folder_path(owner, base_folder_id: int | None, subdir: str) -> tuple[bool, int | None]:
+        """Jak ensure_folder_path, ale bez zakładania: (czy istnieje, id katalogu)."""
+        parent_id = base_folder_id
+        for part in [p for p in subdir.split("/") if p][:20]:
+            name = storage.safe_name(part, "katalog")[:80]
+            found = next((r for r in db.all("SELECT id, name FROM folders WHERE owner_id = ? AND parent_id IS ?",
+                                            owner["id"], parent_id) if r["name"].casefold() == name.casefold()), None)
+            if not found:
+                return False, None
+            parent_id = found["id"]
+        return True, parent_id
+
+    def resolve_dest(user, dest: dict):
+        """Dokąd trafia plik wysyłany z przeglądarki: (właściciel przestrzeni, katalog, notatka, do akceptacji)."""
+        kind = str(dest.get("kind", ""))
+        try:
+            folder_id = int(dest["folder_id"]) if dest.get("folder_id") not in (None, "", 0, "0") else None
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Nieprawidłowy katalog.")
+        if kind == "my" and user["role"] == "admin":
+            owner = user
+        elif kind == "client" and user["role"] == "admin":
+            owner = client_or_404(int(dest.get("client_id") or 0))
+        elif kind == "self" and user["role"] == "client":
+            owner = space_of(user)
+        else:
+            raise HTTPException(403, "Brak dostępu do tej przestrzeni.")
+        folder_row(owner["id"], folder_id)  # sprawdza, czy katalog należy do przestrzeni
+        return owner, folder_id, str(dest.get("note", ""))[:500], bool(dest.get("review")) and user["role"] == "admin"
+
+    def finalize_upload(user, row) -> int | None:
+        """Ostatni kawałek dotarł: plik od razu trafia na swoje miejsce (wysyłka przerwana później nic nie traci)."""
+        dest = json.loads(row["dest"])
+        owner, folder_id, note, review = resolve_dest(user, dest)
+        src = ChunkedFile(row)
+        fid = save_into(owner, user, src, "", folder_id, dest.get("mtime"))
+        if fid and review:
+            db.run("UPDATE files SET review_status = 'review', review_by = NULL, review_at = NULL WHERE id = ?", fid)
+        return fid
+
+    def save_into(owner, uploader, src, note: str, folder_id: int | None, src_mtime: float | None = None) -> int | None:
         """Zapis z uwzględnieniem podfolderu; pomija pliki systemowe (Thumbs.db, .DS_Store…)."""
         if (src.filename or "").casefold() in SKIP_NAMES:
             if isinstance(src, ChunkedFile):
@@ -414,7 +455,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return None
         sub = getattr(src, "subdir", "")
         target = ensure_folder_path(owner, folder_id, sub, uploader) if sub else folder_id
-        return save_upload(owner, uploader, src, note, target)
+        return save_upload(owner, uploader, src, note, target, src_mtime)
 
     def incoming(user, files, upload_ids) -> list:
         out = [f for f in (files or []) if f.filename]
@@ -437,7 +478,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return row["size"], row["sha256"]
         return storage.copy_hashed(source.file, dest, settings.tmp_dir, limit)
 
-    def save_upload(client, uploader, upload, note: str, folder_id: int | None = None) -> int:
+    def save_upload(client, uploader, upload, note: str, folder_id: int | None = None, src_mtime: float | None = None) -> int:
         """Zapis pliku w przestrzeni (klienta lub Mój dysk). Ta sama nazwa w tym samym katalogu = nowa wersja."""
         limit = max_upload
         quota_exceeded = False
@@ -480,8 +521,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                    existing["uploaded_by"], existing["uploaded_at"], existing["note"])
             reset = "review" if existing["review_status"] in ("approved", "changes", "review") else existing["review_status"]
             db.run("UPDATE files SET size = ?, sha256 = ?, uploaded_by = ?, uploaded_at = ?, note = ?, version = version + 1,"
-                   " review_status = ?, review_by = NULL, review_at = NULL WHERE id = ?",
-                   size, sha, uploader["id"], now_iso(), note[:500], reset, existing["id"])
+                   " review_status = ?, review_by = NULL, review_at = NULL, src_mtime = ? WHERE id = ?",
+                   size, sha, uploader["id"], now_iso(), note[:500], reset, src_mtime, existing["id"])
             db.log(uploader["id"], "upload_version", f"{existing['rel_path']} v{existing['version'] + 1}")
             thumbs.generate_async(cur, settings.thumbs_dir, existing["id"], sha)
             return existing["id"]
@@ -490,10 +531,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         shutil.move(str(tmp_dest), dest)
         rel = dest.relative_to(settings.clients_dir).as_posix()
         fid = db.run(
-            "INSERT INTO files (client_id, rel_path, original_name, size, sha256, uploaded_by, uploaded_at, note, folder_id)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO files (client_id, rel_path, original_name, size, sha256, uploaded_by, uploaded_at, note, folder_id, src_mtime)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             client["id"], rel, upload.filename or name, size, sha, uploader["id"], now_iso(), note[:500],
-            folder["id"] if folder else None,
+            folder["id"] if folder else None, src_mtime,
         )
         db.log(uploader["id"], "upload", f"{rel} ({size} B)")
         thumbs.generate_async(dest, settings.thumbs_dir, fid, sha)
@@ -1171,6 +1212,144 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         total = sum(len(v) for v in res.values())
         return render(request, "search.html", q=q, res=res, total=total,
                       nav="search")
+
+    # ------------------------------------------------------------------ import z NAS (duże archiwa kopiowane przez sieć lokalną)
+
+    import_lock = threading.Lock()
+
+    def import_entries() -> list[dict]:
+        """Zawartość folderu bsk-dane/import (pierwszy poziom) z liczbą plików i rozmiarem."""
+        base = settings.import_dir
+        base.mkdir(parents=True, exist_ok=True)
+        out = []
+        for p in sorted(base.iterdir(), key=lambda x: x.name.lower()):
+            if p.name.startswith((".", "@", "#")) or p.name.casefold() in SKIP_NAMES:
+                continue
+            files = size = 0
+            if p.is_file():
+                files, size = 1, p.stat().st_size
+            else:
+                for dp, dn, fn in os.walk(p):
+                    dn[:] = [d for d in dn if not d.startswith((".", "@", "#"))]
+                    for f in fn:
+                        if f.casefold() in SKIP_NAMES or f.startswith("."):
+                            continue
+                        try:
+                            size += os.stat(os.path.join(dp, f)).st_size
+                            files += 1
+                        except OSError:
+                            pass
+            out.append({"name": p.name, "dir": p.is_dir(), "files": files, "size": size})
+        return out
+
+    def run_import(job_id: int, owner, folder_id: int | None, names: list[str], admin) -> None:
+        """Przenosi pliki z bsk-dane/import do przestrzeni (ten sam dysk = błyskawicznie, bez kopiowania)."""
+        base = settings.import_dir
+        try:
+            todo = []
+            for name in names:
+                src = base / name
+                if not storage.inside(base, src) or not src.exists():
+                    continue
+                if src.is_file():
+                    todo.append((src, ""))
+                    continue
+                for dp, dn, fn in os.walk(src):
+                    dn[:] = [d for d in dn if not d.startswith((".", "@", "#"))]
+                    rel_dir = Path(dp).relative_to(base).as_posix()
+                    for f in fn:
+                        if f.casefold() in SKIP_NAMES or f.startswith("."):
+                            continue
+                        todo.append((Path(dp) / f, rel_dir))
+            total = sum(p.stat().st_size for p, _ in todo if p.exists())
+            db.run("UPDATE import_jobs SET total_files = ?, total_bytes = ? WHERE id = ?", len(todo), total, job_id)
+            done = done_bytes = skipped = 0
+            folders_cache: dict[str, int | None] = {}
+            for path, rel_dir in todo:
+                try:
+                    st = path.stat()
+                except OSError:
+                    continue
+                if rel_dir not in folders_cache:
+                    folders_cache[rel_dir] = ensure_folder_path(owner, folder_id, rel_dir, admin) if rel_dir else folder_id
+                fid = folders_cache[rel_dir]
+                folder = db.one("SELECT * FROM folders WHERE id = ?", fid) if fid else None
+                target_dir = folder_dir(owner, folder) if folder else client_dir(owner)
+                same = db.one("SELECT id FROM files WHERE client_id = ? AND folder_id IS ? AND deleted_at IS NULL"
+                              " AND original_name = ? AND size = ?", owner["id"], fid, path.name, st.st_size)
+                if same:
+                    skipped += 1  # już zaimportowany — zostaje w folderze import, nic nie nadpisujemy
+                else:
+                    dest = storage.unique_path(target_dir, storage.safe_name(path.name))
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(path), dest)
+                    # odcisk zamiast pełnej sumy: czytanie setek GB tylko po to trwałoby godzinami
+                    fp = "q" + hashlib.sha256(f"{st.st_size}:{st.st_mtime_ns}:{dest}".encode()).hexdigest()[1:]
+                    new_id = db.run(
+                        "INSERT INTO files (client_id, rel_path, original_name, size, sha256, uploaded_by, uploaded_at, note,"
+                        " folder_id, src_mtime) VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?)",
+                        owner["id"], dest.relative_to(settings.clients_dir).as_posix(), path.name, st.st_size, fp,
+                        admin["id"], now_iso(), fid, st.st_mtime)
+                    thumbs.generate_async(dest, settings.thumbs_dir, new_id, fp)
+                done += 1
+                done_bytes += st.st_size
+                if done % 25 == 0 or done == len(todo):
+                    db.run("UPDATE import_jobs SET done_files = ?, done_bytes = ?, skipped = ?, current = ? WHERE id = ?",
+                           done, done_bytes, skipped, f"{rel_dir}/{path.name}".strip("/")[:300], job_id)
+            for name in names:  # sprzątnij puste katalogi po imporcie
+                src = base / name
+                if src.is_dir() and storage.inside(base, src):
+                    for dp, _, _ in sorted(os.walk(src), key=lambda t: -len(t[0])):
+                        try:
+                            os.rmdir(dp)
+                        except OSError:
+                            pass
+            db.run("UPDATE import_jobs SET status = 'done', done_files = ?, done_bytes = ?, skipped = ?, current = '',"
+                   " finished_at = ? WHERE id = ?", done, done_bytes, skipped, now_iso(), job_id)
+            db.log(admin["id"], "import_done", f"{done - skipped} plików, pominięto {skipped}")
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Import nie powiódł się")
+            db.run("UPDATE import_jobs SET status = 'error', error = ?, finished_at = ? WHERE id = ?", str(exc)[:500], now_iso(), job_id)
+        finally:
+            import_lock.release()
+
+    def import_status() -> dict | None:
+        job = db.one("SELECT * FROM import_jobs ORDER BY id DESC LIMIT 1")
+        return dict(job) if job else None
+
+    @app.get("/api/import")
+    def api_import(request: Request):
+        require_user(request, "admin")
+        return {"entries": import_entries(), "job": import_status(), "running": import_lock.locked(),
+                "thumbs_pending": thumbs.pending()}
+
+    @app.post("/admin/import")
+    def start_import(request: Request, owner_id: int = Form(...), folder_id: int | None = Form(None),
+                     names: list[str] = Form([]), csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        owner = space_owner_for_admin(admin, owner_id)
+        folder_row(owner_id, folder_id)
+        available = {e["name"] for e in import_entries()}
+        chosen = [n for n in names if n in available]
+        if not chosen:
+            flash(request, "Zaznacz foldery lub pliki do importu.", "error")
+        elif not import_lock.acquire(blocking=False):
+            flash(request, "Trwa już inny import — poczekaj, aż się skończy.", "warn")
+        else:
+            job = db.run("INSERT INTO import_jobs (owner_id, folder_id, items, started_by, started_at) VALUES (?, ?, ?, ?, ?)",
+                         owner_id, folder_id, json.dumps(chosen), admin["id"], now_iso())
+            threading.Thread(target=run_import, args=(job, owner, folder_id, chosen, admin), daemon=True,
+                             name="import").start()
+            db.log(admin["id"], "import_started", ", ".join(chosen)[:500])
+            flash(request, "Import ruszył — postęp widać poniżej. Możesz zamknąć stronę, import działa na serwerze.")
+        return RedirectResponse(space_url(admin, owner_id, folder_id).replace("#pliki", "#import"), 303)
+
+    @app.get("/api/connection")
+    def api_connection(request: Request):
+        """Którędy łączy się przeglądarka: sieć biurowa (prosto do NAS) czy internet (Cloudflare)."""
+        via_cf = bool(request.headers.get("cf-ray") or request.headers.get("cf-connecting-ip"))
+        return {"lan": not via_cf}
 
     # ------------------------------------------------------------------ admin: klienci
 
@@ -2220,6 +2399,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if size > max_upload:
             raise HTTPException(413, f"Plik {name} przekracza limit {settings.max_upload_mb} MB.")
         owner = space_of(user)
+        dest_json = ""
+        if isinstance(body.get("dest"), dict):
+            d = dict(body["dest"])
+            try:
+                d["mtime"] = float(body.get("mtime")) / 1000 if body.get("mtime") else None  # JS: milisekundy
+            except (TypeError, ValueError):
+                d["mtime"] = None
+            dest_owner, dest_folder, _, _ = resolve_dest(user, d)
+            exists, fid = find_folder_path(dest_owner, dest_folder, folder_path) if folder_path else (True, dest_folder)
+            if exists and d["mtime"]:
+                same = db.one("SELECT id FROM files WHERE client_id = ? AND folder_id IS ? AND deleted_at IS NULL"
+                              " AND original_name = ? AND size = ? AND src_mtime IS NOT NULL AND abs(src_mtime - ?) < 2",
+                              dest_owner["id"], fid, name, size, d["mtime"])
+                if same:
+                    return {"status": "exists", "file_id": same["id"]}  # już jest — wznowienie wysyłki folderu
+            owner = dest_owner if dest_owner["role"] == "client" else owner
+            dest_json = json.dumps(d)
         if user["role"] == "client" and owner["quota_mb"]:
             pending = db.one(
                 "SELECT COALESCE(SUM(size), 0) AS s FROM uploads WHERE user_id = ?", user["id"]
@@ -2228,7 +2424,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(
                     413, f"Brak miejsca na koncie (limit {owner['quota_mb']} MB). Skontaktuj się z BSK Media."
                 )
-        row = chunk_store.create(name=name, size=size, user_id=user["id"], target=folder_path)
+        row = chunk_store.create(name=name, size=size, user_id=user["id"], target=folder_path, dest=dest_json)
+        if dest_json and row["status"] == "done":  # pusty plik — od razu na miejsce
+            fid = finalize_upload(user, row)
+            return {"id": row["id"], "status": "stored", "file_id": fid, "received": 0, "chunk_size": chunks.CHUNK_SIZE}
         return {"id": row["id"], "received": row["received"], "chunk_size": chunks.CHUNK_SIZE}
 
     @app.get("/api/uploads/{upload_id}")
@@ -2238,12 +2437,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.put("/api/uploads/{upload_id}")
     async def browser_upload_chunk(request: Request, upload_id: str, offset: int = Query(..., ge=0)):
-        row = browser_upload_row(api_user(request), upload_id)
+        user = api_user(request)
+        row = browser_upload_row(user, upload_id)
         try:
             row = await chunk_store.write(row, offset, request.stream())
         except chunks.ChunkError as exc:
             return JSONResponse({"detail": exc.detail, "received": exc.received}, status_code=exc.status)
+        if row["status"] == "done" and row["dest"]:
+            fid = await asyncio.to_thread(finalize_upload, user, row)
+            return {"id": row["id"], "received": row["received"], "status": "stored", "file_id": fid}
         return {"id": row["id"], "received": row["received"], "status": row["status"]}
+
+    @app.post("/api/uploads/finish")
+    async def browser_upload_finish(request: Request):
+        """Koniec wysyłki z przeglądarki: komentarz do rozmowy, powiadomienia, komunikat i adres powrotu."""
+        user = api_user(request)
+        try:
+            body = await request.json()
+            dest = dict(body.get("dest") or {})
+            stored, skipped = int(body.get("stored", 0)), int(body.get("skipped", 0))
+            failed = [str(x)[:200] for x in (body.get("failed") or [])][:50]
+            names = [str(x)[:200] for x in (body.get("names") or [])][:20]
+        except (ValueError, TypeError):
+            raise HTTPException(400, "Nieprawidłowe dane.")
+        owner, folder_id, note, review = resolve_dest(user, dest)
+        who = user["display_name"] or user["username"]
+        if note.strip() and stored:
+            add_message(owner["id"] if owner["role"] == "client" else owner["id"], user, note)
+        if stored and owner["role"] == "client":
+            listing = ", ".join(names) + (f" i {stored - len(names)} innych" if stored > len(names) else "")
+            if user["role"] == "client":
+                notify_admin(settings, f"Nowe pliki od {owner['company'] or who}",
+                             f"{who} wysłał(a) {stored} plików: {listing}" + (f"\n\nKomentarz: {note}" if note.strip() else ""),
+                             link=f"{settings.public_url}/admin/clients/{owner['id']}", throttle_key=f"admin:{owner['id']}")
+            else:
+                if review:
+                    add_message(owner["id"], user, "🔎 Do akceptacji: " + listing)
+                notify_client(owner, "Nowe pliki od BSK Media", [f"Udostępniliśmy Ci plików: {stored}.", note.strip()])
+        parts = [f"Zapisano plików: {stored}."]
+        if skipped:
+            parts.append(f"Pominięto {skipped} — już były na serwerze.")
+        if failed:
+            parts.append(f"Nie udało się wysłać {len(failed)}: " + ", ".join(failed[:10]) + ("…" if len(failed) > 10 else ""))
+        flash(request, " ".join(parts), "warn" if failed else "ok")
+        db.log(user["id"], "upload_batch", f"{stored} zapisanych, {skipped} pominiętych, {len(failed)} błędów")
+        return {"redirect": space_url(user, owner["id"], folder_id)}
 
     # ------------------------------------------------------------------ transfery (jak WeTransfer)
 

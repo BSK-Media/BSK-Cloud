@@ -9,7 +9,10 @@
 </section>
 <section class="card" id="wyslij">
   <div class="card-head">{{ ui.icon("upload") }}<h2>Wgraj pliki{% if space.folder %} do „{{ space.folder.name }}”{% endif %}</h2></div>
-  {{ ui.upload_form(upload_action, csrf, max_upload_mb, "Zapisz na moim dysku", folder=space.folder) }}
-  <p class="hint">Plik o tej samej nazwie w tym samym katalogu zapisze się jako nowa wersja (poprzednia zostaje w historii).</p>
+  {{ ui.upload_form(upload_action, csrf, max_upload_mb, "Zapisz na moim dysku", folder=space.folder, dest={"kind": "my", "folder_id": space.folder.id if space.folder else None}) }}
+  <p class="hint">Możesz przeciągać całe foldery. Plik, który już jest na serwerze, zostanie pominięty — przerwaną wysyłkę wznowisz, przeciągając folder ponownie. Zmieniony plik o tej samej nazwie zapisze się jako nowa wersja.</p>
+</section>
+<section class="card">
+  {% from "_import.html" import import_card with context %}{{ import_card(user.id, space.folder, csrf) }}
 </section>
 {% endblock %}

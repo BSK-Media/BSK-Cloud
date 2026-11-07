@@ -42,7 +42,8 @@
   <section class="card">
     <div class="card-head">{{ ui.icon("upload") }}<h2>Udostępnij pliki klientowi</h2></div>
     {% set review_box %}<label class="check"><input type="checkbox" name="review" value="1"> Prześlij do akceptacji — klient zobaczy przyciski „Akceptuję” i „Poprawki”</label>{% endset %}
-    {{ ui.upload_form("/admin/clients/" ~ client.id ~ "/upload", csrf, max_upload_mb, "Wyślij do klienta", review_box, folder=space.folder) }}
+    {{ ui.upload_form("/admin/clients/" ~ client.id ~ "/upload", csrf, max_upload_mb, "Wyślij do klienta", review_box, folder=space.folder, dest={"kind": "client", "client_id": client.id, "folder_id": space.folder.id if space.folder else None}) }}
+    {% from "_import.html" import import_card with context %}{{ import_card(client.id, space.folder, csrf) }}
     <div class="card-head mt"><h3>albo utwórz nowy dokument</h3></div>
     <form method="post" action="/admin/clients/{{ client.id }}/new-doc" class="row">
       <input type="hidden" name="csrf" value="{{ csrf }}">

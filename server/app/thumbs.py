@@ -9,6 +9,7 @@ zapisany w pamięci podręcznej na szybkim dysku. Klucz zawiera sumę pliku, wi�
 from __future__ import annotations
 
 import logging
+import queue
 import shutil
 import subprocess
 import tempfile
@@ -134,8 +135,37 @@ def generate(src: Path, cache_dir: Path, file_id: int, sha: str) -> bool:
             return False
 
 
+_queue: "queue.Queue[tuple]" = queue.Queue()
+_workers_started = False
+_workers_lock = threading.Lock()
+
+
+def _worker() -> None:
+    while True:
+        args = _queue.get()
+        try:
+            generate(*args)
+        except Exception:  # noqa: BLE001
+            log.warning("Błąd kolejki miniatur", exc_info=True)
+        finally:
+            _queue.task_done()
+
+
 def generate_async(src: Path, cache_dir: Path, file_id: int, sha: str) -> None:
-    threading.Thread(target=generate, args=(src, cache_dir, file_id, sha), daemon=True).start()
+    """Miniatura w tle — przez kolejkę z 2 wątkami (tysiące plików nie tworzą tysięcy wątków)."""
+    global _workers_started
+    if not can_thumb(src.name):
+        return
+    with _workers_lock:
+        if not _workers_started:
+            for _ in range(2):
+                threading.Thread(target=_worker, daemon=True, name="miniatury").start()
+            _workers_started = True
+    _queue.put((src, cache_dir, file_id, sha))
+
+
+def pending() -> int:
+    return _queue.qsize()
 
 
 def remove(cache_dir: Path, file_id: int) -> None:

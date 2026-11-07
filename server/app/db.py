@@ -126,6 +126,23 @@ CREATE TABLE IF NOT EXISTS transfer_files (
     size INTEGER NOT NULL,
     sha256 TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS import_jobs (
+    id INTEGER PRIMARY KEY,
+    owner_id INTEGER NOT NULL REFERENCES users(id),
+    folder_id INTEGER,
+    items TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'running',
+    total_files INTEGER NOT NULL DEFAULT 0,
+    total_bytes INTEGER NOT NULL DEFAULT 0,
+    done_files INTEGER NOT NULL DEFAULT 0,
+    done_bytes INTEGER NOT NULL DEFAULT 0,
+    skipped INTEGER NOT NULL DEFAULT 0,
+    current TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    started_by INTEGER,
+    started_at TEXT NOT NULL,
+    finished_at TEXT
+);
 CREATE TABLE IF NOT EXISTS seen (
     user_id INTEGER NOT NULL REFERENCES users(id),
     client_id INTEGER NOT NULL REFERENCES users(id),
@@ -174,6 +191,7 @@ MIGRATIONS = [
     ("files", "trash_path", "TEXT"),
     ("files", "version", "INTEGER NOT NULL DEFAULT 1"),
     ("files", "review_status", "TEXT NOT NULL DEFAULT ''"),
+    ("files", "src_mtime", "REAL"),
     ("files", "review_by", "INTEGER"),
     ("files", "review_at", "TEXT"),
     ("files", "office_version", "INTEGER NOT NULL DEFAULT 1"),

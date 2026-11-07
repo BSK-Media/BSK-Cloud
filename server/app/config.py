@@ -80,6 +80,11 @@ class Settings:
         return self.data_dir / "transfery" / "_tla"
 
     @property
+    def import_dir(self) -> Path:
+        """Folder na NAS (bsk-dane/import), do którego kopiujesz duże archiwa przez sieć lokalną."""
+        return self.data_dir / "import"
+
+    @property
     def trash_dir(self) -> Path:
         return self.data_dir / "kosz"
 

@@ -27,7 +27,7 @@
 <div class="grid g-2 mb">
   <section class="card" id="wyslij">
     <div class="card-head">{{ ui.icon("upload") }}<h2>Wyślij pliki do BSK Media</h2></div>
-    {{ ui.upload_form("/files/upload", csrf, max_upload_mb, folder=space.folder) }}
+    {{ ui.upload_form("/files/upload", csrf, max_upload_mb, folder=space.folder, dest={"kind": "self", "folder_id": space.folder.id if space.folder else None}) }}
     {% if office_enabled %}
     <div class="card-head mt"><h3>albo utwórz nowy dokument online</h3></div>
     <form method="post" action="/files/new-doc" class="row">

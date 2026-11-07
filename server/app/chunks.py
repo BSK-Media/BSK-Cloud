@@ -52,6 +52,9 @@ class ChunkStore:
         self.dir = tmp_dir / "chunks"
         self.dir.mkdir(parents=True, exist_ok=True)
         db.conn().executescript(SCHEMA)
+        cols = {r["name"] for r in db.all("PRAGMA table_info(uploads)")}
+        if "dest" not in cols:  # dokąd zapisać plik po ostatnim kawałku (wysyłka z przeglądarki)
+            db.run("ALTER TABLE uploads ADD COLUMN dest TEXT NOT NULL DEFAULT ''")
         self._hashers: dict[str, "hashlib._Hash"] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
@@ -59,13 +62,13 @@ class ChunkStore:
         return self.dir / f"{upload_id}.part"
 
     def create(self, *, name: str, size: int, user_id: int | None = None, device_id: int | None = None,
-               expected_sha256: str = "", target: str = "", mtime: float = 0) -> dict:
+               expected_sha256: str = "", target: str = "", mtime: float = 0, dest: str = "") -> dict:
         self.cleanup()
         upload_id = secrets.token_urlsafe(18)
         self.db.run(
-            "INSERT INTO uploads (id, user_id, device_id, name, size, expected_sha256, target, mtime, created_at, updated_ts)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            upload_id, user_id, device_id, name[:300], size, expected_sha256.lower(), target, mtime, now_iso(), time.time(),
+            "INSERT INTO uploads (id, user_id, device_id, name, size, expected_sha256, target, mtime, created_at, updated_ts, dest)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            upload_id, user_id, device_id, name[:300], size, expected_sha256.lower(), target, mtime, now_iso(), time.time(), dest,
         )
         self.path(upload_id).touch()
         self._hashers[upload_id] = hashlib.sha256()
@@ -161,7 +164,12 @@ class ChunkStore:
         self._hashers.pop(upload_id, None)
         self._locks.pop(upload_id, None)
 
+    _last_cleanup = 0.0
+
     def cleanup(self) -> None:
+        if time.time() - self._last_cleanup < 300:  # przy tysiącach plików nie sprzątamy przy każdym
+            return
+        self._last_cleanup = time.time()
         cutoff = time.time() - MAX_AGE_S
         for row in self.db.all("SELECT id FROM uploads WHERE updated_ts < ?", cutoff):
             self.remove(row["id"])
