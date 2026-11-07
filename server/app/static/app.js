@@ -548,10 +548,40 @@ if (document.querySelector("[data-unread-poll]") && !document.querySelector("[da
 }
 
 // ---------------------------------------------------------------- galeria: widok, miniatury, podgląd
+// Miniatury powstają w tle: 202 = jeszcze w kolejce (spróbuj za chwilę), 404 = brak podglądu (zostaje ikona).
+function thumbStatus(url) {
+  return fetch(url, { credentials: "same-origin", cache: "no-store" }).then((r) => r.status).catch(() => 0);
+}
+function retryUrl(url, n) {
+  const u = new URL(url, location.href);
+  u.searchParams.set("r", n);
+  return u.toString();
+}
 document.querySelectorAll("img[data-fallback]").forEach((img) => {
-  const drop = () => img.remove(); // brak miniatury -> zostaje ikona typu pliku
-  if (img.complete && img.naturalWidth === 0) drop(); else img.addEventListener("error", drop);
+  let tries = 0;
+  const failed = async () => {
+    img.classList.add("thumb-wait");
+    if (tries < 40 && (await thumbStatus(img.src)) === 202) {
+      tries += 1;
+      setTimeout(() => { img.src = retryUrl(img.src, tries); }, Math.min(30000, 1500 + tries * 1500));
+    } else img.remove(); // brak miniatury -> zostaje ikona typu pliku
+  };
+  img.addEventListener("load", () => img.classList.remove("thumb-wait"));
+  img.addEventListener("error", failed);
+  if (img.complete && img.naturalWidth === 0) failed();
 });
+
+// „Przenieś do…” przy pliku: lista katalogów kopiowana dopiero po otwarciu menu (setki plików = lekka strona)
+document.addEventListener("toggle", (e) => {
+  const menu = e.target;
+  if (!(menu instanceof HTMLDetailsElement) || !menu.open) return;
+  const source = document.querySelector("[data-folder-source]");
+  menu.querySelectorAll("select[data-folder-select]:not([data-filled])").forEach((sel) => {
+    if (source) sel.innerHTML = source.innerHTML;
+    sel.value = sel.dataset.current || "";
+    sel.dataset.filled = "1";
+  });
+}, true);
 
 document.querySelectorAll("[data-browser]").forEach((browser) => {
   const tabs = browser.querySelector("[data-view-tabs]");
@@ -597,7 +627,17 @@ document.addEventListener("click", (e) => {
     const wrap = el("div", "lb-canvas");
     const img = new Image();
     img.alt = alt; img.src = src;
-    img.addEventListener("error", () => { wrap.replaceWith(placeholder(items[idx].dataset, "Nie udało się wczytać podglądu.")); });
+    let tries = 0;
+    img.addEventListener("error", async () => {
+      if (tries < 30 && (await thumbStatus(src)) === 202 && wrap.isConnected) {
+        tries += 1; // podgląd jeszcze się tworzy — za chwilę spróbuj ponownie
+        wrap.classList.add("lb-wait");
+        setTimeout(() => { if (wrap.isConnected) img.src = retryUrl(src, tries); }, 2000);
+        return;
+      }
+      if (wrap.isConnected) wrap.replaceWith(placeholder(items[idx].dataset, "Nie udało się wczytać podglądu."));
+    });
+    img.addEventListener("load", () => wrap.classList.remove("lb-wait"));
     img.addEventListener("load", drawPins);
     wrap.append(img);
     wrap.addEventListener("click", (e) => {

@@ -703,8 +703,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     templates.env.globals["online"] = online
 
-    def space_ctx(owner, folder_id: int | None) -> dict:
-        """Dane do przeglądarki plików: bieżący katalog, okruszki, podkatalogi z okładkami, pliki."""
+    PAGE = 300  # tyle plików na raz w galerii — tysiące kart naraz zawieszają przeglądarkę
+
+    def space_ctx(owner, folder_id: int | None, show: int = PAGE) -> dict:
+        """Dane do przeglądarki plików: bieżący katalog, okruszki, podkatalogi z okładkami, pliki (porcjami)."""
         folder = folder_row(owner["id"], folder_id) if folder_id else None
         subs = []
         for d in db.all(
@@ -717,9 +719,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             " ORDER BY uploaded_at DESC LIMIT 30", d["id"])
             covers = [r for r in recent if thumbs.can_thumb(r["original_name"])][:3]
             subs.append({**dict(d), "covers": covers})
+        files = client_files(owner["id"], folder["id"] if folder else None)
+        show = max(PAGE, min(int(show or PAGE), 100_000))
         return {
             "owner": owner, "folder": folder, "crumbs": folder_chain(folder) if folder else [],
-            "subfolders": subs, "files": client_files(owner["id"], folder["id"] if folder else None),
+            "subfolders": subs, "files": files[:show], "files_total": len(files), "show_next": show + PAGE,
             "all_folders": all_folders(owner["id"]),
         }
 
@@ -845,11 +849,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ------------------------------------------------------------------ klient
 
     @app.get("/files", response_class=HTMLResponse)
-    def my_files(request: Request, folder: int | None = None):
+    def my_files(request: Request, folder: int | None = None, show: int = 0):
         user = require_user(request, "client")
         owner = space_of(user)
         files = client_files(owner["id"])
-        space = space_ctx(owner, folder)
+        space = space_ctx(owner, folder, show)
         unread = unread_for(user)
         mark_seen(user, owner["id"])
         sent = [f for f in files if f["uploader_role"] == "client"]
@@ -929,9 +933,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ------------------------------------------------------------------ Mój dysk, katalogi, galeria, kosz, wyszukiwarka
 
     @app.get("/admin/my", response_class=HTMLResponse)
-    def my_drive(request: Request, folder: int | None = None):
+    def my_drive(request: Request, folder: int | None = None, show: int = 0):
         admin = require_user(request, "admin")
-        space = space_ctx(admin, folder)
+        space = space_ctx(admin, folder, show)
         used = db.one("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS b FROM files WHERE client_id = ?"
                       " AND deleted_at IS NULL", admin["id"])
         return render(request, "my_drive.html", space=space, base_url="/admin/my", upload_action="/admin/my/upload",
@@ -1105,8 +1109,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         f, path = file_for(user, file_id)
         size = "preview" if s == "preview" else "thumb"
         cached = thumbs.cache_path(settings.thumbs_dir, f["id"], f["sha256"], size)
-        if not cached.exists() and not thumbs.generate(path, settings.thumbs_dir, f["id"], f["sha256"]):
-            raise HTTPException(404, "Brak podglądu.")
+        if not cached.exists():
+            # bez czekania: miniatura trafia na początek kolejki, a strona spyta ponownie (202 = jeszcze nie gotowa)
+            state = thumbs.request(path, settings.thumbs_dir, f["id"], f["sha256"])
+            if state != "ready":
+                return Response(status_code=202 if state == "pending" else 404, headers={"Cache-Control": "no-store"})
         return FileResponse(cached, media_type="image/webp",
                             headers={"Cache-Control": "private, max-age=2592000, immutable"})
 
@@ -1474,10 +1481,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return RedirectResponse(f"/admin/clients/{cid}", 303)
 
     @app.get("/admin/clients/{client_id}", response_class=HTMLResponse)
-    def admin_client(request: Request, client_id: int, folder: int | None = None):
+    def admin_client(request: Request, client_id: int, folder: int | None = None, show: int = 0):
         require_user(request, "admin")
         client = client_or_404(client_id)
-        space = space_ctx(client, folder)
+        space = space_ctx(client, folder, show)
         creds = request.session.pop("new_credentials", None)
         mark_seen(require_user(request, "admin"), client_id)
         return render(

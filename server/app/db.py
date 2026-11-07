@@ -220,6 +220,8 @@ class Database:
             cols = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
             if column not in cols:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        # po migracjach (kolumny folder_id/deleted_at mogą dojść dopiero tutaj)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder_id, deleted_at)")
 
     def conn(self) -> sqlite3.Connection:
         c = getattr(self._local, "conn", None)

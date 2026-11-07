@@ -610,3 +610,8 @@ body.tpage { min-height: 100vh; margin: 0; display: flex; align-items: center; p
 .import-job[hidden] { display: none; }
 .import-job progress { width: 100%; height: 10px; }
 .folder-pick { flex-direction: row; font-weight: 550; color: var(--ink); }
+
+/* miniatura jeszcze się tworzy — widać ikonę typu pliku */
+.gthumb img.thumb-wait, img.thumb-wait { opacity: 0 !important; }
+.lb-canvas.lb-wait { min-height: 200px; min-width: 200px; background: rgba(255,255,255,.06); border-radius: 12px; }
+.more-files { display: flex; align-items: center; justify-content: center; gap: 14px; margin: 18px 0 4px; }
