@@ -98,7 +98,7 @@ sudo nano .env
 - `BSK_BACKUP_FOLDER`: folder na kopię na drugim dysku, np. `/volume2/bsk-kopie`.
 - `PUID` i `PGID`: liczby z polecenia `ls -ln` w wierszu folderu `bsk-dane`
   (kolumna 3 to UID, kolumna 4 to GID).
-- `BSK_LAN_URL`: adres portalu w sieci biurowej, np. `http://192.168.50.42:8090`. BSK Backup na komputerach
+- `BSK_LAN_URL`: adres portalu w sieci biurowej, np. `http://192.168.10.24:8090`. BSK Backup na komputerach
   w biurze wysyła wtedy kopie prosto do NAS-a, z pominięciem internetu. Poza biurem automatycznie
   przełącza się na adres publiczny.
 - Opcjonalnie: `BSK_DEFAULT_QUOTA_MB` (domyślny limit miejsca dla klienta) i `BSK_SMTP_*`
@@ -311,11 +311,14 @@ struktura folderów zostaje zachowana, a import działa na serwerze, więc może
 **Tryb biurowy (ten sam adres, pełna prędkość sieci lokalnej):**
 1. Cloudflare → *My Profile → API Tokens → Create Token → Edit zone DNS*: strefa `bskmedia.pl`.
    Token wpisz do `.env` jako `CLOUDFLARE_API_TOKEN`.
-2. Sprawdź, czy port 443 na NAS jest wolny: `sudo ss -ltnp | grep ':443 '` (pusto = wolny).
+2. Tryb biurowy dostaje własny adres w sieci LAN (port 443 samego NAS zajmuje UGOS). W `.env` ustaw
+   `BSK_LAN_IP` (wolny adres, np. `192.168.10.250`), `BSK_LAN_PARENT` (karta NAS, `ip -4 -br addr`),
+   `BSK_LAN_SUBNET` i `BSK_LAN_GATEWAY`. W routerze zarezerwuj ten adres, żeby DHCP go nikomu nie dał.
 3. Uruchom: `sudo docker compose --profile tunnel --profile office --profile lan up -d --build`.
-4. W routerze (lokalny DNS / statyczne wpisy DNS) dodaj: `cloud.bskmedia.pl → IP NAS`.
+   Sam NAS nie widzi tego adresu (tak działa macvlan) — sprawdzaj z komputera w biurze.
+4. W routerze (lokalny DNS / statyczne wpisy DNS) dodaj: `cloud.bskmedia.pl → BSK_LAN_IP`.
    Jeśli router tego nie ma, dopisz na komputerze w `C:\Windows\System32\drivers\etc\hosts`
-   linię `IP-NAS cloud.bskmedia.pl`.
+   linię `192.168.10.250 cloud.bskmedia.pl`.
 5. Przy formularzu wysyłki pojawi się znaczek **⚡ Sieć biurowa — pełna prędkość**. Poza biurem
    **🌐 Przez internet**, a adres jest ten sam.
 

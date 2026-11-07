@@ -73,8 +73,9 @@ services:
     volumes:
       - ./Caddyfile.gateway:/etc/caddy/Caddyfile:ro
 
-  # Tryb biurowy: HTTPS na NAS dla sieci lokalnej (cloud.bskmedia.pl -> IP NAS w lokalnym DNS).
-  # Wymaga CLOUDFLARE_API_TOKEN (uprawnienie Zone:DNS:Edit dla bskmedia.pl) i wolnego portu 443 na NAS.
+  # Tryb biurowy: HTTPS w sieci lokalnej pod tym samym adresem (lokalny DNS: cloud.bskmedia.pl -> BSK_LAN_IP).
+  # Kontener ma WŁASNY adres w sieci biurowej (macvlan), bo port 443 samego NAS zajmuje system UGOS.
+  # Wymaga CLOUDFLARE_API_TOKEN (Zone:DNS:Edit dla bskmedia.pl) — certyfikat bez otwierania portów.
   lan:
     build: ./lan
     container_name: bsk-lan
@@ -84,8 +85,10 @@ services:
     environment:
       BSK_DOMAIN: ${BSK_DOMAIN:-cloud.bskmedia.pl}
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
-    ports:
-      - "443:443"
+    networks:
+      default: {}
+      biuro:
+        ipv4_address: ${BSK_LAN_IP:-192.168.10.250}
     volumes:
       - ./Caddyfile.lan:/etc/caddy/Caddyfile:ro
       - lan_data:/data
@@ -107,3 +110,16 @@ volumes:
   caddy_config:
   lan_data:
   lan_config:
+
+networks:
+  # Sieć biurowa dla trybu "lan" (tworzona tylko przy tym profilu). Adres BSK_LAN_IP musi być wolny
+  # i zarezerwowany w routerze, żeby DHCP nie dał go innemu urządzeniu.
+  biuro:
+    driver: macvlan
+    driver_opts:
+      parent: ${BSK_LAN_PARENT:-eth0}
+    ipam:
+      config:
+        - subnet: ${BSK_LAN_SUBNET:-192.168.10.0/24}
+          gateway: ${BSK_LAN_GATEWAY:-192.168.10.1}
+          ip_range: ${BSK_LAN_IP:-192.168.10.250}/32
