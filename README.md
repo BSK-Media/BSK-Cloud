@@ -273,6 +273,26 @@ W panelu klienta jest też **Nowy arkusz / Nowy dokument**.
 - **Kosz:** usunięte pliki (także przez klienta) można przywrócić przez 30 dni, potem znikają.
 - **Wyszukiwarka** (u góry ekranu): pliki, katalogi, klienci i kopie pracowników. Klient przeszukuje tylko swoje pliki.
 
+# Transfery (jak WeTransfer)
+**Transfery → Nowy transfer**: przeciągnij pliki, wpisz tytuł, wiadomość i (opcjonalnie) e-mail odbiorcy,
+termin ważności i hasło. Odbiorca dostaje link `https://cloud.bskmedia.pl/t/…` (także e-mailem):
+- strona w barwach BSK Cloud z tłem z Twoich realizacji (dodajesz je w *Tła strony pobierania*),
+- lista plików z miniaturami, podgląd zdjęć, pobieranie pojedynczo lub **wszystkiego jako ZIP**,
+- Ty dostajesz e-mail, gdy odbiorca pobierze pliki, a w panelu widzisz licznik pobrań,
+- po terminie link przestaje działać, a pliki znikają z NAS po kolejnych 7 dniach (możesz też wyłączyć lub
+  usunąć transfer od razu).
+
+# Akceptacja projektów
+- Przy wysyłce plików klientowi zaznacz **Prześlij do akceptacji**. Plik dostaje znaczek „Do akceptacji”.
+- Klient otwiera plik i może kliknąć **Akceptuję** albo **Poprawki**, dodać komentarz, a przyciskiem
+  **📌 Zaznacz na obrazie** wstawić numerowaną pinezkę w konkretnym miejscu grafiki.
+- Każdy komentarz i zmiana statusu trafiają do rozmowy z klientem i w e-mailu do drugiej strony.
+- Nowa wersja pliku (ta sama nazwa) wraca do statusu „Do akceptacji”; pinezki z poprzedniej wersji są oznaczone.
+
+# Kilka osób z jednej firmy
+Na karcie klienta: **Osoby z dostępem → Dodaj osobę z firmy**. Każda osoba ma własny login i hasło, ale
+wszyscy widzą te same pliki, katalogi i wiadomości firmy. Przy plikach i wiadomościach widać, kto je dodał.
+
 # Aplikacja na telefon (PWA)
 Portal instaluje się jako aplikacja, bez sklepu z aplikacjami:
 - **Android (Chrome):** otwórz `https://cloud.bskmedia.pl` → **Zainstaluj aplikację** (w menu portalu albo w menu Chrome ⋮).

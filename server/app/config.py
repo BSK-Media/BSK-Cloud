@@ -71,6 +71,15 @@ class Settings:
         return self.data_dir / "instalator"
 
     @property
+    def transfers_dir(self) -> Path:
+        return self.data_dir / "transfery"
+
+    @property
+    def backgrounds_dir(self) -> Path:
+        """Tła strony pobierania transferów (np. realizacje BSK Media)."""
+        return self.data_dir / "transfery" / "_tla"
+
+    @property
     def trash_dir(self) -> Path:
         return self.data_dir / "kosz"
 

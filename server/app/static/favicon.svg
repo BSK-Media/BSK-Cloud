@@ -1,1 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2a78d6"/><stop offset="1" stop-color="#6250d6"/></linearGradient></defs><rect width="64" height="64" rx="16" fill="url(#g)"/><text x="32" y="40" font-family="Arial, sans-serif" font-size="20" font-weight="800" fill="#fff" text-anchor="middle">BSK</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-6 -68 427 427" fill="none"><path d="M76 291.058C31 291.058 0 259.058 0 214.058C0 158.058 62 89.0579 138 95.0579C159 38.0579 213 0.0579075 270 0.0579075C341 -1.94209 402 48.0579 415 120.058H372C359 69.0579 321 39.0579 271 39.0579C219 37.0579 174 78.0579 162 136.058C128 125.058 101 132.058 76 150.058C54 166.058 45 187.058 48 212.058C51 242.058 72 258.058 101 258.058H190V291.058H76Z" fill="url(#paint0_linear_13_14)"/><path d="M76 291.058C31 291.058 0 259.058 0 214.058C0 158.058 62 89.0579 138 95.0579C159 38.0579 213 0.0579075 270 0.0579075C214 2.05791 164 44.0579 151 98.0579C146 112.058 146 123.058 162 136.058C128 125.058 101 132.058 76 150.058C51 166.058 32 196.058 28 226.058C21 258.058 38 289.058 76 291.058Z" fill="url(#paint1_linear_13_14)"/><defs>
+<linearGradient id="paint0_linear_13_14" x1="42" y1="253.058" x2="373" y2="33.0579" gradientUnits="userSpaceOnUse">
+<stop stop-color="#004AF8"/>
+<stop offset="0.48" stop-color="#0057F8"/>
+<stop offset="1" stop-color="#0096FF"/>
+</linearGradient>
+<linearGradient id="paint1_linear_13_14" x1="11" y1="236.058" x2="177" y2="65.0579" gradientUnits="userSpaceOnUse">
+<stop stop-color="#041B51"/>
+<stop offset="0.48" stop-color="#003EAE"/>
+<stop offset="1" stop-color="#0062F8"/>
+</linearGradient>
+</defs></svg>

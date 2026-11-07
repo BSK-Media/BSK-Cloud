@@ -65,12 +65,15 @@
       data-thumb="{{ '/files/' ~ f.id ~ '/thumb?v=' ~ f.sha256[:12] if can_thumb(f.original_name) else '' }}"
       data-preview="{{ '/files/' ~ f.id ~ '/thumb?s=preview&v=' ~ f.sha256[:12] if can_thumb(f.original_name) else '' }}"
       data-view="{{ '/files/' ~ f.id ~ '/view' if k in ['video', 'audio', 'pdf'] and ext not in ['AI'] else '' }}"
-      data-download="/files/{{ f.id }}/download" data-edit="{{ '/files/' ~ f.id ~ '/edit' if office_enabled and dt else '' }}">
+      data-download="/files/{{ f.id }}/download" data-edit="{{ '/files/' ~ f.id ~ '/edit' if office_enabled and dt else '' }}"
+      data-review="{{ f.review_status }}">
       <button type="button" class="gthumb kind-{{ k }} {{ (f.original_name|ftype) }}" data-open aria-label="Podgląd {{ f.original_name }}">
         {% if can_thumb(f.original_name) %}<img src="/files/{{ f.id }}/thumb?v={{ f.sha256[:12] }}" alt="" loading="lazy" data-fallback>{% endif %}
         <span class="gicon">{{ ui.icon(f.original_name|ftype) }}<em>{{ ext }}</em></span>
         {% if k == 'video' %}<span class="play">▶</span>{% endif %}
         {% if f.version > 1 %}<span class="chip">v{{ f.version }}</span>{% endif %}
+        {% if f.review_status %}<span class="review-pill {{ f.review_status }}">{{ {'review': '● Do akceptacji', 'approved': '✓ Zaakceptowane', 'changes': '✎ Poprawki'}[f.review_status] }}</span>{% endif %}
+        {% if f.open_comments %}<span class="comment-count" title="Otwarte komentarze">{{ ui.icon("message") }}{{ f.open_comments }}</span>{% endif %}
       </button>
       <div class="ginfo">
         <div class="gname" title="{{ f.original_name }}">{{ f.original_name }}</div>

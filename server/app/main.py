@@ -20,13 +20,13 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import backup, charts, chunks, office, security, storage, thumbs
+from . import backup, charts, chunks, office, security, storage, thumbs, transfers
 from .config import Settings
 from .db import Database, iso_in, now_iso
 from . import notify
@@ -171,7 +171,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         if path.startswith(("/files", "/admin", "/account", "/s/", "/instaluj")):
             response.headers.setdefault("Cache-Control", "no-store")
-        if path.startswith(("/s/", "/instaluj")):
+        if path.startswith(("/s/", "/instaluj", "/t/")):
             response.headers.setdefault("X-Robots-Tag", "noindex, nofollow")
         return response
 
@@ -239,8 +239,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ctx["new_links"] = request.session.pop("new_link", None)
         return templates.TemplateResponse(request, name, ctx, status_code=status_code)
 
+    def space_of(user):
+        """Przestrzeń, w której pracuje użytkownik: osoba z firmy klienta -> konto główne firmy."""
+        if user["role"] == "client" and user["space_id"]:
+            owner = db.one("SELECT * FROM users WHERE id = ?", user["space_id"])
+            if owner:
+                return owner
+        return user
+
+    def sid(user) -> int:
+        return space_of(user)["id"]
+
+    def space_members(owner_id: int):
+        return db.all("SELECT * FROM users WHERE space_id = ? ORDER BY display_name, username", owner_id)
+
     def client_or_404(client_id: int):
-        c = db.one("SELECT * FROM users WHERE id = ? AND role = 'client'", client_id)
+        c = db.one("SELECT * FROM users WHERE id = ? AND role = 'client' AND space_id IS NULL", client_id)
         if not c:
             raise HTTPException(404, "Nie ma takiego klienta.")
         return c
@@ -351,8 +365,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def client_usage(client_id: int) -> int:
         """Miejsce zajęte przez pliki wysłane przez samego klienta (to, co udostępnia admin, się nie liczy)."""
         row = db.one(
-            "SELECT COALESCE(SUM(size), 0) AS used FROM files WHERE client_id = ? AND uploaded_by = ?"
-            " AND deleted_at IS NULL", client_id, client_id,
+            "SELECT COALESCE(SUM(f.size), 0) AS used FROM files f JOIN users u ON u.id = f.uploaded_by"
+            " WHERE f.client_id = ? AND u.role = 'client' AND f.deleted_at IS NULL", client_id,
         )
         return row["used"]
 
@@ -430,8 +444,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", existing["id"], existing["version"],
                    old.relative_to(settings.clients_dir).as_posix(), existing["size"], existing["sha256"],
                    existing["uploaded_by"], existing["uploaded_at"], existing["note"])
-            db.run("UPDATE files SET size = ?, sha256 = ?, uploaded_by = ?, uploaded_at = ?, note = ?, version = version + 1"
-                   " WHERE id = ?", size, sha, uploader["id"], now_iso(), note[:500], existing["id"])
+            reset = "review" if existing["review_status"] in ("approved", "changes", "review") else existing["review_status"]
+            db.run("UPDATE files SET size = ?, sha256 = ?, uploaded_by = ?, uploaded_at = ?, note = ?, version = version + 1,"
+                   " review_status = ?, review_by = NULL, review_at = NULL WHERE id = ?",
+                   size, sha, uploader["id"], now_iso(), note[:500], reset, existing["id"])
             db.log(uploader["id"], "upload_version", f"{existing['rel_path']} v{existing['version'] + 1}")
             thumbs.generate_async(cur, settings.thumbs_dir, existing["id"], sha)
             return existing["id"]
@@ -451,7 +467,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def file_for(user, file_id: int):
         f = db.one("SELECT * FROM files WHERE id = ? AND deleted_at IS NULL", file_id)
-        if not f or (user["role"] != "admin" and f["client_id"] != user["id"]):
+        if not f or (user["role"] != "admin" and f["client_id"] != sid(user)):
             raise HTTPException(404, "Nie znaleziono pliku.")
         if user["role"] == "admin" and f["client_id"] != user["id"]:
             owner = db.one("SELECT role FROM users WHERE id = ?", f["client_id"])
@@ -480,8 +496,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rows = db.all(
             "SELECT x.client_id, COUNT(*) AS n FROM ("
             " SELECT m.client_id, m.created_at AS ts FROM messages m JOIN users a ON a.id = m.author_id WHERE a.role = 'client'"
-            " UNION ALL SELECT f.client_id, f.uploaded_at FROM files f JOIN users c ON c.id = f.client_id"
-            " WHERE f.uploaded_by = f.client_id AND f.deleted_at IS NULL AND c.role = 'client') x"
+            " UNION ALL SELECT f.client_id, f.uploaded_at FROM files f JOIN users up ON up.id = f.uploaded_by"
+            " WHERE up.role = 'client' AND f.deleted_at IS NULL) x"
             " LEFT JOIN seen s ON s.client_id = x.client_id AND s.user_id = ?"
             " WHERE s.seen_at IS NULL OR x.ts > s.seen_at GROUP BY x.client_id",
             admin_id,
@@ -491,14 +507,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def unread_for(user) -> int:
         if user["role"] == "admin":
             return sum(unread_by_client(user["id"]).values())
-        seen = db.one("SELECT seen_at FROM seen WHERE user_id = ? AND client_id = ?", user["id"], user["id"])
+        space_id = sid(user)
+        seen = db.one("SELECT seen_at FROM seen WHERE user_id = ? AND client_id = ?", user["id"], space_id)
         since = seen["seen_at"] if seen else ""
         return db.one(
             "SELECT (SELECT COUNT(*) FROM messages m JOIN users a ON a.id = m.author_id"
             "        WHERE m.client_id = ? AND a.role = 'admin' AND m.created_at > ?)"
             " + (SELECT COUNT(*) FROM files f WHERE f.client_id = ? AND f.uploaded_by != ? AND f.uploaded_at > ?"
             "    AND f.deleted_at IS NULL) AS n",
-            user["id"], since, user["id"], user["id"], since,
+            space_id, since, space_id, user["id"], since,
         )["n"]
 
     def message_json(m, user) -> dict:
@@ -507,9 +524,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "agency": m["role"] == "admin", "time": _local_dt(m["created_at"]), "body": m["body"]}
 
     def notify_client(client, subject: str, lines: list[str]) -> None:
-        if client["email"] and client["notify_email"] and client["active"]:
-            notify.send(settings, client["email"], subject, lines, settings.public_url + "/files",
-                        "Otwórz strefę klienta", throttle_key=f"client:{client['id']}")
+        """E-mail do klienta i osób z jego firmy (każda z podanym e-mailem i włączonymi powiadomieniami)."""
+        for person in [client, *space_members(client["id"])]:
+            if person["email"] and person["notify_email"] and person["active"]:
+                notify.send(settings, person["email"], subject, lines, settings.public_url + "/files",
+                            "Otwórz strefę klienta", throttle_key=f"client:{person['id']}")
 
     def thread(client_id: int):
         return db.all(
@@ -520,8 +539,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def client_files(client_id: int, folder_id: int | None | str = "all"):
         """Pliki przestrzeni: wszystkie (folder_id='all'), z katalogu głównego (None) albo z danego katalogu."""
-        sql = ("SELECT f.*, u.role AS uploader_role, u.display_name AS uploader_name FROM files f"
-               " JOIN users u ON u.id = f.uploaded_by WHERE f.client_id = ? AND f.deleted_at IS NULL")
+        sql = ("SELECT f.*, u.role AS uploader_role, u.display_name AS uploader_name,"
+               " (SELECT COUNT(*) FROM annotations a WHERE a.file_id = f.id AND a.resolved = 0) AS open_comments"
+               " FROM files f JOIN users u ON u.id = f.uploaded_by WHERE f.client_id = ? AND f.deleted_at IS NULL")
         args: list = [client_id]
         if folder_id is None:
             sql += " AND f.folder_id IS NULL"
@@ -592,10 +612,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return db.all(
             "SELECT u.*, (SELECT COUNT(*) FROM files f WHERE f.client_id = u.id AND f.deleted_at IS NULL) AS file_count,"
             " (SELECT COALESCE(SUM(size), 0) FROM files f WHERE f.client_id = u.id AND f.deleted_at IS NULL) AS total_size,"
-            " (SELECT COALESCE(SUM(size), 0) FROM files f WHERE f.client_id = u.id AND f.uploaded_by = u.id AND f.deleted_at IS NULL) AS own_size,"
+            " (SELECT COALESCE(SUM(f.size), 0) FROM files f JOIN users x ON x.id = f.uploaded_by WHERE f.client_id = u.id AND x.role = 'client' AND f.deleted_at IS NULL) AS own_size,"
             " (SELECT MAX(uploaded_at) FROM files f WHERE f.client_id = u.id AND f.deleted_at IS NULL) AS last_upload,"
             " (SELECT MAX(created_at) FROM messages m WHERE m.client_id = u.id) AS last_message"
-            " FROM users u WHERE u.role = 'client' ORDER BY u.active DESC, u.company, u.display_name"
+            " FROM users u WHERE u.role = 'client' AND u.space_id IS NULL ORDER BY u.active DESC, u.company, u.display_name"
         )
 
     def online(last_seen: str | None, hours: int = 2) -> bool:
@@ -639,7 +659,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "name": settings.site_name, "short_name": "BSK Cloud", "lang": "pl",
             "description": "Pliki, galeria i wiadomości BSK Media",
             "start_url": "/?source=app", "scope": "/", "display": "standalone",
-            "background_color": "#0f1729", "theme_color": "#0f1729", "orientation": "any",
+            "background_color": "#ffffff", "theme_color": "#0f1729", "orientation": "any",
             "icons": [
                 {"src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png"},
                 {"src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png"},
@@ -752,15 +772,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/files", response_class=HTMLResponse)
     def my_files(request: Request, folder: int | None = None):
         user = require_user(request, "client")
-        files = client_files(user["id"])
-        space = space_ctx(user, folder)
+        owner = space_of(user)
+        files = client_files(owner["id"])
+        space = space_ctx(owner, folder)
         unread = unread_for(user)
-        mark_seen(user, user["id"])
-        sent = [f for f in files if f["uploaded_by"] == user["id"]]
-        received = [f for f in files if f["uploaded_by"] != user["id"]]
+        mark_seen(user, owner["id"])
+        sent = [f for f in files if f["uploader_role"] == "client"]
+        received = [f for f in files if f["uploader_role"] != "client"]
         return render(
-            request, "client_files.html", files=files, messages=thread(user["id"]), quota=quota_info(user),
-            days=daily_files(user["id"]), sent=sent, received=received, nav="files",
+            request, "client_files.html", files=files, messages=thread(owner["id"]), quota=quota_info(owner),
+            days=daily_files(owner["id"]), sent=sent, received=received, nav="files", owner=owner,
+            members=space_members(owner["id"]),
             sent_size=sum(f["size"] for f in sent), received_size=sum(f["size"] for f in received),
             new_count=unread, unread_total=0, space=space, base_url="/files",
             upload_action="/files/upload",
@@ -777,34 +799,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ):
         check_csrf(request, csrf)
         user = require_user(request, "client")
+        owner = space_of(user)
         names = []
         for up in incoming(user, files, upload_ids):
-            save_upload(user, user, up, note, folder_id)
+            save_upload(owner, user, up, note, folder_id)
             names.append(up.filename)
         if note.strip():
-            add_message(user["id"], user, note)
+            add_message(owner["id"], user, note)
         if names:
             flash(request, f"Wysłano plików: {len(names)}.")
             notify_admin(
                 settings,
-                f"Nowe pliki od {user['company'] or user['display_name'] or user['username']}",
-                "Pliki: " + ", ".join(names) + (f"\n\nKomentarz: {note}" if note.strip() else ""),
-                link=f"{settings.public_url}/admin/clients/{user['id']}", throttle_key=f"admin:{user['id']}",
+                f"Nowe pliki od {owner['company'] or user['display_name'] or user['username']}",
+                f"{user['display_name'] or user['username']} wysłał(a) pliki: " + ", ".join(names)
+                + (f"\n\nKomentarz: {note}" if note.strip() else ""),
+                link=f"{settings.public_url}/admin/clients/{owner['id']}", throttle_key=f"admin:{owner['id']}",
             )
-        return RedirectResponse(space_url(user, user["id"], folder_id), 303)
+        return RedirectResponse(space_url(user, owner["id"], folder_id), 303)
 
     @app.post("/files/message")
     def client_message(request: Request, body: str = Form(...), csrf: str = Form("")):
         check_csrf(request, csrf)
         user = require_user(request, "client")
+        owner = space_of(user)
         if body.strip():
-            add_message(user["id"], user, body)
-            mark_seen(user, user["id"])
+            add_message(owner["id"], user, body)
+            mark_seen(user, owner["id"])
             notify_admin(
                 settings,
-                f"Wiadomość od {user['company'] or user['display_name'] or user['username']}",
-                body.strip()[:1500],
-                link=f"{settings.public_url}/admin/clients/{user['id']}", throttle_key=f"admin:{user['id']}",
+                f"Wiadomość od {owner['company'] or user['display_name'] or user['username']}",
+                f"{user['display_name'] or user['username']}: " + body.strip()[:1500],
+                link=f"{settings.public_url}/admin/clients/{owner['id']}", throttle_key=f"admin:{owner['id']}",
             )
         return RedirectResponse("/files#wiadomosci", 303)
 
@@ -1048,7 +1073,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if user["role"] == "admin":
                 scope, args = "(o.role = 'client' OR o.id = ?)", [user["id"]]
             else:
-                scope, args = "o.id = ?", [user["id"]]
+                scope, args = "o.id = ?", [sid(user)]
             res["files"] = db.all(
                 "SELECT f.*, o.username, o.company, o.display_name AS owner_name, o.role AS owner_role,"
                 " up.role AS uploader_role, d.name AS folder_name FROM files f JOIN users o ON o.id = f.client_id"
@@ -1077,7 +1102,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         require_user(request, "admin")
         since = (date.today() - timedelta(days=29)).isoformat()
         kpi = {
-            "clients": db.one("SELECT COUNT(*) AS n FROM users WHERE role = 'client' AND active = 1")["n"],
+            "clients": db.one("SELECT COUNT(*) AS n FROM users WHERE role = 'client' AND space_id IS NULL AND active = 1")["n"],
             "client_files_30": db.one(
                 "SELECT COUNT(*) AS n, COALESCE(SUM(f.size), 0) AS b FROM files f JOIN users u ON u.id = f.uploaded_by"
                 " WHERE u.role = 'client' AND f.deleted_at IS NULL AND substr(f.uploaded_at, 1, 10) >= ?", since),
@@ -1085,8 +1110,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                               " ON c.id = f.client_id WHERE c.role = 'client' AND f.deleted_at IS NULL"),
             "backups": db.one("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS b FROM backup_files"),
             "links": db.one(
-                "SELECT COUNT(*) AS n, COALESCE(SUM(downloads), 0) AS d FROM share_links WHERE revoked = 0"
-                " AND (expires_at IS NULL OR expires_at > ?)", now_iso()),
+                "SELECT (SELECT COUNT(*) FROM share_links WHERE revoked = 0 AND (expires_at IS NULL OR expires_at > ?))"
+                " + (SELECT COUNT(*) FROM transfers WHERE revoked = 0 AND files_deleted = 0 AND expires_at > ?) AS n,"
+                " (SELECT COALESCE(SUM(downloads), 0) FROM share_links) + (SELECT COALESCE(SUM(downloads), 0) FROM transfers) AS d",
+                now_iso(), now_iso()),
         }
         purge_old_trash()
         days = daily_files()
@@ -1201,6 +1228,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request, "admin_client.html", client=client, files=client_files(client_id),
             messages=thread(client_id), credentials=creds, public_url=settings.public_url,
             quota=quota_info(client), days=daily_files(client_id), nav="clients", space=space,
+            members=space_members(client_id), member_credentials=request.session.pop("member_credentials", None),
             base_url=f"/admin/clients/{client_id}", upload_action=f"/admin/clients/{client_id}/upload",
             folder=client_dir(client).as_posix().replace(settings.data_dir.as_posix(), "", 1),
         )
@@ -1267,15 +1295,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         upload_ids: list[str] = Form([]),
         note: str = Form(""),
         folder_id: int | None = Form(None),
+        review: str = Form(""),
         csrf: str = Form(""),
     ):
         check_csrf(request, csrf)
         admin = require_user(request, "admin")
         client = client_or_404(client_id)
-        count = 0
+        count, names = 0, []
         for up in incoming(admin, files, upload_ids):
-            save_upload(client, admin, up, note, folder_id)
+            fid = save_upload(client, admin, up, note, folder_id)
+            if review:
+                db.run("UPDATE files SET review_status = 'review', review_by = NULL, review_at = NULL WHERE id = ?", fid)
+            names.append(up.filename)
             count += 1
+        if review and names:
+            add_message(client_id, admin, "🔎 Do akceptacji: " + ", ".join(f"„{n}”" for n in names))
         if note.strip():
             add_message(client_id, admin, note)
         if count:
@@ -1294,6 +1328,71 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if body.strip():
             notify_client(client, "Nowa wiadomość od BSK Media", [body.strip()[:1500]])
         return RedirectResponse(f"/admin/clients/{client_id}#wiadomosci", 303)
+
+    # ------------------------------------------------------------------ osoby z firmy klienta
+
+    def member_or_404(member_id: int):
+        m = db.one("SELECT * FROM users WHERE id = ? AND role = 'client' AND space_id IS NOT NULL", member_id)
+        if not m:
+            raise HTTPException(404, "Nie ma takiej osoby.")
+        return m
+
+    @app.post("/admin/clients/{client_id}/members")
+    def add_member(request: Request, client_id: int, username: str = Form(...), display_name: str = Form(""),
+                   email: str = Form(""), csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        client = client_or_404(client_id)
+        username = username.strip()
+        if not USERNAME_RE.match(username):
+            flash(request, "Login: 3–40 znaków, litery bez polskich znaków, cyfry, kropka, myślnik (bez _ na początku).", "error")
+        elif db.one("SELECT 1 FROM users WHERE username = ?", username):
+            flash(request, "Taki login już istnieje.", "error")
+        else:
+            password = security.generate_password()
+            db.run("INSERT INTO users (username, password_hash, role, display_name, company, email, must_change_password,"
+                   " created_at, space_id) VALUES (?, ?, 'client', ?, ?, ?, 1, ?, ?)",
+                   username, security.hash_password(password), display_name.strip()[:120], client["company"],
+                   email.strip()[:200], now_iso(), client_id)
+            db.log(admin["id"], "member_created", f"{username} -> {client['username']}")
+            request.session["member_credentials"] = [username, password]
+        return RedirectResponse(f"/admin/clients/{client_id}#osoby", 303)
+
+    @app.post("/admin/members/{member_id}/reset-password")
+    def member_reset(request: Request, member_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        m = member_or_404(member_id)
+        password = security.generate_password()
+        db.run("UPDATE users SET password_hash = ?, must_change_password = 1, session_version = session_version + 1"
+               " WHERE id = ?", security.hash_password(password), member_id)
+        db.log(admin["id"], "password_reset", m["username"])
+        request.session["member_credentials"] = [m["username"], password]
+        return RedirectResponse(f"/admin/clients/{m['space_id']}#osoby", 303)
+
+    @app.post("/admin/members/{member_id}/toggle")
+    def member_toggle(request: Request, member_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        m = member_or_404(member_id)
+        db.run("UPDATE users SET active = ?, session_version = session_version + 1 WHERE id = ?",
+               0 if m["active"] else 1, member_id)
+        db.log(admin["id"], "member_blocked" if m["active"] else "member_activated", m["username"])
+        flash(request, f"Konto {m['username']} {'zablokowane' if m['active'] else 'odblokowane'}.")
+        return RedirectResponse(f"/admin/clients/{m['space_id']}#osoby", 303)
+
+    @app.post("/admin/members/{member_id}/delete")
+    def member_delete(request: Request, member_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        m = member_or_404(member_id)
+        # pliki i wiadomości zostają w przestrzeni firmy; konto tylko się wyłącza i znika z listy
+        # space_id = -1: konto archiwalne (nie loguje się, nie widać go na listach, wiadomości zachowują autora)
+        db.run("UPDATE users SET active = 0, space_id = -1, username = ?, session_version = session_version + 1"
+               " WHERE id = ?", f"usuniety-{member_id}-{secrets.token_hex(3)}", member_id)
+        db.log(admin["id"], "member_deleted", m["username"])
+        flash(request, f"Usunięto dostęp dla {m['display_name'] or m['username']}.")
+        return RedirectResponse(f"/admin/clients/{m['space_id']}#osoby", 303)
 
     # ------------------------------------------------------------------ admin: urządzenia (kopie)
 
@@ -1869,8 +1968,108 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user = require_user(request, "client")
         if kind not in ("xlsx", "docx"):
             raise HTTPException(400, "Nieznany typ dokumentu.")
-        fid = create_blank(user, user, kind, title)
+        fid = create_blank(space_of(user), user, kind, title)
         return RedirectResponse(f"/files/{fid}/edit" if office_ready() else "/files", 303)
+
+    # ------------------------------------------------------------------ akceptacja projektów i komentarze na plikach
+
+    REVIEW_LABELS = {"": "", "review": "Do akceptacji", "approved": "Zaakceptowane", "changes": "Poprawki"}
+    templates.env.globals["review_labels"] = REVIEW_LABELS
+
+    def review_json(f, user) -> dict:
+        rows = db.all(
+            "SELECT a.*, u.display_name, u.username, u.role FROM annotations a JOIN users u ON u.id = a.author_id"
+            " WHERE a.file_id = ? ORDER BY a.id", f["id"])
+        by = db.one("SELECT display_name, username FROM users WHERE id = ?", f["review_by"]) if f["review_by"] else None
+        pins = [r for r in rows if r["x"] is not None and r["version"] == f["version"]]
+        numbers = {r["id"]: i + 1 for i, r in enumerate(pins)}
+        return {
+            "status": f["review_status"], "label": REVIEW_LABELS.get(f["review_status"], ""),
+            "by": (by["display_name"] or by["username"]) if by else "", "at": _local_dt(f["review_at"]),
+            "is_admin": user["role"] == "admin", "version": f["version"],
+            "preview": f"/files/{f['id']}/thumb?s=preview&v={f['sha256'][:12]}" if thumbs.can_thumb(f["original_name"]) else "",
+            "comments": [{
+                "id": r["id"], "n": numbers.get(r["id"]), "x": r["x"], "y": r["y"], "body": r["body"],
+                "author": r["display_name"] or r["username"], "initials": _initials(r["display_name"] or r["username"]),
+                "agency": r["role"] == "admin", "time": _local_dt(r["created_at"]), "resolved": bool(r["resolved"]),
+                "old": r["version"] != f["version"], "version": r["version"],
+                "can_resolve": user["role"] == "admin" or r["author_id"] == user["id"],
+            } for r in rows],
+        }
+
+    def review_file(request: Request, file_id: int):
+        user = api_user(request)
+        f, _ = file_for(user, file_id)
+        return user, f
+
+    def review_notify(f, user, text: str) -> None:
+        """Ślad w rozmowie z klientem + e-mail do drugiej strony."""
+        add_message(f["client_id"], user, text)
+        owner = db.one("SELECT * FROM users WHERE id = ?", f["client_id"])
+        if owner["role"] != "client":
+            return
+        if user["role"] == "admin":
+            notify_client(owner, "Projekt czeka na Ciebie", [text])
+        else:
+            notify_admin(settings, f"{owner['company'] or owner['display_name'] or owner['username']}: {REVIEW_LABELS.get(f['review_status'], 'komentarz')}",
+                         text, link=f"{settings.public_url}/admin/clients/{owner['id']}", throttle_key=f"admin:{owner['id']}")
+
+    @app.get("/api/files/{file_id}/review")
+    def api_review(request: Request, file_id: int):
+        user, f = review_file(request, file_id)
+        return review_json(f, user)
+
+    @app.post("/api/files/{file_id}/comments")
+    async def api_comment(request: Request, file_id: int):
+        user, f = review_file(request, file_id)
+        try:
+            body = await request.json()
+            text = str(body.get("body", "")).strip()[:2000]
+            x, y = body.get("x"), body.get("y")
+            if x is not None or y is not None:
+                x, y = float(x), float(y)
+                if not (0 <= x <= 1 and 0 <= y <= 1):
+                    raise ValueError
+        except (ValueError, TypeError):
+            raise HTTPException(400, "Nieprawidłowe dane.")
+        if not text:
+            raise HTTPException(400, "Wpisz treść komentarza.")
+        db.run("INSERT INTO annotations (file_id, version, author_id, x, y, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+               f["id"], f["version"], user["id"], x, y, text, now_iso())
+        name = user["display_name"] or user["username"]
+        review_notify(f, user, f"📌 {name} — komentarz do „{f['original_name']}”: {text}")
+        return review_json(db.one("SELECT * FROM files WHERE id = ?", f["id"]), user)
+
+    @app.post("/api/files/{file_id}/comments/{comment_id}/resolve")
+    def api_resolve(request: Request, file_id: int, comment_id: int):
+        user, f = review_file(request, file_id)
+        a = db.one("SELECT * FROM annotations WHERE id = ? AND file_id = ?", comment_id, f["id"])
+        if not a or (user["role"] != "admin" and a["author_id"] != user["id"]):
+            raise HTTPException(404, "Nie ma takiego komentarza.")
+        db.run("UPDATE annotations SET resolved = 1 - resolved WHERE id = ?", comment_id)
+        return review_json(f, user)
+
+    @app.post("/api/files/{file_id}/status")
+    async def api_status(request: Request, file_id: int):
+        user, f = review_file(request, file_id)
+        try:
+            status = str((await request.json()).get("status", ""))
+        except ValueError:
+            raise HTTPException(400, "Nieprawidłowe dane.")
+        allowed = {"admin": {"review", "", "approved", "changes"}, "client": {"approved", "changes"}}[user["role"]]
+        if status not in allowed:
+            raise HTTPException(400, "Niedozwolona zmiana statusu.")
+        db.run("UPDATE files SET review_status = ?, review_by = ?, review_at = ? WHERE id = ?",
+               status, user["id"] if status else None, now_iso() if status else None, f["id"])
+        f = db.one("SELECT * FROM files WHERE id = ?", f["id"])
+        name = user["display_name"] or user["username"]
+        text = {"approved": f"✅ {name} akceptuje „{f['original_name']}”.",
+                "changes": f"✏️ {name} prosi o poprawki w „{f['original_name']}” — szczegóły w komentarzach do pliku.",
+                "review": f"🔎 Do akceptacji: „{f['original_name']}”."}.get(status)
+        if text:
+            review_notify(f, user, text)
+        db.log(user["id"], "review_" + (status or "cleared"), f["original_name"])
+        return review_json(f, user)
 
     # ------------------------------------------------------------------ wiadomości na żywo i liczniki
 
@@ -1879,7 +2078,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user = current_user(request)
         if not user or user["must_change_password"]:
             raise HTTPException(401, "Zaloguj się ponownie.")
-        if user["role"] != "admin" and user["id"] != client_id:
+        if user["role"] != "admin" and sid(user) != client_id:
             raise HTTPException(403, "Brak dostępu.")
         rows = db.all(
             "SELECT m.*, u.display_name, u.username, u.role FROM messages m JOIN users u ON u.id = m.author_id"
@@ -1940,13 +2139,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, "Nieprawidłowe dane.")
         if size > max_upload:
             raise HTTPException(413, f"Plik {name} przekracza limit {settings.max_upload_mb} MB.")
-        if user["role"] == "client" and user["quota_mb"]:
+        owner = space_of(user)
+        if user["role"] == "client" and owner["quota_mb"]:
             pending = db.one(
                 "SELECT COALESCE(SUM(size), 0) AS s FROM uploads WHERE user_id = ?", user["id"]
             )["s"]
-            if client_usage(user["id"]) + pending + size > user["quota_mb"] * 1024 * 1024:
+            if client_usage(owner["id"]) + pending + size > owner["quota_mb"] * 1024 * 1024:
                 raise HTTPException(
-                    413, f"Brak miejsca na koncie (limit {user['quota_mb']} MB). Skontaktuj się z BSK Media."
+                    413, f"Brak miejsca na koncie (limit {owner['quota_mb']} MB). Skontaktuj się z BSK Media."
                 )
         row = chunk_store.create(name=name, size=size, user_id=user["id"])
         return {"id": row["id"], "received": row["received"], "chunk_size": chunks.CHUNK_SIZE}
@@ -1964,6 +2164,252 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except chunks.ChunkError as exc:
             return JSONResponse({"detail": exc.detail, "received": exc.received}, status_code=exc.status)
         return {"id": row["id"], "received": row["received"], "status": row["status"]}
+
+    # ------------------------------------------------------------------ transfery (jak WeTransfer)
+
+    BG_EXT = {".jpg", ".jpeg", ".png", ".webp"}
+    EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
+
+    def backgrounds() -> list[str]:
+        d = settings.backgrounds_dir
+        return sorted(p.name for p in d.iterdir() if p.suffix.lower() in BG_EXT) if d.is_dir() else []
+
+    def transfer_files_of(transfer_id: int):
+        return db.all("SELECT * FROM transfer_files WHERE transfer_id = ? ORDER BY id", transfer_id)
+
+    def transfer_url(t) -> str:
+        return f"{settings.public_url}/t/{t['token']}"
+
+    def purge_old_transfers() -> None:
+        """Pliki wygasłych transferów usuwamy 7 dni po terminie (zostaje historia na liście)."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        for t in db.all("SELECT * FROM transfers WHERE files_deleted = 0 AND (expires_at < ? OR revoked = 1)", cutoff):
+            if t["revoked"] or t["expires_at"] < cutoff:
+                shutil.rmtree(settings.transfers_dir / str(t["id"]), ignore_errors=True)
+                db.run("UPDATE transfers SET files_deleted = 1 WHERE id = ?", t["id"])
+
+    @app.get("/admin/transfers", response_class=HTMLResponse)
+    def transfers_page(request: Request):
+        require_user(request, "admin")
+        purge_old_transfers()
+        rows = db.all(
+            "SELECT t.*, (SELECT COUNT(*) FROM transfer_files f WHERE f.transfer_id = t.id) AS n_files,"
+            " (SELECT COALESCE(SUM(size), 0) FROM transfer_files f WHERE f.transfer_id = t.id) AS total"
+            " FROM transfers t ORDER BY t.id DESC LIMIT 300")
+        return render(request, "admin_transfers.html", transfers=rows, now=now_iso(), nav="transfers",
+                      backgrounds=backgrounds(), public_url=settings.public_url, mail_ok=notify.configured(settings))
+
+    @app.post("/admin/transfers")
+    def create_transfer(
+        request: Request,
+        files: list[UploadFile] | None = File(None),
+        upload_ids: list[str] = Form([]),
+        title: str = Form(""),
+        message: str = Form(""),
+        recipients: str = Form(""),
+        expires_days: int = Form(7),
+        password: str = Form(""),
+        csrf: str = Form(""),
+    ):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        sources = incoming(admin, files, upload_ids)
+        if not sources:
+            raise HTTPException(400, "Dodaj co najmniej jeden plik.")
+        emails = [e.strip() for e in re.split(r"[,;\s]+", recipients) if e.strip()]
+        bad = [e for e in emails if not EMAIL_RE.match(e)]
+        if bad:
+            raise HTTPException(400, "Nieprawidłowy adres e-mail: " + ", ".join(bad))
+        days = max(1, min(int(expires_days or 7), 365))
+        token = secrets.token_urlsafe(16)
+        tid = db.run(
+            "INSERT INTO transfers (token, title, message, recipients, password_hash, created_by, created_at, expires_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", token, title.strip()[:150], message.strip()[:3000], ", ".join(emails[:30]),
+            security.hash_password(password.strip()) if password.strip() else "", admin["id"], now_iso(), iso_in(days))
+        tdir = settings.transfers_dir / str(tid)
+        for src in sources:
+            dest = storage.unique_path(tdir, storage.safe_name(src.filename or "plik"))
+            try:
+                size, sha = place(src, dest, max_upload)
+            except storage.TooLarge:
+                raise HTTPException(413, f"Plik przekracza limit {settings.max_upload_mb} MB.")
+            fid = db.run("INSERT INTO transfer_files (transfer_id, name, rel_path, size, sha256) VALUES (?, ?, ?, ?, ?)",
+                         tid, src.filename or dest.name, dest.relative_to(settings.transfers_dir).as_posix(), size, sha)
+            thumbs.generate_async(dest, settings.thumbs_dir / "transfery", fid, sha)
+        t = db.one("SELECT * FROM transfers WHERE id = ?", tid)
+        tf = transfer_files_of(tid)
+        total = sum(f["size"] for f in tf)
+        sent = 0
+        for e in emails:
+            notify.send(settings, e, t["title"] or "BSK Media przesyła Ci pliki",
+                        [t["message"], f"{len(tf)} {'plik' if len(tf) == 1 else 'pliki/plików'} · {storage.human_size(total)}"
+                         f" · link ważny do {_local_dt(t['expires_at'])[:10]}"
+                         + (" · plik chroniony hasłem (przekażemy je osobno)" if t["password_hash"] else "")],
+                        transfer_url(t), "Pobierz pliki")
+            sent += 1
+        db.log(admin["id"], "transfer_created", f"{t['title'] or token[:6]}: {len(tf)} plików, odbiorcy: {t['recipients']}")
+        request.session["new_link"] = [transfer_url(t)]
+        if sent and notify.configured(settings):
+            flash(request, f"Wysłano e-mail z linkiem do: {t['recipients']}.")
+        elif emails:
+            flash(request, "Poczta nie jest skonfigurowana — wyślij link odbiorcy samodzielnie.", "warn")
+        return RedirectResponse("/admin/transfers", 303)
+
+    def transfer_admin_or_404(transfer_id: int):
+        t = db.one("SELECT * FROM transfers WHERE id = ?", transfer_id)
+        if not t:
+            raise HTTPException(404, "Nie ma takiego transferu.")
+        return t
+
+    @app.post("/admin/transfers/{transfer_id}/revoke")
+    def revoke_transfer(request: Request, transfer_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        t = transfer_admin_or_404(transfer_id)
+        db.run("UPDATE transfers SET revoked = 1 WHERE id = ?", transfer_id)
+        db.log(admin["id"], "transfer_revoked", t["title"] or t["token"][:6])
+        flash(request, "Transfer wyłączony — link już nie działa.")
+        return RedirectResponse("/admin/transfers", 303)
+
+    @app.post("/admin/transfers/{transfer_id}/delete")
+    def delete_transfer(request: Request, transfer_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        t = transfer_admin_or_404(transfer_id)
+        for f in transfer_files_of(transfer_id):
+            thumbs.remove(settings.thumbs_dir / "transfery", f["id"])
+        shutil.rmtree(settings.transfers_dir / str(transfer_id), ignore_errors=True)
+        db.run("DELETE FROM transfers WHERE id = ?", transfer_id)
+        db.log(admin["id"], "transfer_deleted", t["title"] or t["token"][:6])
+        flash(request, "Transfer usunięty razem z plikami.")
+        return RedirectResponse("/admin/transfers", 303)
+
+    @app.post("/admin/transfers/backgrounds")
+    def upload_background(request: Request, files: list[UploadFile] | None = File(None),
+                          upload_ids: list[str] = Form([]), csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        added = 0
+        for src in incoming(admin, files, upload_ids):
+            name = storage.safe_name(src.filename or "tlo.jpg")
+            if Path(name).suffix.lower() not in BG_EXT:
+                continue
+            dest = storage.unique_path(settings.backgrounds_dir, name)
+            place(src, dest, 50 * 1024 * 1024)
+            added += 1
+        flash(request, f"Dodano tła: {added}." if added else "Dodaj zdjęcia JPG, PNG lub WEBP.", "ok" if added else "error")
+        return RedirectResponse("/admin/transfers#tla", 303)
+
+    @app.post("/admin/transfers/backgrounds/{name}/delete")
+    def delete_background(request: Request, name: str, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        require_user(request, "admin")
+        if name in backgrounds():
+            (settings.backgrounds_dir / name).unlink(missing_ok=True)
+        return RedirectResponse("/admin/transfers#tla", 303)
+
+    @app.get("/t/tlo/{name}")
+    def background_image(name: str):
+        if name not in backgrounds():
+            raise HTTPException(404, "Brak tła.")
+        return FileResponse(settings.backgrounds_dir / name, headers={"Cache-Control": "public, max-age=86400"})
+
+    def public_transfer(token: str):
+        """Transfer dla odbiorcy (bez logowania). Zwraca (transfer, problem)."""
+        t = db.one("SELECT * FROM transfers WHERE token = ?", token)
+        if not t:
+            raise HTTPException(404, "Nie ma takiego transferu.")
+        if t["revoked"] or t["files_deleted"]:
+            return t, "Ten transfer został wyłączony albo usunięty."
+        if t["expires_at"] <= now_iso():
+            return t, "Ten transfer wygasł. Poproś BSK Media o nowy link."
+        return t, None
+
+    def transfer_unlocked(request: Request, t) -> bool:
+        return not t["password_hash"] or t["id"] in request.session.get("transfers_ok", [])
+
+    def transfer_ready(request: Request, token: str):
+        t, problem = public_transfer(token)
+        if problem:
+            raise HTTPException(410, problem)
+        if not transfer_unlocked(request, t):
+            raise Redirect(f"/t/{token}")
+        return t
+
+    def count_download(request: Request, t, what: str) -> None:
+        rng = request.headers.get("range", "")
+        if rng and not rng.replace(" ", "").startswith("bytes=0-"):
+            return  # wznowienie przerwanego pobierania — nie liczymy drugi raz
+        db.run("UPDATE transfers SET downloads = downloads + 1, last_download = ? WHERE id = ?", now_iso(), t["id"])
+        db.log(None, "transfer_download", f"{t['title'] or t['token'][:6]}: {what} z {client_ip(request)}")
+        notify_admin(settings, f"Pobrano transfer: {t['title'] or 'bez tytułu'}",
+                     f"Odbiorca pobrał: {what}." + (f"\n\nOdbiorcy: {t['recipients']}" if t["recipients"] else ""),
+                     link=f"{settings.public_url}/admin/transfers", throttle_key=f"transfer:{t['id']}")
+
+    @app.get("/t/{token}", response_class=HTMLResponse)
+    def transfer_page(request: Request, token: str):
+        t, problem = public_transfer(token)
+        tf = [] if problem else transfer_files_of(t["id"])
+        return render(request, "transfer.html", user=None, t=t, problem=problem, files=tf, token=token,
+                      unlocked=transfer_unlocked(request, t), total=sum(f["size"] for f in tf),
+                      background=transfers.pick_background(token, backgrounds()))
+
+    @app.post("/t/{token}")
+    def transfer_unlock(request: Request, token: str, password: str = Form(""), csrf: str = Form("")):
+        check_csrf(request, csrf)
+        t, problem = public_transfer(token)
+        ip = client_ip(request)
+        if problem:
+            return RedirectResponse(f"/t/{token}", 303)
+        if limiter.blocked("transfer:" + token, ip):
+            flash(request, "Zbyt wiele prób. Spróbuj za 15 minut.", "error")
+        elif t["password_hash"] and security.verify_password(password, t["password_hash"]):
+            request.session["transfers_ok"] = (request.session.get("transfers_ok", []) + [t["id"]])[-20:]
+        else:
+            limiter.fail("transfer:" + token, ip)
+            flash(request, "Nieprawidłowe hasło.", "error")
+        return RedirectResponse(f"/t/{token}", 303)
+
+    def transfer_file_or_404(t, file_id: int):
+        f = db.one("SELECT * FROM transfer_files WHERE id = ? AND transfer_id = ?", file_id, t["id"])
+        path = settings.transfers_dir / f["rel_path"] if f else None
+        if not f or not storage.inside(settings.transfers_dir, path) or not path.is_file():
+            raise HTTPException(404, "Nie ma takiego pliku.")
+        return f, path
+
+    @app.get("/t/{token}/f/{file_id}")
+    def transfer_download(request: Request, token: str, file_id: int):
+        t = transfer_ready(request, token)
+        f, path = transfer_file_or_404(t, file_id)
+        count_download(request, t, f["name"])
+        return FileResponse(path, filename=f["name"])
+
+    @app.get("/t/{token}/thumb/{file_id}")
+    def transfer_thumb(request: Request, token: str, file_id: int, s: str = "thumb"):
+        t = transfer_ready(request, token)
+        f, path = transfer_file_or_404(t, file_id)
+        size = "preview" if s == "preview" else "thumb"
+        cdir = settings.thumbs_dir / "transfery"
+        cached = thumbs.cache_path(cdir, f["id"], f["sha256"], size)
+        if not cached.exists() and not thumbs.generate(path, cdir, f["id"], f["sha256"]):
+            raise HTTPException(404, "Brak podglądu.")
+        return FileResponse(cached, media_type="image/webp", headers={"Cache-Control": "private, max-age=86400"})
+
+    @app.get("/t/{token}/zip")
+    def transfer_zip(request: Request, token: str):
+        t = transfer_ready(request, token)
+        entries = []
+        for f in transfer_files_of(t["id"]):
+            path = settings.transfers_dir / f["rel_path"]
+            if storage.inside(settings.transfers_dir, path) and path.is_file():
+                entries.append((storage.safe_name(f["name"]), path))
+        if not entries:
+            raise HTTPException(404, "Brak plików.")
+        count_download(request, t, f"wszystkie pliki (ZIP, {len(entries)})")
+        name = storage.safe_name((t["title"] or "BSK Media - pliki"))[:80] + ".zip"
+        return StreamingResponse(transfers.zip_stream(entries), media_type="application/zip", headers={
+            "Content-Disposition": f"attachment; filename=\"pliki.zip\"; filename*=UTF-8''{quote(name)}",
+            "Cache-Control": "no-store"})
 
     # ------------------------------------------------------------------ API agenta kopii zapasowych
 

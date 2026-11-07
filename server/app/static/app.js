@@ -328,56 +328,193 @@ document.addEventListener("click", (e) => {
   if (!lb) return;
   const stage = lb.querySelector("[data-lb-stage]");
   const strip = lb.querySelector("[data-lb-strip]");
+  const side = lb.querySelector("[data-lb-side]");
   const $ = (s) => lb.querySelector(s);
-  let items = [], idx = 0;
+  const csrfInput = document.querySelector("input[name=csrf]");
+  const csrf = csrfInput ? csrfInput.value : "";
+  let items = [], idx = 0, review = null, pinMode = false, pending = null, canvas = null, changed = false;
 
   const visibleCards = () => Array.from(document.querySelectorAll("[data-gallery] [data-file]")).filter((c) => !c.hidden);
 
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  function imageCanvas(src, alt) {
+    const wrap = el("div", "lb-canvas");
+    const img = new Image();
+    img.alt = alt; img.src = src;
+    img.addEventListener("error", () => { wrap.replaceWith(placeholder(items[idx].dataset, "Nie udało się wczytać podglądu.")); });
+    img.addEventListener("load", drawPins);
+    wrap.append(img);
+    wrap.addEventListener("click", (e) => {
+      if (!pinMode) return;
+      const r = img.getBoundingClientRect();
+      const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+      if (x < 0 || x > 1 || y < 0 || y > 1) return;
+      pending = { x, y };
+      drawPins();
+      $("[data-lb-text]").focus();
+    });
+    canvas = wrap;
+    return wrap;
+  }
+
   function media(d) {
+    canvas = null;
     const kind = d.kind;
-    if (kind === "image" && d.preview) {
-      const img = new Image();
-      img.alt = d.name;
-      img.src = d.preview;
-      img.addEventListener("error", () => { stage.replaceChildren(placeholder(d, "Nie udało się wczytać podglądu.")); });
-      return img;
-    }
+    if (kind === "image" && d.preview) return imageCanvas(d.preview, d.name);
+    if (pinMode && d.preview) return imageCanvas(d.preview, d.name);
     if (kind === "video" && d.view) {
-      const v = document.createElement("video");
+      const v = el("video");
       v.src = d.view; v.controls = true; v.autoplay = true; v.playsInline = true;
       if (d.preview) v.poster = d.preview;
       return v;
     }
-    if (kind === "audio" && d.view) {
-      const a = document.createElement("audio");
-      a.src = d.view; a.controls = true; a.autoplay = true;
-      return a;
-    }
-    if (kind === "pdf" && d.view) {
-      const f = document.createElement("iframe");
-      f.src = d.view; f.title = d.name;
-      return f;
-    }
-    if (d.preview) { const img = new Image(); img.src = d.preview; img.alt = d.name; return img; }
+    if (kind === "audio" && d.view) { const a = el("audio"); a.src = d.view; a.controls = true; a.autoplay = true; return a; }
+    if (kind === "pdf" && d.view) { const f = el("iframe"); f.src = d.view; f.title = d.name; return f; }
+    if (d.preview) return imageCanvas(d.preview, d.name);
     return placeholder(d, "Podgląd niedostępny dla tego typu pliku.");
   }
 
   function placeholder(d, text) {
-    const box = document.createElement("div");
-    box.className = "lb-empty";
+    const box = el("div", "lb-empty");
     const card = document.querySelector(`[data-file][data-id="${d.id}"] .gicon`);
     if (card) box.append(card.cloneNode(true));
-    const p = document.createElement("div");
-    p.textContent = text;
-    const a = document.createElement("a");
-    a.className = "lb-btn"; a.href = d.download; a.textContent = "Pobierz plik";
-    box.append(p, a);
+    const a = el("a", "lb-btn", "Pobierz plik");
+    a.href = d.download;
+    box.append(el("div", "", text), a);
     return box;
+  }
+
+  function drawPins() {
+    if (!canvas) return;
+    canvas.querySelectorAll(".lb-pin").forEach((p) => p.remove());
+    canvas.classList.toggle("pinning", pinMode);
+    const pins = review ? review.comments.filter((c) => c.x !== null && !c.old) : [];
+    pins.forEach((c) => {
+      const pin = el("button", "lb-pin" + (c.resolved ? " resolved" : ""));
+      pin.type = "button";
+      pin.style.left = `${c.x * 100}%`; pin.style.top = `${c.y * 100}%`;
+      pin.title = `${c.author}: ${c.body}`;
+      pin.append(el("span", "", String(c.n)));
+      pin.addEventListener("click", (e) => { e.stopPropagation(); focusComment(c.id); });
+      canvas.append(pin);
+    });
+    if (pending) {
+      const pin = el("span", "lb-pin temp");
+      pin.style.left = `${pending.x * 100}%`; pin.style.top = `${pending.y * 100}%`;
+      pin.append(el("span", "", "+"));
+      canvas.append(pin);
+    }
+  }
+
+  function focusComment(id) {
+    const row = side.querySelector(`[data-comment="${id}"]`);
+    if (!row) return;
+    lb.classList.add("side-open");
+    row.scrollIntoView({ block: "center", behavior: "smooth" });
+    row.classList.add("flash");
+    setTimeout(() => row.classList.remove("flash"), 1200);
+  }
+
+  async function api(url, body) {
+    const res = await fetch(url, {
+      method: body === undefined ? "GET" : "POST", credentials: "same-origin",
+      headers: { "X-CSRF-Token": csrf, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) {
+      let msg = "Nie udało się zapisać.";
+      try { msg = (await res.json()).detail || msg; } catch (_) { /* bez treści */ }
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
+  function renderSide() {
+    const box = $("[data-lb-review]"), list = $("[data-lb-comments]");
+    box.replaceChildren(); list.replaceChildren();
+    if (!review) return;
+    const labels = { review: "● Do akceptacji", approved: "✓ Zaakceptowane", changes: "✎ Poprawki" };
+    const st = el("span", "lb-status " + (review.status || "none"), labels[review.status] || "Bez statusu akceptacji");
+    box.append(st);
+    if (review.by) box.append(el("div", "who", `${review.by} · ${review.at}`));
+    const row = el("div", "row");
+    const btn = (cls, text, status) => {
+      const b = el("button", cls, text);
+      b.type = "button";
+      b.addEventListener("click", () => setStatus(status));
+      return b;
+    };
+    if (review.is_admin) {
+      if (review.status !== "review") row.append(btn("lb-neutral", "🔎 Wyślij do akceptacji", "review"));
+      if (review.status) row.append(btn("lb-neutral", "Wyczyść status", ""));
+    } else if (review.status) {
+      if (review.status !== "approved") row.append(btn("lb-approve", "✓ Akceptuję", "approved"));
+      if (review.status !== "changes") row.append(btn("lb-changes", "✎ Poprawki", "changes"));
+    }
+    if (row.children.length) box.append(row);
+
+    const current = review.comments;
+    if (!current.length) list.append(el("div", "none", "Brak komentarzy. Dodaj uwagę albo zaznacz miejsce na obrazie 📌"));
+    current.forEach((c) => {
+      const item = el("div", "lb-comment" + (c.resolved ? " resolved" : ""));
+      item.dataset.comment = c.id;
+      const n = el("span", "n" + (c.n ? "" : " general"), c.n ? String(c.n) : "•");
+      if (c.n) n.addEventListener("click", () => { pending = null; drawPins(); });
+      const b = el("div", "b");
+      const meta = el("div", "meta", `${c.author}${c.agency ? " · BSK Media" : ""} · ${c.time}${c.old ? ` · wersja ${c.version}` : ""}`);
+      if (c.can_resolve) {
+        const r = el("button", "", c.resolved ? "Przywróć" : "Rozwiązane ✓");
+        r.type = "button";
+        r.addEventListener("click", async () => { review = await api(`/api/files/${items[idx].dataset.id}/comments/${c.id}/resolve`, {}); changed = true; renderSide(); drawPins(); });
+        meta.append(r);
+      }
+      b.append(meta, el("div", "t", c.body));
+      item.append(n, b);
+      list.append(item);
+    });
+    list.scrollTop = list.scrollHeight;
+    const toggle = $("[data-lb-side-toggle] span");
+    if (toggle) toggle.textContent = `Komentarze${current.length ? ` (${current.length})` : ""}`;
+  }
+
+  async function setStatus(status) {
+    try {
+      review = await api(`/api/files/${items[idx].dataset.id}/status`, { status });
+      changed = true;
+      items[idx].dataset.review = status;
+      renderSide();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function loadReview(id) {
+    review = null; renderSide();
+    if (!side) return;
+    try { review = await api(`/api/files/${id}/review`); } catch (_) { review = null; }
+    if (items[idx] && items[idx].dataset.id === id) { renderSide(); drawPins(); }
+  }
+
+  function setPinMode(on) {
+    pinMode = on;
+    pending = null;
+    $("[data-lb-pin]").classList.toggle("on", on);
+    $("[data-lb-pinhint]").hidden = !on;
+    const d = items[idx].dataset;
+    if (on && d.kind !== "image" && d.preview) stage.replaceChildren(media(d));
+    if (!on && d.kind !== "image") stage.replaceChildren(media(d));
+    drawPins();
   }
 
   function show(i) {
     idx = (i + items.length) % items.length;
     const d = items[idx].dataset;
+    pinMode = false; pending = null;
+    if (side) { $("[data-lb-pin]").classList.remove("on"); $("[data-lb-pinhint]").hidden = true; $("[data-lb-pin]").hidden = !d.preview; }
     stage.replaceChildren(media(d));
     $("[data-lb-name]").textContent = d.name;
     $("[data-lb-meta]").textContent = d.meta || "";
@@ -389,14 +526,14 @@ document.addEventListener("click", (e) => {
     strip.querySelectorAll("button").forEach((b, n) => b.classList.toggle("on", n === idx));
     const on = strip.children[idx];
     if (on) on.scrollIntoView({ block: "nearest", inline: "center" });
-    // wczytaj z wyprzedzeniem sąsiednie podglądy
     [idx + 1, idx - 1].forEach((n) => { const x = items[(n + items.length) % items.length]; if (x && x.dataset.preview) new Image().src = x.dataset.preview; });
+    loadReview(d.id);
   }
 
   function open(card) {
     items = visibleCards();
     strip.replaceChildren(...items.map((c, n) => {
-      const b = document.createElement("button");
+      const b = el("button");
       b.type = "button"; b.title = c.dataset.name;
       if (c.dataset.thumb) { const im = new Image(); im.src = c.dataset.thumb; im.alt = ""; im.loading = "lazy"; b.append(im); }
       else b.textContent = c.dataset.ext;
@@ -404,14 +541,18 @@ document.addEventListener("click", (e) => {
       return b;
     }));
     lb.hidden = false;
+    lb.classList.toggle("no-side", !side || !csrf);
+    if (side) side.hidden = !csrf;
     document.body.classList.add("lb-open");
     show(items.indexOf(card));
   }
 
   function close() {
     lb.hidden = true;
+    lb.classList.remove("side-open");
     stage.replaceChildren();
     document.body.classList.remove("lb-open");
+    if (changed) { changed = false; window.location.reload(); } // odśwież statusy i liczniki w galerii
   }
 
   document.querySelectorAll("[data-gallery] [data-open]").forEach((btn) => {
@@ -422,7 +563,7 @@ document.addEventListener("click", (e) => {
   $("[data-lb-next]").addEventListener("click", () => show(idx + 1));
   lb.addEventListener("click", (e) => { if (e.target === lb || e.target === stage) close(); });
   document.addEventListener("keydown", (e) => {
-    if (lb.hidden) return;
+    if (lb.hidden || e.target.tagName === "TEXTAREA") return;
     if (e.key === "Escape") close();
     else if (e.key === "ArrowRight") show(idx + 1);
     else if (e.key === "ArrowLeft") show(idx - 1);
@@ -430,11 +571,34 @@ document.addEventListener("click", (e) => {
   let x0 = null;
   stage.addEventListener("touchstart", (e) => { x0 = e.touches[0].clientX; }, { passive: true });
   stage.addEventListener("touchend", (e) => {
-    if (x0 === null) return;
+    if (x0 === null || pinMode) return;
     const dx = e.changedTouches[0].clientX - x0;
     if (Math.abs(dx) > 50) show(idx + (dx < 0 ? 1 : -1));
     x0 = null;
   });
+
+  if (side) {
+    const toggle = $("[data-lb-side-toggle]");
+    if (toggle) toggle.addEventListener("click", () => lb.classList.toggle("side-open"));
+    $("[data-lb-pin]").addEventListener("click", () => setPinMode(!pinMode));
+    const text = $("[data-lb-text]");
+    text.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("[data-lb-compose]").requestSubmit(); });
+    $("[data-lb-compose]").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!text.value.trim()) { text.focus(); return; }
+      if (pinMode && !pending) { alert("Najpierw kliknij na obrazie miejsce, którego dotyczy komentarz."); return; }
+      const body = { body: text.value.trim(), ...(pending || {}) };
+      try {
+        review = await api(`/api/files/${items[idx].dataset.id}/comments`, body);
+        changed = true;
+        text.value = "";
+        pending = null;
+        setPinMode(false);
+        renderSide();
+        drawPins();
+      } catch (err) { alert(err.message); }
+    });
+  }
 })();
 
 // ---------------------------------------------------------------- aplikacja (PWA)
@@ -456,3 +620,16 @@ document.querySelectorAll("[data-install]").forEach((b) => b.addEventListener("c
   installPrompt = null;
   document.querySelectorAll("[data-install]").forEach((x) => { x.hidden = true; });
 }));
+
+// Podgląd zdjęcia na stronie transferu (dla odbiorcy, bez logowania)
+(function transferPreview() {
+  const box = document.querySelector("[data-tpreview-box]");
+  if (!box) return;
+  const img = box.querySelector("img");
+  document.querySelectorAll("[data-tpreview]").forEach((b) => b.addEventListener("click", () => {
+    img.src = b.dataset.tpreview; box.hidden = false;
+  }));
+  const close = () => { box.hidden = true; img.removeAttribute("src"); };
+  box.addEventListener("click", (e) => { if (e.target !== img) close(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+})();

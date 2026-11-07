@@ -11,7 +11,7 @@
   {{ ui.kpi("Aktywni klienci", kpi.clients, "kont w portalu", "users") }}
   {{ ui.kpi("Pliki od klientów (30 dni)", kpi.client_files_30.n, kpi.client_files_30.b|size ~ " łącznie", "upload", charts.sparkline(spark)) }}
   {{ ui.kpi("Kopie pracowników", kpi.backups.b|size, kpi.backups.n ~ " plików · " ~ devices_online ~ "/" ~ devices|length ~ " komputerów online", "shield") }}
-  {{ ui.kpi("Aktywne linki", kpi.links.n, kpi.links.d ~ " pobrań łącznie", "link") }}
+  {{ ui.kpi("Aktywne transfery i linki", kpi.links.n, kpi.links.d ~ " pobrań łącznie", "link") }}
 </div>
 
 <div class="grid g-main mb">

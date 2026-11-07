@@ -1,0 +1,57 @@
+{% import "_ui.html" as ui with context %}<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{{ (t.title or 'Pliki od BSK Media') if not problem else 'Transfer niedostępny' }} — BSK Cloud</title>
+  <link rel="icon" href="/static/favicon.svg?v={{ asset_v }}" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_v }}">
+  <script src="/static/app.js?v={{ asset_v }}" defer></script>
+  <meta name="theme-color" content="#0f1729">
+</head>
+<body class="tpage">
+  {% if background %}<img class="t-bg" src="/t/tlo/{{ background|q }}" alt="">{% else %}<div class="t-bg t-bg-default"></div>{% endif %}
+  <div class="t-shade"></div>
+  <main class="t-card">
+    <a href="https://bskmedia.pl" class="t-logo" rel="noopener"><img src="/static/logo.svg?v={{ asset_v }}" alt="BSK Cloud" width="150" height="96"></a>
+    {% for kind, msg in flashes %}<div class="flash {{ kind }}">{{ msg }}</div>{% endfor %}
+    {% if problem %}
+      <h1>Transfer niedostępny</h1>
+      <p class="muted">{{ problem }}</p>
+    {% elif not unlocked %}
+      <p class="t-kicker">BSK Media przesyła Ci pliki</p>
+      <h1>{{ t.title or 'Pliki do pobrania' }}</h1>
+      <form method="post" action="/t/{{ token }}" class="stack mt">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <label>Hasło do transferu <input name="password" type="password" required autofocus></label>
+        <button class="primary big-btn">{{ ui.icon("lock") }}Otwórz</button>
+      </form>
+    {% else %}
+      <p class="t-kicker">BSK Media przesyła Ci pliki</p>
+      <h1>{{ t.title or 'Pliki do pobrania' }}</h1>
+      {% if t.message %}<p class="t-message">{{ t.message }}</p>{% endif %}
+      <div class="t-summary">{{ files|length }} {{ 'plik' if files|length == 1 else ('pliki' if files|length % 10 in [2,3,4] and files|length % 100 not in [12,13,14] else 'plików') }} · {{ total|size }} · ważny do {{ t.expires_at|dt }}</div>
+      <ul class="t-files">
+        {% for f in files %}
+        <li>
+          {% if can_thumb(f.name) %}<button type="button" class="t-thumb" data-tpreview="/t/{{ token }}/thumb/{{ f.id }}?s=preview" title="Podgląd"><img src="/t/{{ token }}/thumb/{{ f.id }}" alt="" loading="lazy" data-fallback></button>
+          {% else %}{{ ui.ficon(f.name) }}{% endif %}
+          <div class="t-fname"><b title="{{ f.name }}">{{ f.name }}</b><span>{{ f.size|size }}</span></div>
+          <a class="iconbtn" href="/t/{{ token }}/f/{{ f.id }}" title="Pobierz {{ f.name }}">{{ ui.icon("download") }}</a>
+        </li>
+        {% endfor %}
+      </ul>
+      {% if files|length > 1 %}
+      <a class="button primary big-btn" href="/t/{{ token }}/zip">{{ ui.icon("download") }}Pobierz wszystko (ZIP)</a>
+      {% elif files %}
+      <a class="button primary big-btn" href="/t/{{ token }}/f/{{ files[0].id }}">{{ ui.icon("download") }}Pobierz</a>
+      {% endif %}
+      <p class="t-note">Pliki pobierasz prosto z serwera BSK Media. Przerwane pobieranie pojedynczego pliku można wznowić.</p>
+    {% endif %}
+    <footer class="t-foot">Przesłano przez <b>BSK Cloud</b> · <a href="https://bskmedia.pl" rel="noopener">bskmedia.pl</a></footer>
+  </main>
+  {% if background %}<div class="t-credit">Realizacja BSK Media</div>{% endif %}
+  <div class="t-preview" data-tpreview-box hidden><button type="button" class="lb-btn" data-tpreview-close>✕</button><img alt=""></div>
+</body>
+</html>

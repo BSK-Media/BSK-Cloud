@@ -859,3 +859,141 @@ def test_expired_session_logs_out(app, monkeypatch):
     real = _t.time
     monkeypatch.setattr("app.main.time.time", lambda: real() + 13 * 3600)
     assert c.get("/admin", follow_redirects=False).headers["location"] == "/login"
+
+
+def test_company_members_share_space(app, admin):
+    create_client_account(admin)  # jan.kowalski = konto główne firmy (id 2)
+    tok = csrf_of(admin, "/admin/clients/2")
+    r = admin.post("/admin/clients/2/members", data={"csrf": tok, "username": "piotr.acme", "display_name": "Piotr", "email": ""})
+    pw = re.search(r"Hasło: (\S+)\"", r.text).group(1)
+    assert "piotr.acme" in r.text and "Osoby z dostępem" in r.text
+    assert "piotr.acme" not in admin.get("/admin/clients").text  # nie jest osobnym klientem
+    # wspólna przestrzeń: plik od Piotra widzi Jan i admin; wiadomość ma autora
+    p = TestClient(app)
+    login(p, "piotr.acme", pw)
+    change_pw(p, pw)
+    ptok = csrf_of(p, "/files")
+    p.post("/files/upload", data={"csrf": ptok}, files=[("files", ("od_piotra.png", _png()))])
+    p.post("/files/message", data={"csrf": ptok, "body": "Pozdrawiam, Piotr"})
+    assert (app.state.settings.clients_dir / "jan.kowalski" / "od_piotra.png").exists()
+    j = TestClient(app)
+    login(j, "jan.kowalski", "KlientHaslo1")
+    change_pw(j, "KlientHaslo1")
+    page = j.get("/files").text
+    assert "od_piotra.png" in page and "Pozdrawiam, Piotr" in page
+    assert j.get(f"/files/1/download").status_code == 200
+    assert admin.get("/api/unread").json()["unread"] >= 2
+    assert "od_piotra.png" in admin.get("/admin/clients/2").text
+    # blokada i usunięcie dostępu
+    mid = app.state.db.one("SELECT id FROM users WHERE username = 'piotr.acme'")["id"]
+    admin.post(f"/admin/members/{mid}/toggle", data={"csrf": tok})
+    assert p.get("/files", follow_redirects=False).status_code == 303
+    admin.post(f"/admin/members/{mid}/delete", data={"csrf": tok})
+    assert "piotr.acme" not in admin.get("/admin/clients/2").text
+    assert "Pozdrawiam, Piotr" in admin.get("/admin/clients/2").text  # historia zostaje
+    assert admin.get(f"/admin/clients/{mid}").status_code == 404
+
+
+def test_review_pins_and_status(app, admin):
+    create_client_account(admin)
+    tok = csrf_of(admin, "/admin/clients/2")
+    admin.post("/admin/clients/2/upload", data={"csrf": tok, "review": "1"}, files=[("files", ("projekt_logo.png", _png()))])
+    f = app.state.db.one("SELECT * FROM files")
+    assert f["review_status"] == "review"
+    assert "Do akceptacji" in admin.get("/admin/clients/2").text
+    c = TestClient(app)
+    login(c, "jan.kowalski", "KlientHaslo1")
+    change_pw(c, "KlientHaslo1")
+    h = {"X-CSRF-Token": csrf_of(c, "/files")}
+    data = c.get(f"/api/files/{f['id']}/review", headers=h).json()
+    assert data["status"] == "review" and data["preview"] and not data["is_admin"]
+    # pinezka na obrazie + zwykły komentarz
+    data = c.post(f"/api/files/{f['id']}/comments", json={"x": 0.25, "y": 0.6, "body": "Tu zmienić kolor"}, headers=h).json()
+    data = c.post(f"/api/files/{f['id']}/comments", json={"body": "Ogólnie super"}, headers=h).json()
+    pins = [x for x in data["comments"] if x["x"] is not None]
+    assert len(pins) == 1 and pins[0]["n"] == 1 and pins[0]["body"] == "Tu zmienić kolor"
+    assert c.post(f"/api/files/{f['id']}/comments", json={"x": 2, "y": 0.5, "body": "x"}, headers=h).status_code == 400
+    assert c.post(f"/api/files/{f['id']}/comments", json={"body": "x"}).status_code == 400  # bez CSRF
+    # klient prosi o poprawki -> status + wiadomość w rozmowie
+    data = c.post(f"/api/files/{f['id']}/status", json={"status": "changes"}, headers=h).json()
+    assert data["status"] == "changes" and data["by"]
+    assert c.post(f"/api/files/{f['id']}/status", json={"status": "review"}, headers=h).status_code == 400  # tylko admin
+    thread = admin.get("/api/thread/2").json()["messages"]
+    assert any("poprawki" in m["body"] for m in thread) and any("Tu zmienić kolor" in m["body"] for m in thread)
+    # admin wgrywa nową wersję -> wraca do akceptacji, stare pinezki oznaczone jako starsza wersja
+    admin.post("/admin/clients/2/upload", data={"csrf": tok}, files=[("files", ("projekt_logo.png", _png(color=(0, 0, 0))))])
+    ah = {"X-CSRF-Token": csrf_of(admin, "/admin/clients/2")}
+    data = admin.get(f"/api/files/{f['id']}/review", headers=ah).json()
+    assert data["status"] == "review" and data["version"] == 2 and all(x["old"] for x in data["comments"])
+    data = c.post(f"/api/files/{f['id']}/status", json={"status": "approved"}, headers=h).json()
+    assert data["status"] == "approved"
+    cid = data["comments"][0]["id"]
+    assert c.post(f"/api/files/{f['id']}/comments/{cid}/resolve", json={}, headers=h).json()["comments"][0]["resolved"]
+    # obcy klient nie ma dostępu
+    create_client_account(admin, "obcy.klient", "KlientHaslo3")
+    o = TestClient(app)
+    login(o, "obcy.klient", "KlientHaslo3")
+    change_pw(o, "KlientHaslo3")
+    oh = {"X-CSRF-Token": csrf_of(o, "/files")}
+    assert o.get(f"/api/files/{f['id']}/review", headers=oh).status_code == 404
+
+
+def test_transfer_like_wetransfer(mail_app):
+    import io
+    import zipfile as zf
+    app, sent = mail_app, mail_app.state.sent
+    admin = TestClient(app)
+    login(admin, "admin", ADMIN_PW)
+    tok = csrf_of(admin, "/admin/transfers")
+    r = admin.post("/admin/transfers", data={"csrf": tok, "title": "Kampania — druk", "message": "Pliki do druku",
+                                              "recipients": "druk@drukarnia.pl, anna@acme.pl", "expires_days": 7},
+                   files=[("files", ("plakat.png", _png())), ("files", ("opis.txt", b"tekst")),
+                          ("files", ("opis.txt", b"drugi"))])
+    url = re.search(r'value="(https://cloud\.bskmedia\.pl/t/[^"]+)"', r.text).group(1)
+    path = url.replace("https://cloud.bskmedia.pl", "")
+    assert wait_for_mail(sent, 2) and {s[0] for s in sent[:2]} == {"druk@drukarnia.pl", "anna@acme.pl"}
+    assert path in sent[0][2] and "Pliki do druku" in sent[0][2]
+    anon = TestClient(app)
+    page = anon.get(path)
+    assert "Kampania — druk" in page.text and "Pobierz wszystko (ZIP)" in page.text and "3 pliki" in page.text
+    # ZIP z wszystkimi plikami (powtórzona nazwa dostaje numer)
+    z = zf.ZipFile(io.BytesIO(anon.get(path + "/zip").content))
+    assert sorted(z.namelist()) == ["opis (2).txt", "opis.txt", "plakat.png"] and z.read("opis (2).txt") == b"drugi"
+    tf = app.state.db.all("SELECT * FROM transfer_files ORDER BY id")
+    assert anon.get(f"{path}/f/{tf[1]['id']}").content == b"tekst"
+    assert anon.get(f"{path}/thumb/{tf[0]['id']}").headers["content-type"] == "image/webp"
+    assert anon.get(f"{path}/f/{tf[1]['id']}", headers={"Range": "bytes=2-"}).status_code == 206
+    t = app.state.db.one("SELECT * FROM transfers")
+    assert t["downloads"] == 2  # ZIP + 1 plik (wznowienie się nie liczy)
+    assert wait_for_mail(sent, 3) and "Pobrano transfer" in sent[2][1]
+    assert "2×" in admin.get("/admin/transfers").text
+    # wygaśnięcie i wyłączenie
+    app.state.db.run("UPDATE transfers SET expires_at = '2020-01-01T00:00:00+00:00'")
+    assert "wygasł" in anon.get(path).text and anon.get(path + "/zip").status_code == 410
+    app.state.db.run("UPDATE transfers SET expires_at = ?", "2999-01-01T00:00:00+00:00")
+    admin.post(f"/admin/transfers/{t['id']}/revoke", data={"csrf": tok})
+    assert "wyłączony" in anon.get(path).text
+    admin.post(f"/admin/transfers/{t['id']}/delete", data={"csrf": tok})
+    assert anon.get(path).status_code == 404
+    assert not (app.state.settings.transfers_dir / str(t["id"])).exists()
+
+
+def test_transfer_password_and_backgrounds(app, admin):
+    tok = csrf_of(admin, "/admin/transfers")
+    admin.post("/admin/transfers/backgrounds", data={"csrf": tok},
+               files=[("files", ("realizacja.jpg", _png())), ("files", ("zly.html", b"<x>"))])
+    assert (app.state.settings.backgrounds_dir / "realizacja.jpg").exists()
+    assert not (app.state.settings.backgrounds_dir / "zly.html").exists()
+    r = admin.post("/admin/transfers", data={"csrf": tok, "password": "tajne123", "expires_days": 3},
+                   files=[("files", ("a.txt", b"A"))])
+    path = "/t/" + re.search(r'/t/([A-Za-z0-9_-]+)"', r.text).group(1)
+    anon = TestClient(app)
+    page = anon.get(path).text
+    assert "Hasło do transferu" in page and "/t/tlo/realizacja.jpg" in page and "a.txt" not in page
+    fid = app.state.db.one("SELECT id FROM transfer_files")["id"]
+    assert anon.get(f"{path}/f/{fid}", follow_redirects=False).status_code == 303
+    t2 = csrf_of(anon, path)
+    anon.post(path, data={"csrf": t2, "password": "zle"})
+    anon.post(path, data={"csrf": t2, "password": "tajne123"})
+    assert anon.get(f"{path}/f/{fid}").content == b"A"
+    assert anon.get("/t/tlo/..%2Fapp%2Fbskcloud.db").status_code == 404
