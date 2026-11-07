@@ -14,6 +14,7 @@
     <div class="tabs" data-filter-tabs><button class="on" data-f="all">Wszystkie</button><button data-f="client">{{ 'Ode mnie' if user.role == 'client' else 'Od klienta' }}</button><button data-f="agency">Od BSK Media</button></div>
     {% endif %}
     <div class="tabs" data-view-tabs><button class="on" data-v="grid" title="Galeria">{{ ui.icon("img") }}</button><button data-v="list" title="Lista">{{ ui.icon("list") }}</button></div>
+    <button type="button" class="btn-sm" data-select-toggle title="Zaznacz kilka plików">☑ Zaznacz</button>
     {% if can_manage %}
     <details class="pop">
       <summary class="button btn-sm primary">{{ ui.icon("plus") }}Nowy katalog</summary>
@@ -55,6 +56,19 @@
   {% endif %}
 
   {% if space.files %}
+  <form method="post" action="/files/bulk" class="bulkbar" data-bulkbar hidden>
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ base_url }}{{ q ~ 'folder=' ~ space.folder.id if space.folder else '' }}">
+    <b data-bulk-count>0 zaznaczonych</b>
+    <button type="button" class="btn-sm ghost" data-select-all>Zaznacz wszystko</button>
+    <span class="spacer"></span>
+    {% if user.role == 'admin' %}
+    <select name="folder_id" aria-label="Katalog docelowy"><option value="">— katalog główny —</option>
+      {% for af in space.all_folders %}<option value="{{ af.id }}">{{ af.path }}</option>{% endfor %}</select>
+    <button class="btn-sm" name="action" value="move">{{ ui.icon("folder") }}Przenieś</button>
+    {% endif %}
+    <button class="btn-sm danger" name="action" value="trash" data-bulk-trash>{{ ui.icon("trash") }}Do kosza</button>
+    <button type="button" class="btn-sm ghost" data-select-cancel>Anuluj</button>
+  </form>
   <div class="gallery" data-gallery>
     {% for f in space.files %}
     {% set k = thumb_kind(f.original_name) %}{% set dt = doc_type(f.original_name) %}
@@ -67,6 +81,7 @@
       data-view="{{ '/files/' ~ f.id ~ '/view' if k in ['video', 'audio', 'pdf'] and ext not in ['AI'] else '' }}"
       data-download="/files/{{ f.id }}/download" data-edit="{{ '/files/' ~ f.id ~ '/edit' if office_enabled and dt else '' }}"
       data-review="{{ f.review_status }}">
+      <label class="gcheck" title="Zaznacz"><input type="checkbox" value="{{ f.id }}" data-select></label>
       <button type="button" class="gthumb kind-{{ k }} {{ (f.original_name|ftype) }}" data-open aria-label="Podgląd {{ f.original_name }}">
         {% if can_thumb(f.original_name) %}<img src="/files/{{ f.id }}/thumb?v={{ f.sha256[:12] }}" alt="" loading="lazy" data-fallback>{% endif %}
         <span class="gicon">{{ ui.icon(f.original_name|ftype) }}<em>{{ ext }}</em></span>

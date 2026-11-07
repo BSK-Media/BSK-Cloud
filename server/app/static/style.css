@@ -569,3 +569,26 @@ body.tpage { min-height: 100vh; margin: 0; display: flex; align-items: center; p
 .bg-tile { position: relative; aspect-ratio: 16 / 10; border-radius: 10px; overflow: hidden; }
 .bg-tile img { width: 100%; height: 100%; object-fit: cover; }
 .bg-tile form { position: absolute; top: 6px; right: 6px; }
+/* ikona w podglądzie pliku bez miniatury nie może przykrywać przycisków */
+.lb-empty .gicon { position: static; inset: auto; color: #94a3b8; }
+
+/* ================= zaznaczanie wielu plików ================= */
+.gcheck { position: absolute; z-index: 4; top: 8px; left: 8px; width: 28px; height: 28px; border-radius: 8px; background: rgba(255, 255, 255, .94);
+  box-shadow: 0 2px 8px rgba(16, 24, 40, .16); display: grid; place-items: center; opacity: 0; transition: opacity .15s; cursor: pointer; }
+.gcheck input { width: 17px; height: 17px; margin: 0; cursor: pointer; accent-color: var(--accent); }
+.gcard:hover .gcheck, .browser.selecting .gcheck { opacity: 1; }
+.gcard.selected { outline: 3px solid var(--accent); outline-offset: -1px; }
+.gcard.selected .gthumb img { opacity: .82; }
+.browser.selecting .gthumb { cursor: pointer; }
+.browser.selecting .gactions { display: none; }
+.bulkbar { position: sticky; top: 8px; z-index: 15; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px; margin-bottom: 14px;
+  background: #0f1729; color: #fff; border-radius: 12px; box-shadow: 0 10px 28px rgba(16, 24, 40, .22); }
+.bulkbar[hidden] { display: none; }
+.bulkbar select { width: auto; max-width: 260px; padding: 6px 8px; font-size: .85rem; }
+.bulkbar .btn-sm.ghost { color: #cbd5e1; }
+.bulkbar .btn-sm.ghost:hover { background: #1f2a40; }
+.browser.as-list .gcheck { position: static; opacity: 1; box-shadow: none; background: none; margin-right: 6px; }
+.pick-row { margin-top: -4px; }
+.folder-pick { position: relative; cursor: pointer; }
+.folder-pick input { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; }
+@media (hover: none) { .gcheck { opacity: 1; } }

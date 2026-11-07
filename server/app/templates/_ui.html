@@ -59,9 +59,11 @@
   <label class="drop">
     <input type="file" name="files" multiple required>
     {{ icon("upload") }}
-    <span><b>Przeciągnij pliki tutaj</b> albo kliknij, aby wybrać</span>
-    <small class="hint">Pojedynczy plik do {{ (max_upload_mb / 1024)|round(0)|int }} GB · przerwane wysyłanie wznawia się samo</small>
+    <span><b>Przeciągnij pliki lub całe foldery</b> albo kliknij, aby wybrać pliki</span>
+    <small class="hint">Pojedynczy plik do {{ (max_upload_mb / 1024)|round(0)|int }} GB · foldery zachowują strukturę · przerwane wysyłanie wznawia się samo</small>
   </label>
+  <div class="row pick-row"><label class="button btn-sm folder-pick">{{ icon("folder") }}Wybierz folder<input type="file" webkitdirectory multiple data-folder-input></label>
+    <span class="hint" data-pick-summary></span></div>
   {{ extra }}
   <label>Komentarz do wysyłki (opcjonalnie)
     <textarea name="note" rows="2" maxlength="500" placeholder="np. poprawiona wersja logo, wersja 3"></textarea>
