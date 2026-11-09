@@ -52,11 +52,31 @@ if ($LASTEXITCODE -ne 0) {
   Write-Warning "Brak połączenia z serwerem teraz — agent i tak zacznie działać i wyśle pliki, gdy połączenie wróci."
 }
 
-# autostart przy logowaniu użytkownika
+# autostart przy logowaniu użytkownika: wpis w rejestrze, a gdy antywirus go zablokuje (np. Avast),
+# skrót w folderze Autostart — brak autostartu nie przerywa instalacji
 $agent = Join-Path $dest "bsk-backup-agent.exe"
-Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "BSKBackup" -Value "`"$agent`" run"
+$autostart = $false
+try {
+  Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "BSKBackup" -Value "`"$agent`" run" -ErrorAction Stop
+  $autostart = $true
+} catch {
+  try {
+    $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path ([Environment]::GetFolderPath("Startup")) "BSK Backup.lnk"))
+    $lnk.TargetPath = $agent
+    $lnk.Arguments = "run"
+    $lnk.WindowStyle = 7
+    $lnk.Save()
+    $autostart = $true
+  } catch {
+    Write-Warning "Nie udało się ustawić autostartu (blokuje go program antywirusowy). Dodaj BSK Backup do wyjątków antywirusa i uruchom instalację ponownie."
+  }
+}
 
 Start-Process -FilePath $agent -ArgumentList "run" -WindowStyle Hidden
 Write-Host ""
-Write-Host "BSK Backup zainstalowany w $dest i uruchomiony. Startuje automatycznie po zalogowaniu." -ForegroundColor Green
+if ($autostart) {
+  Write-Host "BSK Backup zainstalowany w $dest i uruchomiony. Startuje automatycznie po zalogowaniu." -ForegroundColor Green
+} else {
+  Write-Host "BSK Backup zainstalowany w $dest i uruchomiony (bez autostartu — patrz ostrzeżenie wyżej)." -ForegroundColor Yellow
+}
 Write-Host "Podgląd stanu: & `"$cli`" status"
