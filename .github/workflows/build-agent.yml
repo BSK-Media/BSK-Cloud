@@ -44,10 +44,18 @@ jobs:
           name: BSK-Backup-windows
           path: agent/dist/*
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        # tag v* -> wydanie z numerem; każda zmiana na main -> stałe wydanie „bsk-backup-latest”
+        # (NAS pobiera je jednym poleceniem, bez logowania do GitHuba)
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd agent/dist && 7z a ../../BSK-Backup-windows.zip . >/dev/null && cd ../..
-          gh release create "${GITHUB_REF_NAME}" BSK-Backup-windows.zip --title "BSK Backup ${GITHUB_REF_NAME}" --notes "Rozpakuj do folderu instalator/ na NAS."
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            gh release create "${GITHUB_REF_NAME}" BSK-Backup-windows.zip --title "BSK Backup ${GITHUB_REF_NAME}" --notes "Rozpakuj do folderu instalator/ na NAS."
+          else
+            gh release delete bsk-backup-latest -y --cleanup-tag 2>/dev/null || true
+            gh release create bsk-backup-latest BSK-Backup-windows.zip --target "$GITHUB_SHA" --latest \
+              --title "BSK Backup (najnowszy)" --notes "Najnowszy build z gałęzi main (${GITHUB_SHA::7}). Rozpakuj do folderu instalator/ na NAS."
+          fi
