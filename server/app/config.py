@@ -29,6 +29,7 @@ class Settings:
     session_hours: int = 12
     max_upload_mb: int = 51200
     max_backup_file_mb: int = 20480
+    device_alert_days: int = 3  # e-mail, gdy komputer nie łączy się z serwerem od tylu dni (0 = wyłączone)
     backup_keep_versions: int = 10
     default_quota_mb: int = 0
     admin_username: str = ""
@@ -114,6 +115,7 @@ class Settings:
             session_hours=_int("BSK_SESSION_HOURS", 12),
             max_upload_mb=_int("BSK_MAX_UPLOAD_MB", 51200),
             max_backup_file_mb=_int("BSK_MAX_BACKUP_FILE_MB", 20480),
+            device_alert_days=_int("BSK_DEVICE_ALERT_DAYS", 3),
             backup_keep_versions=_int("BSK_BACKUP_KEEP_VERSIONS", 10),
             default_quota_mb=_int("BSK_DEFAULT_QUOTA_MB", 0),
             admin_username=os.environ.get("BSK_ADMIN_USERNAME", ""),

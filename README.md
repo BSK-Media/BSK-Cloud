@@ -213,14 +213,25 @@ Jak działa program:
 - pomija pliki tymczasowe i systemowe (`~$*.docx`, `*.tmp`, `Thumbs.db`, `node_modules`, `.git` …);
 - **bez internetu** pliki czekają w kolejce na dysku i wysyłają się same po powrocie połączenia,
   także po restarcie komputera;
-- co godzinę skanuje foldery, więc nic nie umknie;
+- co godzinę skanuje foldery, więc nic nie umknie, a co ok. 2 minuty sprawdza ustawienia z panelu;
 - usunięcie pliku na komputerze **nie** usuwa go z kopii, a nadpisanie zachowuje poprzednią wersję
   (domyślnie 10 wersji, ustawienie `BSK_BACKUP_KEEP_VERSIONS`);
 - przy przekroczeniu limitu miejsca komputer wstrzymuje wysyłkę na godzinę i zapisuje to w dzienniku;
 - **Nowy link instalacyjny** lub **Wyłącz urządzenie** natychmiast odcina stary token,
   np. po zwolnieniu pracownika, kradzieży laptopa albo reinstalacji.
 
-Inne foldery niż Pulpit i Dokumenty ustawisz u pracownika poleceniem:
+**Zdalna kontrola z panelu** (od BSK Backup 1.3.0), karta *Program na komputerze* na stronie komputera:
+- **Synchronizuj teraz**: program w ciągu ok. 2 minut skanuje foldery i wysyła zaległe pliki,
+  także po wcześniejszej przerwie (brak sieci, limit). Panel pokazuje, kiedy synchronizację wykonano.
+- **Wersja programu** na liście komputerów i na stronie komputera. **Aktualizacja jest automatyczna**:
+  gdy w `bsk-dane/instalator` jest nowsza wersja (polecenie z kroku 7), program sam ją pobiera,
+  sprawdza sumę kontrolną, podmienia pliki i uruchamia się ponownie. Nie trzeba nic robić u pracownika.
+- **Raport z komputera**: liczba plików w kolejce, ostatnia wysyłka, obserwowane foldery, pliki,
+  których nie udało się wysłać (np. otwarta skrzynka Outlooka), ostatnie ostrzeżenia i błędy z dziennika.
+- **Alert e-mail** do administratora (`BSK_NOTIFY_EMAIL`), gdy komputer nie łączy się z serwerem
+  od 3 dni (`BSK_DEVICE_ALERT_DAYS`, 0 = wyłączone). Jeden e-mail na każdą przerwę.
+
+Inne foldery niż Pulpit i Dokumenty ustawisz w panelu (*Ustawienia* komputera) albo u pracownika poleceniem:
 ```powershell
 & "$env:LOCALAPPDATA\Programs\BSKBackup\bsk-backup.exe" configure --folder "C:\Projekty" --folder "D:\Klienci"
 ```
@@ -363,7 +374,7 @@ Potem uruchom `sudo docker compose up -d app` i w **Moje konto** kliknij **Wyśl
   cd /volume1/bsk-cloud && sudo curl -fL -o portal.tar.gz https://codeload.github.com/BSK-Media/BSK-Cloud/tar.gz/refs/heads/main && sudo tar -xzf portal.tar.gz -C portal --strip-components=1 && sudo rm portal.tar.gz && cd portal && sudo docker compose --profile tunnel up -d --build
   ```
   Dane w `bsk-dane` i baza w `bsk-cloud/baza` pozostają nienaruszone.
-- Aktualizacja BSK Backup: uruchom ponownie polecenie z kroku 7 (pobiera najnowszy build) i wyślij pracownikom nowe linki instalacyjne.
+- Aktualizacja BSK Backup: uruchom ponownie polecenie z kroku 7 (pobiera najnowszy build). Programy od wersji 1.3.0 zaktualizują się same; starsze trzeba zainstalować ponownie z nowego linku.
   Ponowna instalacja nadpisuje program i zachowuje kolejkę.
 
 # Dla programisty

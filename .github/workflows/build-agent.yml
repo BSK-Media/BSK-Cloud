@@ -38,7 +38,9 @@ jobs:
           pyinstaller --noconfirm --onefile --name bsk-backup bsk_backup.py
           pyinstaller --noconfirm --onefile --noconsole --name bsk-backup-agent bsk_backup.py
           Copy-Item install-windows.ps1, uninstall-windows.ps1 dist\
-          .\dist\bsk-backup.exe version
+          # numer wersji dla portalu — na jego podstawie programy na komputerach aktualizują się same
+          .\dist\bsk-backup.exe version | Out-File -Encoding ascii dist\version.txt
+          Get-Content dist\version.txt
       - uses: actions/upload-artifact@v4
         with:
           name: BSK-Backup-windows

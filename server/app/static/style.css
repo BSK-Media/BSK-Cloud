@@ -162,6 +162,7 @@ tr.inactive td { opacity: .55; }
 .tag.agency { background: #fdeee7; color: #b5461a; }
 .tag.ok { background: #e7f6e7; color: #0a7a0a; }
 .tag.off { background: #f1f3f6; color: var(--muted); }
+.tag.warn { background: #fff4d6; color: #8a5a00; }
 .tag.danger { background: #fdecec; color: var(--critical); }
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: #c4cad4; }
 .dot.on { background: var(--good); }
@@ -615,3 +616,9 @@ body.tpage { min-height: 100vh; margin: 0; display: flex; align-items: center; p
 .gthumb img.thumb-wait, img.thumb-wait { opacity: 0 !important; }
 .lb-canvas.lb-wait { min-height: 200px; min-width: 200px; background: rgba(255,255,255,.06); border-radius: 12px; }
 .more-files { display: flex; align-items: center; justify-content: center; gap: 14px; margin: 18px 0 4px; }
+
+/* program na komputerze pracownika */
+.kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 24px; }
+.kv > div { display: flex; flex-direction: column; gap: 3px; }
+.kv > div > span:first-child { font-size: .78rem; color: var(--muted); }
+.kv .tag { align-self: flex-start; }
