@@ -149,13 +149,14 @@ przerwania. Pobieranie linkiem nie ma limitu.
    `sudo nano .env`, wyczyść `BSK_ADMIN_PASSWORD=`, a potem uruchom `sudo docker compose up -d`.
 
 ## Krok 7. Program BSK Backup dla pracowników (raz)
-Program dla Windows buduje się **automatycznie na GitHubie**, więc nie potrzebujesz Pythona:
-1. Na GitHubie wejdź w repozytorium **Actions → „Testy i build BSK Backup”** i wybierz ostatnie
-   zielone uruchomienie. W sekcji **Artifacts** pobierz `BSK-Backup-windows`.
-   Inna droga: wypchnij tag `v1.0.0`, a gotowy ZIP pojawi się w **Releases**.
-2. Rozpakuj ZIP i skopiuj 4 pliki (`bsk-backup.exe`, `bsk-backup-agent.exe`,
-   `install-windows.ps1`, `uninstall-windows.ps1`) do folderu **`bsk-dane/instalator`** na NAS.
-   Możesz to zrobić przez SMB albo menedżer plików UGOS.
+Program dla Windows buduje się **automatycznie na GitHubie** po każdej zmianie i trafia do wydania
+`bsk-backup-latest` (zakładka **Releases**). Na NAS wystarczy jedno polecenie przez SSH, które pobiera
+ZIP i rozpakowuje 4 pliki (`bsk-backup.exe`, `bsk-backup-agent.exe`, `install-windows.ps1`,
+`uninstall-windows.ps1`) do **`bsk-dane/instalator`**:
+```bash
+sudo docker exec bsk-cloud python -c "import io,urllib.request,zipfile; zipfile.ZipFile(io.BytesIO(urllib.request.urlopen('https://github.com/BSK-Media/BSK-Cloud/releases/download/bsk-backup-latest/BSK-Backup-windows.zip').read())).extractall('/data/instalator'); print('OK')"
+```
+To samo polecenie aktualizuje program.
 
 Od teraz pracownicy pobierają program **bezpośrednio z NAS** przez link z portalu.
 
@@ -362,7 +363,7 @@ Potem uruchom `sudo docker compose up -d app` i w **Moje konto** kliknij **Wyśl
   cd /volume1/bsk-cloud && sudo curl -fL -o portal.tar.gz https://codeload.github.com/BSK-Media/BSK-Cloud/tar.gz/refs/heads/main && sudo tar -xzf portal.tar.gz -C portal --strip-components=1 && sudo rm portal.tar.gz && cd portal && sudo docker compose --profile tunnel up -d --build
   ```
   Dane w `bsk-dane` i baza w `bsk-cloud/baza` pozostają nienaruszone.
-- Aktualizacja BSK Backup: podmień pliki w `instalator/` i wyślij pracownikom nowe linki instalacyjne.
+- Aktualizacja BSK Backup: uruchom ponownie polecenie z kroku 7 (pobiera najnowszy build) i wyślij pracownikom nowe linki instalacyjne.
   Ponowna instalacja nadpisuje program i zachowuje kolejkę.
 
 # Dla programisty
