@@ -150,6 +150,7 @@ tr.inactive td { opacity: .55; }
 .file .meta { color: var(--muted); font-size: .8rem; }
 .ficon { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; flex: none; background: #eef2f7; color: #475569; }
 .ficon.img { background: #fdf0e9; color: #c2410c; }
+.ficon.folder { background: #e8f0fb; color: #2a78d6; }
 .ficon.video { background: #f1eefe; color: #5b4bc4; }
 .ficon.audio { background: #fdeef4; color: #be185d; }
 .ficon.sheet { background: #e8f6ef; color: #08784f; }

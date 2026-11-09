@@ -161,8 +161,8 @@ def test_agent_backup_and_versions(app, admin):
                 content=b"a", headers=h)
     assert r.status_code == 400
 
-    page = admin.get("/admin/devices/1").text
-    assert "Dokumenty/oferta.docx" in page
+    assert ">Dokumenty</b>" in admin.get("/admin/devices/1").text
+    assert "Dokumenty%2Foferta.docx" in admin.get("/admin/devices/1", params={"dir": "Dokumenty"}).text
     v = admin.get("/admin/devices/1/versions", params={"path": "Dokumenty/oferta.docx"}).text
     vname = re.search(r'version=([^"&]+)', v).group(1)
     from urllib.parse import unquote
@@ -1242,3 +1242,35 @@ def test_agent_remote_control(app, admin):
     anon.get("/api/agent/ping", headers=h)  # komputer wrócił
     assert agents.check_alerts(app.state.settings, app.state.db, lambda *a: sent.append(a)) == 0
     assert _json.loads(app.state.db.one("SELECT agent_report FROM devices WHERE id = ?", dev["id"])["agent_report"])["pending"] == 4
+
+
+def test_device_backup_folders_and_zip(app, admin):
+    """Kopia komputera przeglądana jak w Eksploratorze (struktura katalogów) i pobieranie folderu jako ZIP."""
+    import io
+    import zipfile
+    tok = csrf_of(admin, "/admin/devices/new")
+    r = admin.post("/admin/devices/new", data={"name": "PC-F", "employee": "", "csrf": tok})
+    token = re.search(r'class="token">([^<]+)<', r.text).group(1)
+    anon = TestClient(app)
+    h = {"Authorization": f"Bearer {token}"}
+    for path, body in [("Desktop/elementor-pro/core/app.js", b"A"), ("Desktop/elementor-pro/core/js/x_1%.js", b"B"),
+                       ("Desktop/elementor-pro/readme.txt", b"C"), ("Desktop/plan.pdf", b"D"), ("Documents/umowa.docx", b"E")]:
+        assert anon.put("/api/agent/files", params={"path": path, "sha256": hashlib.sha256(body).hexdigest()},
+                        content=body, headers=h).status_code == 200
+    dev = app.state.db.one("SELECT id FROM devices WHERE name = 'PC-F'")["id"]
+    root = admin.get(f"/admin/devices/{dev}").text
+    assert ">Desktop</b>" in root and ">Documents</b>" in root and "plan.pdf" not in root
+    d = admin.get(f"/admin/devices/{dev}", params={"dir": "Desktop"}).text
+    assert ">elementor-pro</b>" in d and "plan.pdf" in d and ">app.js<" not in d and "3 pliki" in d
+    core = admin.get(f"/admin/devices/{dev}", params={"dir": "Desktop/elementor-pro/core"}).text
+    assert ">app.js<" in core and ">js</b>" in core
+    found = admin.get(f"/admin/devices/{dev}", params={"q": "umowa"}).text
+    assert "Documents/umowa.docx" in found
+    assert admin.get(f"/admin/devices/{dev}", params={"dir": "../x"}).status_code == 400
+    z = zipfile.ZipFile(io.BytesIO(admin.get(f"/admin/devices/{dev}/zip", params={"dir": "Desktop/elementor-pro"}).content))
+    assert sorted(z.namelist()) == ["core/app.js", "core/js/x_1%.js", "readme.txt"]
+    assert z.read("core/js/x_1%.js") == b"B"
+    whole = zipfile.ZipFile(io.BytesIO(admin.get(f"/admin/devices/{dev}/zip").content))
+    assert len(whole.namelist()) == 5 and "Documents/umowa.docx" in whole.namelist()
+    assert admin.get(f"/admin/devices/{dev}/zip", params={"dir": "Nie/ma"}).status_code == 404
+    assert TestClient(app, follow_redirects=False).get(f"/admin/devices/{dev}/zip").status_code in (303, 401, 403)

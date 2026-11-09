@@ -1715,18 +1715,66 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "Nie ma takiego urządzenia.")
         return d
 
+    def backup_dir_listing(device_id: int, folder: str) -> tuple[list[dict], list]:
+        """Podkatalogi (z liczbą plików, rozmiarem, datą) i pliki bezpośrednio w katalogu kopii."""
+        prefix = f"{folder}/" if folder else ""
+        n = len(prefix)
+        rest = "substr(rel_path, ? + 1)"
+        dirs = db.all(
+            f"SELECT substr({rest}, 1, instr({rest}, '/') - 1) AS name, COUNT(*) AS n, COALESCE(SUM(size), 0) AS size,"
+            " MAX(uploaded_at) AS uploaded_at FROM backup_files"
+            f" WHERE device_id = ? AND substr(rel_path, 1, ?) = ? AND instr({rest}, '/') > 0"
+            " GROUP BY name ORDER BY lower(name)",
+            n, n, device_id, n, prefix, n)
+        files = db.all(
+            f"SELECT * FROM backup_files WHERE device_id = ? AND substr(rel_path, 1, ?) = ? AND instr({rest}, '/') = 0"
+            " ORDER BY lower(rel_path)", device_id, n, prefix, n)
+        return [dict(d) for d in dirs], files
+
+    def clean_backup_dir(folder: str) -> str:
+        try:
+            return storage.safe_rel_path(folder) if folder.strip("/ ") else ""
+        except ValueError:
+            raise HTTPException(400, "Nieprawidłowa ścieżka.")
+
+    @app.get("/admin/devices/{device_id}/zip")
+    def backup_folder_zip(request: Request, device_id: int, dir: str = ""):
+        """Cały katalog z kopii komputera jako ZIP (generowany w locie, ze strukturą podkatalogów)."""
+        admin = require_user(request, "admin")
+        device = device_or_404(device_id)
+        folder = clean_backup_dir(dir)
+        prefix = f"{folder}/" if folder else ""
+        base = settings.backups_dir / device["folder_name"]
+        rows = db.all("SELECT rel_path FROM backup_files WHERE device_id = ? AND substr(rel_path, 1, ?) = ?"
+                      " ORDER BY rel_path", device_id, len(prefix), prefix)
+        entries = [(r["rel_path"][len(prefix):], base / r["rel_path"]) for r in rows
+                   if (base / r["rel_path"]).is_file() and storage.inside(base, base / r["rel_path"])]
+        if not entries:
+            raise HTTPException(404, "Ten katalog jest pusty.")
+        db.log(admin["id"], "backup_zip", f"{device['name']}: /{folder} ({len(entries)} plików)")
+        name = storage.safe_name(f"{device['name']} - {folder.rsplit('/', 1)[-1] if folder else 'kopia'}")[:100] + ".zip"
+        return StreamingResponse(transfers.zip_stream(entries), media_type="application/zip", headers={
+            "Content-Disposition": f"attachment; filename=\"kopia.zip\"; filename*=UTF-8''{quote(name)}",
+            "Cache-Control": "no-store"})
+
     @app.get("/admin/devices/{device_id}", response_class=HTMLResponse)
-    def admin_device(request: Request, device_id: int, q: str = "", page: int = 1):
+    def admin_device(request: Request, device_id: int, q: str = "", page: int = 1, dir: str = ""):
         require_user(request, "admin")
         device = device_or_404(device_id)
+        folder = clean_backup_dir(dir)
         page = max(1, page)
         per_page = 200
         like = f"%{q.strip()}%"
-        rows = db.all(
-            "SELECT * FROM backup_files WHERE device_id = ? AND rel_path LIKE ?"
-            " ORDER BY uploaded_at DESC LIMIT ? OFFSET ?",
-            device_id, like, per_page + 1, (page - 1) * per_page,
-        )
+        if q.strip():
+            rows = db.all(
+                "SELECT * FROM backup_files WHERE device_id = ? AND rel_path LIKE ?"
+                " ORDER BY uploaded_at DESC LIMIT ? OFFSET ?",
+                device_id, like, per_page + 1, (page - 1) * per_page,
+            )
+            subdirs = []
+        else:
+            subdirs, rows = backup_dir_listing(device_id, folder)
+            rows = rows[(page - 1) * per_page:page * per_page + 1]
         stats = db.one(
             "SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS total FROM backup_files WHERE device_id = ?",
             device_id,
@@ -1737,7 +1785,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return render(
             request, "admin_device.html", device=device, files=rows[:per_page], has_more=len(rows) > per_page,
-            page=page, q=q, stats=stats, token=request.session.pop("new_token", None),
+            page=page, q=q, stats=stats, folder=folder, subdirs=subdirs,
+            crumbs=[("/".join(folder.split("/")[:i + 1]), part) for i, part in enumerate(folder.split("/"))] if folder else [], token=request.session.pop("new_token", None),
             public_url=settings.public_url, install_link=link, installer_ready=installer_ready(),
             days=daily_backups(device_id), nav="devices", special=SPECIAL_FOLDERS,
             report=agents.parse_report(device["agent_report"]), latest_version=agents.installer_version(settings),
