@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Instaluje BSK Backup dla bieżącego użytkownika Windows (nie wymaga uprawnień administratora).
 

@@ -276,6 +276,9 @@ def test_install_link_and_device_quota(app, admin):
     z = zipfile.ZipFile(io.BytesIO(anon.get(f"/instaluj/{code}/BSK-Backup.zip").content))
     cmd = z.read("BSK-Backup/ZAINSTALUJ.cmd").decode()
     assert token in cmd and "install-windows.ps1" in cmd
+    # skrypty PowerShell z BOM — bez niego Windows PowerShell 5.1 psuje polskie znaki i składnię
+    assert z.read("BSK-Backup/install-windows.ps1") == b"\xef\xbb\xbfx"
+    assert z.read("BSK-Backup/bsk-backup.exe") == b"x"
     assert not list(app.state.settings.tmp_dir.glob("installer-*"))  # plik tymczasowy sprzątnięty
 
     h = {"Authorization": f"Bearer {token}"}

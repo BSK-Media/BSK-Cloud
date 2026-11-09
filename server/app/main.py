@@ -1905,7 +1905,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         with zipfile.ZipFile(tmp_name, "w", compression=zipfile.ZIP_DEFLATED) as z:
             for f in INSTALLER_FILES:
-                z.write(settings.installer_dir / f, f"BSK-Backup/{f}")
+                if f.endswith(".ps1"):
+                    # Windows PowerShell 5.1 czyta skrypt bez BOM jako ANSI — polskie znaki psują wtedy składnię
+                    data = (settings.installer_dir / f).read_bytes()
+                    z.writestr(f"BSK-Backup/{f}", data if data.startswith(b"\xef\xbb\xbf") else b"\xef\xbb\xbf" + data)
+                else:
+                    z.write(settings.installer_dir / f, f"BSK-Backup/{f}")
             z.writestr("BSK-Backup/ZAINSTALUJ.cmd", launcher)
             z.writestr("BSK-Backup/CZYTAJ.txt", readme)
         db.run("UPDATE install_links SET downloads = downloads + 1 WHERE id = ?", link["id"])
