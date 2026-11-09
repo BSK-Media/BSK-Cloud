@@ -66,17 +66,34 @@
   {% elif device.agent_report_at %}<p class="small muted mt">Brak ostrzeżeń i błędów w dzienniku programu.</p>{% endif %}
 </section>
 
-<section class="card">
+<section class="card" id="kopia">
   <div class="card-head"><h2>Pliki w kopii</h2><span class="spacer"></span>
-    <form method="get" class="search">{{ ui.icon("search") }}<input name="q" value="{{ q }}" placeholder="Szukaj pliku lub folderu…"></form></div>
-  {% if files %}
+    {% if not q and (subdirs or files) %}<a class="button btn-sm" href="/admin/devices/{{ device.id }}/zip?dir={{ folder|q }}" title="Pobierz ten katalog ze wszystkimi podkatalogami">{{ ui.icon("download") }}Pobierz {{ 'folder' if folder else 'całą kopię' }} (ZIP)</a>{% endif %}
+    <form method="get" class="search" action="#kopia">{{ ui.icon("search") }}<input name="q" value="{{ q }}" placeholder="Szukaj pliku lub folderu…"></form></div>
+  {% if not q %}
+  <nav class="crumbs mb" aria-label="Ścieżka">
+    <a href="/admin/devices/{{ device.id }}#kopia" class="{{ 'here' if not folder }}">{{ ui.icon("folder") }}{{ device.name }}</a>
+    {% for path, name in crumbs %}<span class="sep">/</span><a href="/admin/devices/{{ device.id }}?dir={{ path|q }}#kopia" class="{{ 'here' if loop.last }}">{{ name }}</a>{% endfor %}
+  </nav>
+  {% else %}<p class="small muted">Wyniki wyszukiwania „{{ q }}” we wszystkich folderach · <a href="/admin/devices/{{ device.id }}#kopia">wróć do folderów</a></p>{% endif %}
+  {% if subdirs or files %}
   <div class="table-wrap"><table class="list">
-    <thead><tr><th>Plik</th><th class="hide-sm">Zapisano</th><th>Wersje</th><th></th></tr></thead>
+    <thead><tr><th>Nazwa</th><th class="hide-sm">Zapisano</th><th>Wersje</th><th></th></tr></thead>
     <tbody>
+    {% for d in subdirs %}
+    {% set dpath = (folder ~ '/' ~ d.name) if folder else d.name %}
+    <tr>
+      <td><div class="file"><span class="ficon folder">{{ ui.icon("folder") }}</span><div><a href="/admin/devices/{{ device.id }}?dir={{ dpath|q }}#kopia"><b>{{ d.name }}</b></a>
+        <div class="meta">{{ d.n }} {{ 'plik' if d.n == 1 else ('pliki' if d.n % 10 in [2,3,4] and d.n % 100 not in [12,13,14] else 'plików') }} · {{ d.size|size }}</div></div></div></td>
+      <td class="hide-sm small muted nowrap" title="{{ d.uploaded_at|dt }}">{{ d.uploaded_at|ago }}</td>
+      <td class="small muted">—</td>
+      <td class="actions"><a class="button ghost btn-sm" href="/admin/devices/{{ device.id }}/zip?dir={{ dpath|q }}" title="Pobierz folder (ZIP)">{{ ui.icon("download") }}</a></td>
+    </tr>
+    {% endfor %}
     {% for f in files %}
     <tr>
       <td><div class="file">{{ ui.ficon(f.rel_path) }}<div><a href="/admin/devices/{{ device.id }}/download?path={{ f.rel_path|q }}">{{ f.rel_path.split('/')[-1] }}</a>
-        <div class="meta">{{ f.rel_path }} · {{ f.size|size }}</div></div></div></td>
+        <div class="meta">{% if q %}{{ f.rel_path }} · {% endif %}{{ f.size|size }}</div></div></div></td>
       <td class="hide-sm small muted nowrap" title="{{ f.uploaded_at|dt }}">{{ f.uploaded_at|ago }}</td>
       <td><a href="/admin/devices/{{ device.id }}/versions?path={{ f.rel_path|q }}">{{ f.versions }}</a></td>
       <td class="actions"><a class="button ghost btn-sm" href="/admin/devices/{{ device.id }}/download?path={{ f.rel_path|q }}" title="Pobierz">{{ ui.icon("download") }}</a></td>
@@ -85,10 +102,11 @@
     </tbody>
   </table></div>
   <div class="row">
-    {% if page > 1 %}<a class="button btn-sm" href="?q={{ q|q }}&page={{ page - 1 }}">← Nowsze</a>{% endif %}
-    {% if has_more %}<a class="button btn-sm" href="?q={{ q|q }}&page={{ page + 1 }}">Starsze →</a>{% endif %}
+    {% set dq = ('&dir=' ~ (folder|q)) if folder else '' %}
+    {% if page > 1 %}<a class="button btn-sm" href="?q={{ q|q }}{{ dq }}&page={{ page - 1 }}#kopia">← Poprzednie</a>{% endif %}
+    {% if has_more %}<a class="button btn-sm" href="?q={{ q|q }}{{ dq }}&page={{ page + 1 }}#kopia">Następne →</a>{% endif %}
   </div>
-  {% else %}{{ ui.empty("Brak plików w kopii" ~ (" pasujących do wyszukiwania" if q else " — pojawią się po instalacji programu") ~ ".", "shield") }}{% endif %}
+  {% else %}{{ ui.empty("Brak plików w kopii" ~ (" pasujących do wyszukiwania" if q else (" w tym folderze" if folder else " — pojawią się po instalacji programu")) ~ ".", "shield") }}{% endif %}
 </section>
 
 <section class="card">
