@@ -210,3 +210,91 @@ def test_resolve_special_folders(tmp_path, monkeypatch):
     assert bsk_backup.resolve_folder("@dokumenty") == tmp_path / "Documents"
     assert bsk_backup.resolve_folder("@obrazy") is None
     assert bsk_backup.resolve_folder("@cos") is None
+
+
+def test_sync_from_panel_and_report(tmp_path, server):
+    """„Synchronizuj teraz” z panelu -> skan, raport z dziennikiem i potwierdzenie wykonania."""
+    import json
+    import sqlite3
+    url, token, settings, _ = server
+    watched = tmp_path / "Pulpit"
+    watched.mkdir()
+    agent, state = make_agent(tmp_path, url, token, watched)
+    t = threading.Thread(target=agent.run, daemon=True)
+    t.start()
+    try:
+        assert wait_for(lambda: agent._config_checked > 0)
+        (watched / "skan.txt").write_text("plik do skanu")
+        os.utime(watched / "skan.txt", (time.time() - 60, time.time() - 60))
+        bsk_backup.log.warning("Testowe ostrzeżenie z komputera")
+        con = sqlite3.connect(settings.db_path)
+        con.execute("UPDATE devices SET sync_requested = '2026-11-09T10:00:00+00:00' WHERE name = 'PC-TEST'")
+        con.commit()
+        agent._config_checked = 0  # nie czekaj 2 minut w teście
+        backup = settings.backups_dir / "pc-test" / "Pulpit" / "skan.txt"
+        assert wait_for(lambda: backup.exists()), "plik wysłany po synchronizacji"
+
+        def row():
+            return con.execute("SELECT sync_done, agent_report, agent_version FROM devices WHERE name = 'PC-TEST'").fetchone()
+        assert wait_for(lambda: row()[0] == "2026-11-09T10:00:00+00:00"), "potwierdzenie synchronizacji"
+        report = json.loads(row()[1])
+        assert any("Testowe ostrzeżenie" in e["msg"] for e in report["log"])
+        assert row()[2] == bsk_backup.VERSION
+        assert agent.cfg.last_sync == "2026-11-09T10:00:00+00:00"
+        con.close()
+    finally:
+        agent.stop.set()
+        t.join(10)
+
+
+def test_self_update_downloads_and_verifies(tmp_path, server, monkeypatch):
+    """Nowsza wersja w bsk-dane/instalator -> pobranie, sprawdzenie sumy, uruchomienie aktualizatora."""
+    url, token, settings, _ = server
+    inst = settings.installer_dir
+    inst.mkdir(parents=True, exist_ok=True)
+    (inst / "bsk-backup-agent.exe").write_bytes(b"NOWY-AGENT")
+    (inst / "bsk-backup.exe").write_bytes(b"NOWY-CLI")
+    (inst / "version.txt").write_text("9.0.0")
+    watched = tmp_path / "Docs"
+    watched.mkdir()
+    agent, state = make_agent(tmp_path, url, token, watched)
+    launched = []
+    monkeypatch.setattr(bsk_backup.Agent, "can_self_update", staticmethod(lambda: True))
+    monkeypatch.setattr(agent, "launch_updater", lambda staged: launched.append(staged))
+    agent.refresh_remote_config()
+    assert launched and launched[0]["bsk-backup-agent.exe"].read_bytes() == b"NOWY-AGENT"
+    assert agent.restart_for_update and agent.stop.is_set()
+    # ta sama wersja nie jest pobierana w kółko
+    agent.stop.clear()
+    agent.restart_for_update = False
+    agent.refresh_remote_config()
+    assert len(launched) == 1 and not agent.restart_for_update
+
+    # zła suma kontrolna -> brak aktualizacji, błąd w raporcie
+    agent2, _ = make_agent(tmp_path / "b", url, token, watched)
+    monkeypatch.setattr(agent2, "launch_updater", lambda staged: launched.append(staged))
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError):
+        agent2.download_update({"bsk-backup-agent.exe": "0" * 64})
+    assert agent2.maybe_update({"version": "9.0.0", "files": {"bsk-backup-agent.exe": "0" * 64}}) is False
+    assert "suma kontrolna" in agent2.update_error and len(launched) == 1
+
+
+def test_updater_script_quotes_paths(tmp_path, monkeypatch):
+    """Skrypt aktualizacji: BOM, ścieżki z polskimi znakami i apostrofem w cudzysłowach PowerShell."""
+    calls = []
+    monkeypatch.setattr(bsk_backup.subprocess, "Popen", lambda *a, **k: calls.append(a[0]))
+    install = tmp_path / "Programs" / "O'Brien Łukasz" / "BSKBackup"
+    install.mkdir(parents=True)
+    monkeypatch.setattr(bsk_backup.sys, "executable", str(install / "bsk-backup-agent.exe"))
+    staged_dir = tmp_path / "aktualizacja"
+    staged_dir.mkdir()
+    staged = {"bsk-backup-agent.exe": staged_dir / "bsk-backup-agent.exe.new"}
+    agent, _ = make_agent(tmp_path, "http://127.0.0.1:1", "t", tmp_path)
+    agent.launch_updater(staged)
+    script = staged_dir / "aktualizuj.ps1"
+    data = script.read_bytes()
+    assert data.startswith(b"\xef\xbb\xbf")
+    text = data.decode("utf-8-sig")
+    assert "O''Brien Łukasz" in text and f"Wait-Process -Id {os.getpid()}" in text
+    assert calls and calls[0][-1] == str(script)

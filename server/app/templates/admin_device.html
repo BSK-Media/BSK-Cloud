@@ -28,6 +28,45 @@
 </div>
 
 <section class="card">
+  <div class="card-head">{{ ui.icon("laptop") }}<h2>Program na komputerze</h2><span class="spacer"></span>
+    <form method="post" action="/admin/devices/{{ device.id }}/sync">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="btn-sm primary" {{ 'disabled' if not device.active }}>{{ ui.icon("refresh") }}Synchronizuj teraz</button></form></div>
+  <div class="kv">
+    <div><span>Wersja BSK Backup</span><b>{{ device.agent_version or '—' }}</b>
+      {% if latest_version and device.agent_version and newer(latest_version, device.agent_version) %}
+        <span class="tag warn" title="Program zaktualizuje się sam przy najbliższym połączeniu (od wersji 1.3.0)">aktualizacja do {{ latest_version }} czeka</span>
+      {% elif latest_version and device.agent_version == latest_version %}<span class="tag ok">aktualna</span>{% endif %}</div>
+    <div><span>Synchronizacja z panelu</span><b>
+      {% if device.sync_requested and device.sync_requested != device.sync_done %}zlecona {{ device.sync_requested|ago }} — czeka na komputer
+      {% elif device.sync_done %}wykonana {{ device.sync_done|ago }}{% else %}—{% endif %}</b></div>
+    <div><span>Raport z komputera</span><b>{{ device.agent_report_at|ago if device.agent_report_at else 'jeszcze nie przyszedł' }}</b></div>
+    {% if report %}
+    <div><span>Pliki w kolejce na komputerze</span><b>{{ report.pending }}</b></div>
+    <div><span>Ostatnia wysyłka (wg komputera)</span><b>{{ report.last_upload|ago if report.last_upload else 'nigdy' }}</b></div>
+    {% if report.folders %}<div><span>Obserwowane foldery</span><b class="small">{{ report.folders|join(", ") }}</b></div>{% endif %}
+    {% endif %}
+  </div>
+  {% if report.paused %}<div class="flash warn mt">{{ report.paused }}</div>{% endif %}
+  {% if report.update_error %}<div class="flash warn mt">Aktualizacja programu nie powiodła się: {{ report.update_error }}</div>{% endif %}
+  {% if report.errors %}
+  <h3 class="mt">Pliki, których nie udało się wysłać</h3>
+  <div class="table-wrap"><table class="list compact"><tbody>
+    {% for path, err in report.errors %}<tr><td class="small">{{ path }}</td><td class="small muted">{{ err }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% endif %}
+  {% if report.log %}
+  <details class="mt" {{ 'open' if report.errors or report.paused }}><summary>Dziennik programu (ostatnie ostrzeżenia i błędy)</summary>
+    <div class="table-wrap"><table class="list compact"><tbody>
+      {% for e in report.log|reverse %}<tr><td class="small muted nowrap">{{ e.t|dt }}</td>
+        <td><span class="tag {{ 'danger' if e.level in ['ERROR', 'CRITICAL'] else 'warn' if e.level == 'WARNING' else '' }}">{{ e.level }}</span></td>
+        <td class="small">{{ e.msg }}</td></tr>{% endfor %}
+    </tbody></table></div>
+  </details>
+  {% elif device.agent_report_at %}<p class="small muted mt">Brak ostrzeżeń i błędów w dzienniku programu.</p>{% endif %}
+</section>
+
+<section class="card">
   <div class="card-head"><h2>Pliki w kopii</h2><span class="spacer"></span>
     <form method="get" class="search">{{ ui.icon("search") }}<input name="q" value="{{ q }}" placeholder="Szukaj pliku lub folderu…"></form></div>
   {% if files %}

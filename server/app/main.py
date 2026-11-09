@@ -26,7 +26,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import backup, charts, chunks, office, security, storage, thumbs, transfers
+from . import agents, backup, charts, chunks, office, security, storage, thumbs, transfers
 from .config import Settings
 from .db import Database, iso_in, now_iso
 from . import notify
@@ -120,6 +120,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     _bootstrap_admin(db, settings)
     if settings.backup_dir and os.environ.get("BSK_BACKUP_SCHEDULER", "1") == "1":
         backup.start_scheduler(settings, db)
+    if os.environ.get("BSK_ALERT_SCHEDULER", "1") == "1":
+        agents.start_alerts(settings, db, lambda subject, body, link: notify_admin(settings, subject, body, link))
 
     app = FastAPI(title=settings.site_name, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
@@ -1738,6 +1740,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             page=page, q=q, stats=stats, token=request.session.pop("new_token", None),
             public_url=settings.public_url, install_link=link, installer_ready=installer_ready(),
             days=daily_backups(device_id), nav="devices", special=SPECIAL_FOLDERS,
+            report=agents.parse_report(device["agent_report"]), latest_version=agents.installer_version(settings),
+            newer=agents.newer,
             chosen=[ln for ln in device["folders"].splitlines() if ln.startswith("@")],
             extra="\n".join(ln for ln in device["folders"].splitlines() if ln and not ln.startswith("@")),
         )
@@ -1784,6 +1788,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.run("DELETE FROM install_links WHERE device_id = ?", device_id)
         db.log(admin["id"], "device_token_rotated", device["name"])
         request.session["new_token"] = token
+        return RedirectResponse(f"/admin/devices/{device_id}", 303)
+
+    @app.post("/admin/devices/{device_id}/sync")
+    def request_sync(request: Request, device_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        device = device_or_404(device_id)
+        db.run("UPDATE devices SET sync_requested = ? WHERE id = ?", now_iso(), device_id)
+        db.log(admin["id"], "device_sync_requested", device["name"])
+        flash(request, "Zlecono synchronizację — program wykona ją w ciągu ~2 minut, gdy komputer jest włączony"
+              " (starsze wersje programu: po aktualizacji).")
         return RedirectResponse(f"/admin/devices/{device_id}", 303)
 
     @app.post("/admin/devices/{device_id}/toggle")
@@ -2754,15 +2769,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         device = db.one("SELECT * FROM devices WHERE token_hash = ?", security.token_hash(auth[7:].strip()))
         if not device or not device["active"]:
             raise HTTPException(401, "Token nieprawidłowy albo urządzenie wyłączone.")
-        db.run("UPDATE devices SET last_seen = ?, last_ip = ? WHERE id = ?", now_iso(), client_ip(request), device["id"])
-        return device
+        version = agents.version_from_ua(request.headers.get("user-agent", "")) or device["agent_version"]
+        db.run("UPDATE devices SET last_seen = ?, last_ip = ?, agent_version = ? WHERE id = ?", now_iso(),
+               client_ip(request), version, device["id"])
+        return db.one("SELECT * FROM devices WHERE id = ?", device["id"])
 
     @app.get("/api/agent/config")
     def agent_config(request: Request):
-        """Foldery ustawione dla tego komputera w panelu (pusta lista = ustawienia lokalne agenta)."""
+        """Ustawienia z panelu: foldery (pusta lista = ustawienia lokalne), synchronizacja, aktualizacja."""
         device = device_from_token(request)
         return {"folders": [ln for ln in device["folders"].splitlines() if ln.strip()],
-                "lan_server": settings.lan_url}
+                "lan_server": settings.lan_url,
+                "sync": device["sync_requested"] if device["sync_requested"] != device["sync_done"] else "",
+                "update": agents.update_offer(settings, device["agent_version"])}
+
+    @app.post("/api/agent/report")
+    async def agent_report(request: Request):
+        """Stan programu na komputerze: kolejka, błędy, dziennik, wykonana synchronizacja."""
+        device = device_from_token(request)
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Nieprawidłowy raport.")
+        if not isinstance(body, dict):
+            raise HTTPException(400, "Nieprawidłowy raport.")
+        report = agents.clean_report(body)
+        sync_done = str(body.get("sync_done") or "")[:40]
+        if sync_done and sync_done == device["sync_requested"]:
+            db.run("UPDATE devices SET sync_done = ? WHERE id = ?", sync_done, device["id"])
+        db.run("UPDATE devices SET agent_report = ?, agent_report_at = ? WHERE id = ?",
+               json.dumps(report, ensure_ascii=False), now_iso(), device["id"])
+        return {"ok": True}
+
+    @app.get("/api/agent/update/{name}")
+    def agent_update_file(request: Request, name: str):
+        """Nowa wersja programu z bsk-dane/instalator (tylko dla zalogowanego tokenem komputera)."""
+        device_from_token(request)
+        if name not in agents.UPDATE_FILES or not (settings.installer_dir / name).is_file():
+            raise HTTPException(404, "Brak pliku aktualizacji.")
+        return FileResponse(settings.installer_dir / name, media_type="application/octet-stream", filename=name)
 
     @app.get("/api/agent/ping")
     def agent_ping(request: Request):

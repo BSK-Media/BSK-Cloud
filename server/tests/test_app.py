@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 import hashlib
 import html
 import json
@@ -1183,3 +1184,61 @@ def test_gallery_pages_large_folders(app, admin):
     assert "data-folder-select" in page and "data-folder-source" in page
     more = admin.get("/admin/my", params={"show": 600}).text
     assert more.count('class="gcard"') == 320 and "Pokaż więcej" not in more
+
+
+def test_agent_remote_control(app, admin):
+    """Wersja z User-Agent, „Synchronizuj teraz”, raport z komputera, oferta aktualizacji, alert e-mail."""
+    import json as _json
+    from app import agents
+    tok = csrf_of(admin, "/admin/devices/new")
+    r = admin.post("/admin/devices/new", data={"name": "PC-JULEK", "employee": "Julek", "csrf": tok})
+    token = re.search(r'class="token">([^<]+)<', r.text).group(1)
+    anon = TestClient(app)
+    h = {"Authorization": f"Bearer {token}", "User-Agent": "BSK-Backup/1.3.0"}
+    cfg = anon.get("/api/agent/config", headers=h).json()
+    assert cfg["sync"] == "" and cfg["update"] is None
+    dev = app.state.db.one("SELECT * FROM devices WHERE name = 'PC-JULEK'")
+    assert dev["agent_version"] == "1.3.0"
+
+    # synchronizacja z panelu
+    tok = csrf_of(admin, f"/admin/devices/{dev['id']}")
+    admin.post(f"/admin/devices/{dev['id']}/sync", data={"csrf": tok})
+    sync = anon.get("/api/agent/config", headers=h).json()["sync"]
+    assert sync
+    page = admin.get(f"/admin/devices/{dev['id']}").text
+    assert "czeka na komputer" in page and "Synchronizuj teraz" in page
+    report = {"version": "1.3.0", "pending": 4, "done": 10, "last_upload": "2026-11-09T10:00:00+00:00",
+              "errors": [["C:/Users/j/a.pst", "brak dostępu: plik zablokowany"]], "sync_done": sync,
+              "log": [{"t": "2026-11-09T10:01:00+00:00", "level": "ERROR", "msg": "<b>Coś</b> poszło nie tak"}],
+              "folders": ["C:/Users/j/Desktop"], "paused": ""}
+    assert anon.post("/api/agent/report", headers=h, json=report).status_code == 200
+    assert anon.get("/api/agent/config", headers=h).json()["sync"] == ""
+    page = admin.get(f"/admin/devices/{dev['id']}").text
+    assert "wykonana" in page and "a.pst" in page and "&lt;b&gt;Coś&lt;/b&gt;" in page and "Pliki w kolejce" in page
+    assert anon.post("/api/agent/report", headers={"Authorization": "Bearer zly"}, json=report).status_code == 401
+
+    # aktualizacja: nowsza wersja w bsk-dane/instalator
+    inst = app.state.settings.installer_dir
+    (inst / "bsk-backup-agent.exe").write_bytes(b"AGENT-1.4")
+    (inst / "bsk-backup.exe").write_bytes(b"CLI-1.4")
+    (inst / "version.txt").write_text("1.4.0\r\n")
+    upd = anon.get("/api/agent/config", headers=h).json()["update"]
+    assert upd["version"] == "1.4.0"
+    assert upd["files"]["bsk-backup-agent.exe"] == hashlib.sha256(b"AGENT-1.4").hexdigest()
+    assert anon.get("/api/agent/update/bsk-backup-agent.exe", headers=h).content == b"AGENT-1.4"
+    assert anon.get("/api/agent/update/bsk-backup-agent.exe").status_code == 401
+    assert anon.get("/api/agent/update/..%2Fversion.txt", headers=h).status_code == 404
+    assert "aktualizacja do 1.4.0 czeka" in admin.get(f"/admin/devices/{dev['id']}").text
+    h_new = {**h, "User-Agent": "BSK-Backup/1.4.0"}
+    assert anon.get("/api/agent/config", headers=h_new).json()["update"] is None
+
+    # alert: brak kontaktu od 4 dni -> jeden e-mail, kolejny dopiero po następnej przerwie
+    old = (datetime.now(timezone.utc) - timedelta(days=4)).isoformat()
+    app.state.db.run("UPDATE devices SET last_seen = ? WHERE id = ?", old, dev["id"])
+    sent = []
+    assert agents.check_alerts(app.state.settings, app.state.db, lambda *a: sent.append(a)) == 1
+    assert "PC-JULEK" in sent[0][0] and f"/admin/devices/{dev['id']}" in sent[0][2]
+    assert agents.check_alerts(app.state.settings, app.state.db, lambda *a: sent.append(a)) == 0
+    anon.get("/api/agent/ping", headers=h)  # komputer wrócił
+    assert agents.check_alerts(app.state.settings, app.state.db, lambda *a: sent.append(a)) == 0
+    assert _json.loads(app.state.db.one("SELECT agent_report FROM devices WHERE id = ?", dev["id"])["agent_report"])["pending"] == 4

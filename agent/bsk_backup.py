@@ -15,15 +15,18 @@ Użycie:
 from __future__ import annotations
 
 import argparse
+import collections
 import fnmatch
 import hashlib
 import json
 import logging
 import os
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -31,11 +34,45 @@ import requests
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-VERSION = "1.2.1"
-CONFIG_REFRESH_S = 3600
+VERSION = "1.3.0"
+CONFIG_REFRESH_S = 120  # co tyle sprawdza ustawienia z panelu (foldery, „Synchronizuj teraz”, aktualizacja)
+UPDATE_RETRY_S = 6 * 3600  # nieudana aktualizacja do tej samej wersji — kolejna próba najwcześniej po 6 h
 CHUNK_THRESHOLD = 50 * 1024 * 1024  # większe pliki idą w kawałkach (limit Cloudflare: 100 MB na żądanie)
 LAN_RECHECK_S = 300
 log = logging.getLogger("bsk-backup")
+
+
+class RecentLog(logging.Handler):
+    """Ostatnie ostrzeżenia i błędy w pamięci — trafiają do panelu administratora w raporcie."""
+
+    def __init__(self, size: int = 40):
+        super().__init__(logging.WARNING)
+        self.items: collections.deque = collections.deque(maxlen=size)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = record.getMessage()
+            if record.exc_info and record.exc_info[1] is not None:
+                msg += f" ({type(record.exc_info[1]).__name__}: {record.exc_info[1]})"
+            self.items.append({"t": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
+                               "level": record.levelname, "msg": msg[:500]})
+        except Exception:  # noqa: BLE001
+            pass
+
+
+RECENT = RecentLog()
+log.addHandler(RECENT)
+
+
+def vtuple(v: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(x) for x in str(v).strip().split("."))
+    except ValueError:
+        return ()
+
+
+def utc_iso(ts: float | None) -> str:
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat() if ts else ""
 
 DEFAULT_EXCLUDES = [
     # pliki tymczasowe i blokady programów
@@ -143,12 +180,15 @@ class Config:
         self.scan_interval_minutes = float(data.get("scan_interval_minutes", 60))
         self.max_file_mb = int(data.get("max_file_mb", 20480))
         self.verify_tls = data.get("verify_tls", True)
+        self.last_sync = str(data.get("last_sync", ""))  # ostatnia wykonana „Synchronizuj teraz” z panelu
+        self.update_attempt = data.get("update_attempt") or {}
 
     def to_dict(self) -> dict:
         return {
             "server": self.server, "lan_server": self.lan_server, "token": self.token, "folders": self.folders, "excludes": self.excludes,
             "settle_seconds": self.settle_seconds, "scan_interval_minutes": self.scan_interval_minutes,
             "max_file_mb": self.max_file_mb, "verify_tls": self.verify_tls,
+            "last_sync": self.last_sync, "update_attempt": self.update_attempt,
         }
 
     def save(self) -> None:
@@ -273,6 +313,11 @@ class Agent:
         self._base = config.server
         self._base_checked = 0.0
         self.stop = threading.Event()
+        self.pause_reason = ""
+        self._sync_token = ""  # zlecona synchronizacja, czeka na zakończenie skanu
+        self._sync_done = ""
+        self.update_error = ""
+        self.restart_for_update = False
 
     # --- filtrowanie
     def excluded(self, path: Path, root: Path) -> bool:
@@ -485,6 +530,7 @@ class Agent:
     def pause(self, seconds: float, reason: str) -> None:
         log.error("Wstrzymuję wysyłanie na %d min: %s", seconds // 60, reason)
         self.paused_until = time.time() + seconds
+        self.pause_reason = reason
 
     def go_offline(self, reason: str) -> None:
         if self.offline_backoff <= 15:
@@ -523,6 +569,20 @@ class Agent:
         if lan and lan != self.cfg.lan_server:  # np. NAS zmienił adres w sieci biurowej — panel jest ważniejszy
             self.cfg.lan_server = lan
             self.cfg.save()
+        sync = str(data.get("sync") or "")
+        if sync and sync != self.cfg.last_sync and sync != self._sync_token:
+            log.info("Synchronizacja zlecona z panelu — skanuję foldery i wysyłam zaległe pliki")
+            self._sync_token = sync
+            self.paused_until = 0.0  # spróbuj od razu, także po wcześniejszej przerwie
+            self.offline_backoff = 15.0
+            self.folders_changed.set()
+        if isinstance(data.get("update"), dict):
+            self.maybe_update(data["update"])
+        changed = self._apply_remote_folders(data)
+        self.report()
+        return changed
+
+    def _apply_remote_folders(self, data: dict) -> bool:
         entries = [e for e in data.get("folders") or [] if isinstance(e, str) and e.strip()]
         if not entries:
             return False  # brak ustawień w panelu — zostają ustawienia lokalne
@@ -540,6 +600,109 @@ class Agent:
         self.roots = [(Path(f["path"]), f["label"]) for f in new]
         log.info("Nowe foldery z panelu: %s", ", ".join(f["path"] for f in new))
         return True
+
+    # --- raport dla panelu administratora
+    def report(self) -> None:
+        c = self.state.counts()
+        body = {
+            "version": VERSION, "pending": c["pending"], "done": c["done"], "last_upload": utc_iso(c["last_upload"]),
+            "errors": [[p, e] for p, e in c["errors"]], "log": list(RECENT.items),
+            "folders": [str(r) for r, _ in self.roots],
+            "paused": self.pause_reason if time.time() < self.paused_until else "",
+            "sync_done": self._sync_done, "update_error": self.update_error,
+        }
+        try:
+            self.http.post(self.base() + "/api/agent/report", json=body, timeout=15)
+        except requests.RequestException:
+            pass
+
+    def _sync_finished(self) -> None:
+        if not self._sync_token:
+            return
+        self.cfg.last_sync = self._sync_done = self._sync_token
+        self._sync_token = ""
+        self.cfg.save()
+        log.info("Synchronizacja z panelu zakończona")
+        self.report()
+
+    # --- automatyczna aktualizacja (tylko zbudowany program .exe w Windows)
+    @staticmethod
+    def can_self_update() -> bool:
+        return sys.platform == "win32" and bool(getattr(sys, "frozen", False))
+
+    def maybe_update(self, offer: dict) -> bool:
+        version = str(offer.get("version") or "")
+        files = offer.get("files") or {}
+        if not (vtuple(version) > vtuple(VERSION) and isinstance(files, dict) and files) or not self.can_self_update():
+            return False
+        att = self.cfg.update_attempt
+        if att.get("version") == version and time.time() - float(att.get("at", 0)) < UPDATE_RETRY_S:
+            return False
+        self.cfg.update_attempt = {"version": version, "at": time.time()}
+        self.cfg.save()
+        try:
+            staged = self.download_update(files)
+            self.launch_updater(staged)
+        except Exception as exc:  # noqa: BLE001
+            self.update_error = f"{version}: {exc}"[:300]
+            log.error("Aktualizacja do %s nie powiodła się: %s", version, exc)
+            return False
+        log.info("Aktualizacja do wersji %s — program uruchomi się ponownie", version)
+        self.restart_for_update = True
+        self.stop.set()
+        return True
+
+    def download_update(self, files: dict) -> dict[str, Path]:
+        target_dir = self.cfg.path.parent / "aktualizacja"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        staged = {}
+        for name, sha in files.items():
+            if name not in ("bsk-backup-agent.exe", "bsk-backup.exe"):
+                continue
+            dest = target_dir / (name + ".new")
+            h = hashlib.sha256()
+            with self.http.get(f"{self.base()}/api/agent/update/{name}", stream=True, timeout=(15, 300)) as r:
+                if r.status_code != 200:
+                    raise RuntimeError(f"pobieranie {name}: HTTP {r.status_code}")
+                with open(dest, "wb") as f:
+                    for chunk in r.iter_content(1024 * 1024):
+                        f.write(chunk)
+                        h.update(chunk)
+            if h.hexdigest() != str(sha).lower():
+                dest.unlink(missing_ok=True)
+                raise RuntimeError(f"suma kontrolna {name} się nie zgadza")
+            staged[name] = dest
+        if "bsk-backup-agent.exe" not in staged:
+            raise RuntimeError("brak pliku bsk-backup-agent.exe")
+        return staged
+
+    def launch_updater(self, staged: dict[str, Path]) -> None:
+        """Skrypt PowerShell czeka na zamknięcie programu, podmienia pliki .exe i uruchamia nową wersję."""
+        install_dir = Path(sys.executable).resolve().parent
+        agent_exe = install_dir / "bsk-backup-agent.exe"
+
+        def q(p) -> str:
+            return "'" + str(p).replace("'", "''") + "'"
+
+        pairs = ", ".join(f"@({q(src)}, {q(install_dir / name)})" for name, src in staged.items())
+        script = staged["bsk-backup-agent.exe"].parent / "aktualizuj.ps1"
+        script.write_text(
+            "$ErrorActionPreference = 'SilentlyContinue'\r\n"
+            f"Wait-Process -Id {os.getpid()} -Timeout 120\r\n"
+            "Start-Sleep -Seconds 1\r\n"
+            f"foreach ($pair in @({pairs})) {{\r\n"
+            "  for ($i = 0; $i -lt 15; $i++) {\r\n"
+            "    try { Copy-Item -LiteralPath $pair[0] -Destination $pair[1] -Force -ErrorAction Stop; break }\r\n"
+            "    catch { Start-Sleep -Seconds 2 }\r\n"
+            "  }\r\n"
+            "}\r\n"
+            f"Start-Process -FilePath {q(agent_exe)} -ArgumentList 'run' -WindowStyle Hidden\r\n",
+            encoding="utf-8-sig",  # BOM: Windows PowerShell 5.1 poprawnie czyta polskie znaki w ścieżkach
+        )
+        flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+                          "-File", str(script)], creationflags=flags, close_fds=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _start_observer(self):
         observer = Observer()
@@ -570,13 +733,15 @@ class Agent:
 
     def _scan_loop(self) -> None:
         while not self.stop.is_set():
+            self.folders_changed.clear()
             try:
                 added = self.scan()
                 if added:
                     log.info("Skan: %d plików do sprawdzenia/wysłania", added)
+                if not self.stop.is_set():
+                    self._sync_finished()
             except Exception:  # noqa: BLE001
                 log.exception("Błąd skanowania")
-            self.folders_changed.clear()
             deadline = time.time() + self.cfg.scan_interval_minutes * 60
             while not self.stop.is_set() and not self.folders_changed.is_set() and time.time() < deadline:
                 self.stop.wait(2)

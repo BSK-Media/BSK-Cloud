@@ -15,7 +15,7 @@
     </div>
     <div class="mt">{% if d.quota_mb %}{{ charts.meter(d.total_size, d.quota_mb * 1048576, d.name) }}{% endif %}
       <div class="row small muted num"><span>{{ d.total_size|size }}{% if d.quota_mb %} z {{ (d.quota_mb * 1048576)|size }}{% else %} · bez limitu{% endif %}</span><span class="spacer"></span><span>{{ d.file_count }} plików</span></div></div>
-    <div class="small muted">Ostatnia kopia: {{ d.last_backup|ago }} · kontakt: {{ d.last_seen|ago }}</div>
+    <div class="small muted">Ostatnia kopia: {{ d.last_backup|ago }} · kontakt: {{ d.last_seen|ago }}{% if d.agent_version %} · wersja {{ d.agent_version }}{% endif %}</div>
   </a>
   {% endfor %}
 </div>

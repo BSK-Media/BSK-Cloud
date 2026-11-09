@@ -197,6 +197,13 @@ MIGRATIONS = [
     ("files", "office_version", "INTEGER NOT NULL DEFAULT 1"),
     ("files", "modified_at", "TEXT"),
     ("files", "modified_by", "INTEGER"),
+    # zdalna kontrola BSK Backup
+    ("devices", "agent_version", "TEXT NOT NULL DEFAULT ''"),
+    ("devices", "sync_requested", "TEXT NOT NULL DEFAULT ''"),
+    ("devices", "sync_done", "TEXT NOT NULL DEFAULT ''"),
+    ("devices", "agent_report", "TEXT NOT NULL DEFAULT ''"),
+    ("devices", "agent_report_at", "TEXT"),
+    ("devices", "alert_sent_at", "TEXT"),
 ]
 
 
