@@ -1964,7 +1964,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "BSK Backup - kopia zapasowa plików na serwer BSK Media\r\n\r\n"
             "1. Rozpakuj ten plik ZIP (prawy przycisk -> Wyodrębnij wszystkie).\r\n"
             "2. Kliknij dwukrotnie ZAINSTALUJ.cmd.\r\n"
-            "3. Jeśli Windows pokaże ostrzeżenie SmartScreen: 'Więcej informacji' -> 'Uruchom mimo to'.\r\n\r\n"
+            "3. Jeśli Windows pokaże ostrzeżenie SmartScreen: 'Więcej informacji' -> 'Uruchom mimo to'.\r\n"
+            "4. Jeśli antywirus (np. Avast) zablokuje plik, przywróć go z kwarantanny lub dodaj folder\r\n"
+            "   do wyjątków, rozpakuj ZIP ponownie i uruchom ZAINSTALUJ.cmd jeszcze raz.\r\n\r\n"
             "Program działa w tle i uruchamia się sam po zalogowaniu.\r\n"
         )
         with zipfile.ZipFile(tmp_name, "w", compression=zipfile.ZIP_DEFLATED) as z:
