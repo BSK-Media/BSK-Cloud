@@ -743,6 +743,17 @@ def test_my_drive_is_private(app, admin):
     assert "paszport.jpg" in admin.get("/search", params={"q": "paszp"}).text
 
 
+def thumb_when_ready(client, url, **kw):
+    """Miniatury powstają w tle: 202 = w kolejce, strona pyta ponownie."""
+    import time
+    for _ in range(150):
+        r = client.get(url, **kw)
+        if r.status_code != 202:
+            return r
+        time.sleep(0.2)
+    return r
+
+
 def test_thumbnails_and_safe_preview(app, admin):
     import shutil as sh
     import subprocess
@@ -758,7 +769,9 @@ def test_thumbnails_and_safe_preview(app, admin):
         files.append(("files", ("oferta.pdf", buf.getvalue())))
     admin.post("/admin/clients/2/upload", data={"csrf": tok}, files=files)
     ids = {r["original_name"]: r["id"] for r in app.state.db.all("SELECT id, original_name FROM files")}
-    r = admin.get(f"/files/{ids['zdjecie.png']}/thumb")
+    first = admin.get(f"/files/{ids['zdjecie.png']}/thumb")
+    assert first.status_code in (200, 202) and "no-store" in first.headers.get("cache-control", "no-store")
+    r = thumb_when_ready(admin, f"/files/{ids['zdjecie.png']}/thumb")
     assert r.status_code == 200 and r.headers["content-type"] == "image/webp"
     from PIL import Image
     import io
@@ -767,7 +780,7 @@ def test_thumbnails_and_safe_preview(app, admin):
     assert max(Image.open(io.BytesIO(big.content)).size) == 2000
     assert "max-age" in r.headers["cache-control"]
     if "oferta.pdf" in ids:
-        assert admin.get(f"/files/{ids['oferta.pdf']}/thumb").status_code == 200
+        assert thumb_when_ready(admin, f"/files/{ids['oferta.pdf']}/thumb").status_code == 200
         v = admin.get(f"/files/{ids['oferta.pdf']}/view")
         assert v.status_code == 200 and v.headers["content-disposition"].startswith("inline")
         assert v.headers["x-frame-options"] == "SAMEORIGIN"
@@ -781,7 +794,7 @@ def test_thumbnails_and_safe_preview(app, admin):
                         str(vid)], check=True, timeout=60)
         admin.post("/admin/clients/2/upload", data={"csrf": tok}, files=[("files", ("klip.mp4", vid.read_bytes()))])
         vid_id = app.state.db.one("SELECT id FROM files WHERE original_name = 'klip.mp4'")["id"]
-        assert admin.get(f"/files/{vid_id}/thumb").status_code == 200
+        assert thumb_when_ready(admin, f"/files/{vid_id}/thumb").status_code == 200
         rng = admin.get(f"/files/{vid_id}/view", headers={"Range": "bytes=0-99"})
         assert rng.status_code == 206
     page = admin.get("/admin/clients/2").text
@@ -1130,7 +1143,7 @@ def test_import_from_nas_folder(app, admin):
     assert not (s.import_dir / "Grecja 2021" / "Dzień 2").exists()  # puste katalogi posprzątane
     assert app.state.db.one("SELECT COUNT(*) AS n FROM files")["n"] == 3
     fid = app.state.db.one("SELECT id FROM files WHERE original_name = 'zachod.jpg'")["id"]
-    assert admin.get(f"/files/{fid}/thumb").status_code == 200
+    assert thumb_when_ready(admin, f"/files/{fid}/thumb").status_code == 200
     # ponowny import tych samych plików -> pominięte, nic nie nadpisane
     (s.import_dir / "faktura.pdf").write_bytes(b"%PDF")
     admin.post("/admin/import", data={"csrf": tok, "owner_id": 1, "names": ["faktura.pdf"]})
@@ -1150,3 +1163,20 @@ def test_import_from_nas_folder(app, admin):
 def test_connection_indicator(app, admin):
     assert admin.get("/api/connection").json() == {"lan": True}
     assert admin.get("/api/connection", headers={"CF-Ray": "abc-WAW"}).json() == {"lan": False}
+
+
+def test_gallery_pages_large_folders(app, admin):
+    """Tysiące plików w katalogu: galeria porcjami, lista katalogów do „Przenieś” tylko raz na stronie."""
+    db = app.state.db
+    for i in range(40):
+        db.run("INSERT INTO folders (owner_id, parent_id, name, created_at) VALUES (1, NULL, ?, '2026-01-01')", f"kat{i:02d}")
+    for i in range(320):
+        db.run("INSERT INTO files (client_id, rel_path, original_name, size, sha256, uploaded_by, uploaded_at, note)"
+               " VALUES (1, ?, ?, 10, ?, 1, ?, '')", f"_prywatne/admin/p{i}.txt", f"p{i:03d}.txt", f"{i:064d}",
+               f"2026-01-01T00:00:{i % 60:02d}.{i:06d}+00:00")
+    page = admin.get("/admin/my").text
+    assert page.count('class="gcard"') == 300 and "Pokaż więcej" in page and "show=600" in page
+    assert page.count(">kat05</option>") == 1  # wcześniej: lista katalogów powtarzana przy każdym pliku
+    assert "data-folder-select" in page and "data-folder-source" in page
+    more = admin.get("/admin/my", params={"show": 600}).text
+    assert more.count('class="gcard"') == 320 and "Pokaż więcej" not in more
