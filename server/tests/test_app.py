@@ -1274,3 +1274,136 @@ def test_device_backup_folders_and_zip(app, admin):
     assert len(whole.namelist()) == 5 and "Documents/umowa.docx" in whole.namelist()
     assert admin.get(f"/admin/devices/{dev}/zip", params={"dir": "Nie/ma"}).status_code == 404
     assert TestClient(app, follow_redirects=False).get(f"/admin/devices/{dev}/zip").status_code in (303, 401, 403)
+
+
+def add_staff(admin, username="julek", name="Julek Maliński"):
+    tok = csrf_of(admin, "/admin/team")
+    r = admin.post("/admin/team", data={"username": username, "display_name": name, "email": "", "csrf": tok})
+    m = re.search(r"Login: " + re.escape(username) + r"\s+Hasło: (\S+)\"", r.text)
+    assert m, r.text[-2000:]
+    return m.group(1)
+
+
+def staff_client(app, username, password):
+    c = TestClient(app)
+    r = login(c, username, password)
+    assert "Zmiana hasła" in r.text
+    tok = csrf_of(c, "/account")
+    c.post("/account/password", data={"current": password, "new": "Pracownik123", "repeat": "Pracownik123", "csrf": tok})
+    return c
+
+
+def test_team_space_and_staff_accounts(app, admin):
+    """Konta pracowników zakłada admin; wspólna przestrzeń: pliki, katalogi, przenoszenie, kosz — bez dostępu do reszty."""
+    create_client_account(admin)
+    cid = app.state.db.one("SELECT id FROM users WHERE username = 'jan.kowalski'")["id"]
+    tok = csrf_of(admin, f"/admin/clients/{cid}")
+    admin.post(f"/admin/clients/{cid}/upload", data={"csrf": tok}, files=[("files", ("tajne-klienta.pdf", b"K"))])
+    admin.post("/admin/my/upload", data={"csrf": tok}, files=[("files", ("moje-prywatne.txt", b"P"))])
+    pw = add_staff(admin)
+    staff = staff_client(app, "julek", pw)
+    r = staff.get("/", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/team"
+    page = staff.get("/team").text
+    assert "Wspólne pliki zespołu" in page and "Julek Maliński" in page and "Administrator" in page
+
+    # pracownik wgrywa plik do wspólnych i zakłada katalog
+    tok = csrf_of(staff, "/team")
+    r = staff.post("/team/upload", data={"csrf": tok}, files=[("files", ("brief.docx", b"BRIEF"))])
+    assert "Zapisano we wspólnych plikach: 1" in r.text
+    team = app.state.db.one("SELECT id FROM users WHERE role = 'team'")["id"]
+    brief = app.state.db.one("SELECT * FROM files WHERE original_name = 'brief.docx'")
+    assert brief["client_id"] == team and brief["rel_path"].startswith("_wspolne/")
+    assert (app.state.settings.clients_dir / brief["rel_path"]).read_bytes() == b"BRIEF"
+    staff.post(f"/spaces/{team}/folders", data={"name": "Kampania", "csrf": tok})
+    folder = app.state.db.one("SELECT * FROM folders WHERE owner_id = ? AND name = 'Kampania'", team)
+    assert folder
+    staff.post(f"/files/{brief['id']}/move", data={"folder_id": folder["id"], "csrf": tok})
+    assert app.state.db.one("SELECT folder_id FROM files WHERE id = ?", brief["id"])["folder_id"] == folder["id"]
+    assert "brief.docx" in staff.get("/team", params={"folder": folder["id"]}).text
+
+    # wysyłka w kawałkach (przeglądarka) do wspólnych
+    r = staff.post("/api/uploads", json={"name": "duzy.bin", "size": 3, "dest": {"kind": "team", "folder_id": folder["id"]}},
+                   headers={"X-CSRF-Token": tok})
+    assert r.status_code == 200, r.text
+    staff.put(f"/api/uploads/{r.json()['id']}", params={"offset": 0}, content=b"abc", headers={"X-CSRF-Token": tok})
+    assert app.state.db.one("SELECT folder_id FROM files WHERE original_name = 'duzy.bin'")["folder_id"] == folder["id"]
+
+    # admin widzi plik pracownika i znacznik nowych plików
+    assert "Wspólne" in admin.get("/admin").text
+    assert "brief.docx" in admin.get("/team", params={"folder": folder["id"]}).text
+    tok_a = csrf_of(admin, "/team")
+    admin.post("/team/upload", data={"csrf": tok_a}, files=[("files", ("od-szefa.pdf", b"S"))])
+    szef = app.state.db.one("SELECT id FROM files WHERE original_name = 'od-szefa.pdf'")["id"]
+    assert staff.get(f"/files/{szef}/download").content == b"S"
+    # pracownik może przenieść do kosza plik innej osoby ze wspólnych (admin przywróci z kosza)
+    staff.post(f"/files/{szef}/delete", data={"csrf": tok})
+    assert app.state.db.one("SELECT deleted_at FROM files WHERE id = ?", szef)["deleted_at"]
+    assert "od-szefa.pdf" in admin.get("/admin/trash").text
+
+    # brak dostępu do klientów, dysku admina i panelu
+    tajne = app.state.db.one("SELECT id FROM files WHERE original_name = 'tajne-klienta.pdf'")["id"]
+    prywatne = app.state.db.one("SELECT id FROM files WHERE original_name = 'moje-prywatne.txt'")["id"]
+    for url in (f"/files/{tajne}/download", f"/files/{prywatne}/download", f"/files/{tajne}/thumb"):
+        assert staff.get(url).status_code == 404
+    for url in ("/admin", "/admin/clients", "/admin/my", "/admin/team", "/admin/devices", "/admin/trash", "/files"):
+        assert staff.get(url, follow_redirects=False).status_code == 403, url
+    assert staff.post("/spaces/1/folders", data={"name": "X", "csrf": tok}).status_code == 403
+    assert staff.post(f"/spaces/{cid}/folders", data={"name": "X", "csrf": tok}).status_code == 403
+    r = staff.post("/files/bulk", data={"ids": [tajne, prywatne], "action": "trash", "csrf": tok, "back": "/team"})
+    assert "Pominięto 2" in r.text
+    assert staff.post("/api/uploads", json={"name": "a", "size": 1, "dest": {"kind": "my"}},
+                      headers={"X-CSRF-Token": tok}).status_code == 403
+    found = staff.get("/search", params={"q": "pdf"}).text
+    assert "tajne-klienta" not in found and "duzy" not in found
+    assert "brief" in staff.get("/search", params={"q": "brief"}).text
+
+    # klient nie ma dostępu do wspólnych
+    cl = TestClient(app)
+    login(cl, "jan.kowalski", "KlientHaslo1")
+    t = csrf_of(cl, "/account")
+    cl.post("/account/password", data={"current": "KlientHaslo1", "new": "NoweHaslo123", "repeat": "NoweHaslo123", "csrf": t})
+    assert cl.get("/team", follow_redirects=False).status_code == 403
+    assert cl.get(f"/files/{brief['id']}/download", follow_redirects=False).status_code == 404
+    assert cl.post("/api/uploads", json={"name": "a", "size": 1, "dest": {"kind": "team"}},
+                   headers={"X-CSRF-Token": csrf_of(cl, "/files")}).status_code == 403
+
+    # blokada i usunięcie konta
+    sid = app.state.db.one("SELECT id FROM users WHERE username = 'julek'")["id"]
+    tok_a = csrf_of(admin, "/admin/team")
+    admin.post(f"/admin/team/{sid}/toggle", data={"csrf": tok_a})
+    assert staff.get("/team", follow_redirects=False).status_code == 303  # sesja wylogowana
+    assert "Nieprawidłowy login" in login(TestClient(app), "julek", "Pracownik123").text
+    admin.post(f"/admin/team/{sid}/delete", data={"csrf": tok_a})
+    assert "julek" not in admin.get("/admin/team").text.split("Dodaj pracownika")[0]
+    assert app.state.db.one("SELECT COUNT(*) AS n FROM files WHERE uploaded_by = ?", sid)["n"] >= 2  # pliki zostają
+    # konto techniczne wspólnych nie loguje się
+    assert "Nieprawidłowy login" in login(TestClient(app), "_wspolne", "cokolwiek").text
+
+
+def test_old_database_gets_new_roles(tmp_path):
+    """Baza ze starszej wersji (role tylko admin/client) jest przebudowywana bez utraty danych."""
+    import sqlite3
+    from app.db import Database
+    path = tmp_path / "stara.db"
+    con = sqlite3.connect(path)
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE, password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('admin', 'client')), display_name TEXT NOT NULL DEFAULT '',
+            company TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
+            must_change_password INTEGER NOT NULL DEFAULT 0, session_version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL, last_login TEXT);
+        INSERT INTO users (username, password_hash, role, created_at) VALUES ('admin', 'h', 'admin', 'x'), ('acme', 'h', 'client', 'x');
+    """)
+    con.commit()
+    con.close()
+    db = Database(path)
+    assert [r["username"] for r in db.all("SELECT username FROM users ORDER BY id")] == ["admin", "acme"]
+    db.run("INSERT INTO users (username, password_hash, role, created_at) VALUES ('ola', 'h', 'staff', 'x')")
+    db.run("INSERT INTO files (client_id, rel_path, original_name, size, sha256, uploaded_by, uploaded_at, note)"
+           " VALUES (2, 'a', 'a', 1, 's', 3, 'x', '')")
+    assert db.all("PRAGMA foreign_key_check") == []
+    with pytest.raises(sqlite3.IntegrityError):
+        db.run("INSERT INTO users (username, password_hash, role, created_at) VALUES ('zly', 'h', 'hacker', 'x')")
+    Database(path)  # drugie otwarcie: bez ponownej przebudowy

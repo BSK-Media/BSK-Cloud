@@ -1,6 +1,7 @@
 """Baza SQLite — metadane kont, plików, wiadomości i kopii zapasowych."""
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
     username TEXT NOT NULL UNIQUE COLLATE NOCASE,
     password_hash TEXT NOT NULL,
-    role TEXT NOT NULL CHECK (role IN ('admin', 'client')),
+    role TEXT NOT NULL CHECK (role IN ('admin', 'client', 'staff', 'team')),
     display_name TEXT NOT NULL DEFAULT '',
     company TEXT NOT NULL DEFAULT '',
     email TEXT NOT NULL DEFAULT '',
@@ -229,6 +230,7 @@ class Database:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
         # po migracjach (kolumny folder_id/deleted_at mogą dojść dopiero tutaj)
         c.execute("CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder_id, deleted_at)")
+        _widen_roles(c)
 
     def conn(self) -> sqlite3.Connection:
         c = getattr(self._local, "conn", None)
@@ -255,3 +257,39 @@ class Database:
             "INSERT INTO events (ts, user_id, action, detail) VALUES (?, ?, ?, ?)",
             now_iso(), user_id, action, detail[:1000],
         )
+
+
+ROLES_CHECK = "CHECK (role IN ('admin', 'client', 'staff', 'team'))"
+
+
+def _widen_roles(c: sqlite3.Connection) -> None:
+    """Starsze bazy: role tylko admin/client. SQLite nie zmienia CHECK — tabela users jest przebudowywana
+    (te same kolumny i dane), żeby dodać pracowników (staff) i wspólną przestrzeń zespołu (team)."""
+    row = c.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").fetchone()
+    if row is None or "'staff'" in row[0]:
+        return
+    new_sql = re.sub(r"CHECK\s*\(\s*role\s+IN\s*\([^)]*\)\s*\)", ROLES_CHECK, row[0], count=1)
+    new_sql = re.sub(r"^CREATE TABLE\s+(IF NOT EXISTS\s+)?[\"`]?users[\"`]?", "CREATE TABLE users_new", new_sql, count=1)
+    if "'staff'" not in new_sql or "users_new" not in new_sql:
+        raise RuntimeError("Nie udało się przygotować migracji tabeli users.")
+    cols = ", ".join(f'"{r[1]}"' for r in c.execute("PRAGMA table_info(users)"))
+    indexes = [r[0] for r in c.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'users' AND sql IS NOT NULL")]
+    c.execute("PRAGMA foreign_keys=OFF")
+    c.execute("PRAGMA legacy_alter_table=ON")
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        c.execute("DROP TABLE IF EXISTS users_new")
+        c.execute(new_sql)
+        c.execute(f"INSERT INTO users_new ({cols}) SELECT {cols} FROM users")
+        c.execute("DROP TABLE users")
+        c.execute("ALTER TABLE users_new RENAME TO users")
+        for sql in indexes:
+            c.execute(sql)
+        c.execute("COMMIT")
+    except Exception:
+        c.execute("ROLLBACK")
+        raise
+    finally:
+        c.execute("PRAGMA legacy_alter_table=OFF")
+        c.execute("PRAGMA foreign_keys=ON")
