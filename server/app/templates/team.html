@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% from "_browser.html" import browser with context %}
+{% block title %}Wspólne — {{ site_name }}{% endblock %}
+{% block heading %}Wspólne pliki zespołu{% endblock %}
+{% block subtitle %}<div class="subtitle">Przestrzeń robocza BSK Media — widzą ją administrator i wszyscy pracownicy · {{ used.n }} plików, {{ used.b|size }}{% if user.role == 'admin' %} · folder na NAS <code>bsk-dane{{ folder_path }}</code>{% endif %}</div>{% endblock %}
+{% block actions %}{% if user.role == 'admin' %}<a class="button" href="/admin/team">{{ ui.icon("users") }}Zespół</a>{% endif %}{% endblock %}
+{% block content %}
+<section class="card">
+  {{ browser(space, user, csrf, base_url, can_manage=True, show_source=False) }}
+</section>
+<section class="card" id="wyslij">
+  <div class="card-head">{{ ui.icon("upload") }}<h2>Wgraj pliki{% if space.folder %} do „{{ space.folder.name }}”{% endif %}</h2></div>
+  {{ ui.upload_form(upload_action, csrf, max_upload_mb, "Zapisz we wspólnych", folder=space.folder, dest={"kind": "team", "folder_id": space.folder.id if space.folder else None}) }}
+  <p class="hint">Możesz przeciągać całe foldery — struktura katalogów zostaje zachowana. Plik o tej samej nazwie w tym samym katalogu zapisze się jako nowa wersja.</p>
+</section>
+{% if user.role == 'admin' %}
+<section class="card">
+  {% from "_import.html" import import_card with context %}{{ import_card(space.owner.id, space.folder, csrf) }}
+</section>
+{% endif %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("users") }}<h2>Kto ma dostęp</h2><span class="spacer"></span>
+    {% if user.role == 'admin' %}<a class="button btn-sm" href="/admin/team">{{ ui.icon("plus") }}Dodaj pracownika</a>{% endif %}</div>
+  <div class="chips">
+    {% for p in people %}<span class="person chip-link {{ '' if p.active else 'inactive' }}"><span class="avatar {{ 'agency' if p.role == 'admin' }}">{{ (p.display_name or p.username)|initials }}</span>
+      <span><b>{{ p.display_name or p.username }}</b><span>{{ 'Administrator' if p.role == 'admin' else ('Pracownik' if p.active else 'zablokowany') }}</span></span></span>{% endfor %}
+  </div>
+</section>
+{% endblock %}

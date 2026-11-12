@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Zespół — {{ site_name }}{% endblock %}
+{% block heading %}Zespół{% endblock %}
+{% block subtitle %}<div class="subtitle">Konta pracowników BSK Media — logują się pod tym samym adresem i pracują na <a href="/team">wspólnych plikach</a></div>{% endblock %}
+{% block actions %}<a class="button" href="/team">{{ ui.icon("folder") }}Wspólne pliki</a>{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("users") }}<h2>Pracownicy</h2><span class="spacer"></span>
+    <span class="hint">Pracownik widzi tylko wspólne pliki zespołu — nie widzi klientów, Twojego dysku ani ustawień</span></div>
+  {% if credentials %}
+  <div class="flash warn"><b>Dane logowania do przekazania</b> (widoczne tylko teraz, przy pierwszym logowaniu pracownik ustawi własne hasło):
+    <div class="copyrow"><input readonly value="Adres: {{ public_url }}   Login: {{ credentials[0] }}   Hasło: {{ credentials[1] }}" data-copy-source><button type="button" data-copy>{{ ui.icon("copy") }}Kopiuj</button></div></div>
+  {% endif %}
+  {% if staff %}
+  <div class="table-wrap"><table class="list">
+    <thead><tr><th>Pracownik</th><th>Stan</th><th class="hide-sm">Ostatnie logowanie</th><th class="hide-sm">Plików we wspólnych</th><th></th></tr></thead>
+    <tbody>
+      {% for m in staff %}
+      <tr class="{{ '' if m.active else 'inactive' }}"><td><div class="person"><span class="avatar">{{ (m.display_name or m.username)|initials }}</span>
+        <div><b>{{ m.display_name or m.username }}</b><span>{{ m.username }}{% if m.email %} · {{ m.email }}{% endif %}</span></div></div></td>
+        <td>{% if m.active %}<span class="tag ok">aktywne</span>{% else %}<span class="tag off">zablokowane</span>{% endif %}</td>
+        <td class="small muted hide-sm">{{ m.last_login|ago }}</td>
+        <td class="small muted hide-sm">{{ m.n_files }}</td>
+        <td class="actions">
+          <form method="post" action="/admin/team/{{ m.id }}/reset-password" class="inline" data-confirm="Nadać nowe hasło dla {{ m.username }}?"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-sm ghost" title="Nowe hasło">{{ ui.icon("key") }}</button></form>
+          <form method="post" action="/admin/team/{{ m.id }}/toggle" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-sm ghost" title="{{ 'Zablokuj' if m.active else 'Odblokuj' }}">{{ ui.icon("lock") }}</button></form>
+          <form method="post" action="/admin/team/{{ m.id }}/delete" class="inline" data-confirm="Usunąć konto {{ m.username }}? Wysłane przez nie pliki zostaną we wspólnych."><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-sm ghost danger" title="Usuń konto">{{ ui.icon("trash") }}</button></form>
+        </td></tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}{{ ui.empty("Nie dodano jeszcze żadnego pracownika.", "users") }}{% endif %}
+</section>
+<section class="card">
+  <div class="card-head">{{ ui.icon("plus") }}<h2>Dodaj pracownika</h2></div>
+  <form method="post" action="/admin/team" class="form-grid">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Imię i nazwisko <input name="display_name" placeholder="np. Julek Maliński"></label>
+    <label>Login <input name="username" required pattern="[a-zA-Z0-9][a-zA-Z0-9._\-]{2,39}" placeholder="np. julek"></label>
+    <label>E-mail <input name="email" type="email" placeholder="opcjonalnie"></label>
+    <div class="row"><button class="primary">Dodaj i wygeneruj hasło</button></div>
+  </form>
+  <p class="hint">Program BSK Backup (kopie komputerów) ustawiasz osobno w zakładce <a href="/admin/devices">Kopie komputerów</a>.</p>
+</section>
+{% endblock %}

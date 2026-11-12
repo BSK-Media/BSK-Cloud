@@ -3,7 +3,8 @@
 {% block heading %}Wyniki wyszukiwania{% endblock %}
 {% block subtitle %}<div class="subtitle">{% if q|length < 2 %}Wpisz co najmniej 2 znaki.{% else %}„{{ q }}” — {{ total }} {{ 'wynik' if total == 1 else 'wyników' }}{% endif %}</div>{% endblock %}
 {% macro where(r) -%}
-{%- if user.role == 'admin' -%}
+{%- if r.owner_role == 'team' and user.role in ['admin', 'staff'] -%}/team
+{%- elif user.role == 'admin' -%}
   {%- if r.owner_role == 'admin' -%}/admin/my{%- else -%}/admin/clients/{{ r.client_id or r.owner_id }}{%- endif -%}
 {%- else -%}/files{%- endif -%}
 {%- endmacro %}
@@ -15,7 +16,7 @@
 {% endif %}
 {% if res.folders %}
 <section class="card"><div class="card-head">{{ ui.icon("folder") }}<h2>Katalogi</h2></div>
-  <div class="chips">{% for d in res.folders %}<a class="chip-link folder-chip" href="{{ where(d) }}?folder={{ d.id }}#pliki">{{ ui.icon("folder") }}<span><b>{{ d.name }}</b><span>{{ 'Mój dysk' if d.owner_role == 'admin' else (d.company or d.owner_name or d.username) }}</span></span></a>{% endfor %}</div>
+  <div class="chips">{% for d in res.folders %}<a class="chip-link folder-chip" href="{{ where(d) }}?folder={{ d.id }}#pliki">{{ ui.icon("folder") }}<span><b>{{ d.name }}</b><span>{{ 'Wspólne' if d.owner_role == 'team' else ('Mój dysk' if d.owner_role == 'admin' else (d.company or d.owner_name or d.username)) }}</span></span></a>{% endfor %}</div>
 </section>
 {% endif %}
 {% if res.files %}
@@ -26,7 +27,7 @@
     <td><div class="file">{% if can_thumb(f.original_name) %}<img class="sthumb" src="/files/{{ f.id }}/thumb?v={{ f.sha256[:12] }}" alt="" loading="lazy">{% else %}{{ ui.ficon(f.original_name) }}{% endif %}
       <div><a href="/files/{{ f.id }}/download">{{ f.original_name }}</a>
       <div class="meta">{{ f.size|size }} · {{ f.uploaded_at|ago }}{% if f.note %} · {{ f.note }}{% endif %}</div></div></div></td>
-    <td class="small">{% if user.role == 'admin' %}<a href="{{ where(f) }}{{ '?folder=' ~ f.folder_id if f.folder_id else '' }}#pliki">{{ 'Mój dysk' if f.owner_role == 'admin' else (f.company or f.owner_name or f.username) }}</a>{% else %}<a href="/files{{ '?folder=' ~ f.folder_id if f.folder_id else '' }}#pliki">Pliki</a>{% endif %}{% if f.folder_name %} / {{ f.folder_name }}{% endif %}</td>
+    <td class="small">{% if user.role in ['admin', 'staff'] %}<a href="{{ where(f) }}{{ '?folder=' ~ f.folder_id if f.folder_id else '' }}#pliki">{{ 'Wspólne' if f.owner_role == 'team' else ('Mój dysk' if f.owner_role == 'admin' else (f.company or f.owner_name or f.username)) }}</a>{% else %}<a href="/files{{ '?folder=' ~ f.folder_id if f.folder_id else '' }}#pliki">Pliki</a>{% endif %}{% if f.folder_name %} / {{ f.folder_name }}{% endif %}</td>
     <td class="actions"><a class="button ghost btn-sm" href="/files/{{ f.id }}/download" title="Pobierz">{{ ui.icon("download") }}</a></td>
   </tr>
   {% endfor %}

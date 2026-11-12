@@ -6,7 +6,7 @@
 <div class="browser" id="pliki" data-browser>
   <div class="bar">
     <nav class="crumbs" aria-label="Ścieżka">
-      <a href="{{ base_url }}#pliki" class="{{ 'here' if not space.folder }}">{{ ui.icon("folder") }}{{ 'Mój dysk' if owner.role == 'admin' else 'Pliki' }}</a>
+      <a href="{{ base_url }}#pliki" class="{{ 'here' if not space.folder }}">{{ ui.icon("folder") }}{{ 'Mój dysk' if owner.role == 'admin' else ('Wspólne' if owner.role == 'team' else 'Pliki') }}</a>
       {% for c in space.crumbs %}<span class="sep">/</span><a href="{{ base_url }}{{ q }}folder={{ c.id }}#pliki" class="{{ 'here' if loop.last }}">{{ c.name }}</a>{% endfor %}
     </nav>
     <span class="spacer"></span>
@@ -61,7 +61,7 @@
     <b data-bulk-count>0 zaznaczonych</b>
     <button type="button" class="btn-sm ghost" data-select-all>Zaznacz wszystko</button>
     <span class="spacer"></span>
-    {% if user.role == 'admin' %}
+    {% if user.role in ['admin', 'staff'] %}
     <select name="folder_id" aria-label="Katalog docelowy" data-folder-source><option value="">— katalog główny —</option>
       {% for af in space.all_folders %}<option value="{{ af.id }}">{{ af.path }}</option>{% endfor %}</select>
     <button class="btn-sm" name="action" value="move">{{ ui.icon("folder") }}Przenieś</button>
@@ -92,13 +92,13 @@
       </button>
       <div class="ginfo">
         <div class="gname" title="{{ f.original_name }}">{{ f.original_name }}</div>
-        <div class="gmeta"><span class="src {{ 'agency' if f.uploader_role == 'admin' else '' }}" title="{{ 'Od BSK Media' if f.uploader_role == 'admin' else 'Od klienta' }}"></span>{{ f.size|size }} · {% if f.modified_at %}edytowano {{ f.modified_at|ago }}{% else %}{{ f.uploaded_at|ago }}{% endif %}</div>
+        <div class="gmeta"><span class="src {{ 'agency' if f.uploader_role == 'admin' else '' }}" title="{{ ('Wgrał(a): ' ~ f.uploader_name) if owner.role == 'team' else ('Od BSK Media' if f.uploader_role == 'admin' else 'Od klienta') }}"></span>{{ f.size|size }} · {% if f.modified_at %}edytowano {{ f.modified_at|ago }}{% else %}{{ f.uploaded_at|ago }}{% endif %}</div>
         {% if f.note %}<div class="gnote" title="{{ f.note }}">{{ f.note }}</div>{% endif %}
       </div>
       <div class="gactions">
         <a class="iconbtn" href="/files/{{ f.id }}/download" title="Pobierz">{{ ui.icon("download") }}</a>
         {% if office_enabled and dt %}<a class="iconbtn" href="/files/{{ f.id }}/edit" title="{{ 'Edytuj online' if dt[2] else 'Podgląd' }}">{{ ui.icon("edit") }}</a>{% endif %}
-        {% if user.role == 'admin' or f.uploaded_by == user.id %}
+        {% if user.role in ['admin', 'staff'] or f.uploaded_by == user.id %}
         <details class="menu">
           <summary class="iconbtn" title="Więcej">⋯</summary>
           <div class="menu-body">
@@ -106,11 +106,11 @@
             <form method="post" action="/admin/shares/new"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="file">
               <input type="hidden" name="file_id" value="{{ f.id }}"><input type="hidden" name="expires_days" value="7"><input type="hidden" name="back" value="{{ base_url }}">
               <button class="btn-sm">{{ ui.icon("link") }}Link do pobrania (7 dni)</button></form>
-            {% if space.all_folders or space.folder %}
+            {% endif %}
+            {% if user.role in ['admin', 'staff'] and (space.all_folders or space.folder) %}
             <form method="post" action="/files/{{ f.id }}/move" class="stack"><input type="hidden" name="csrf" value="{{ csrf }}">
               <select name="folder_id" data-folder-select data-current="{{ f.folder_id or '' }}"><option value="">— katalog główny —</option></select>
               <button class="btn-sm">{{ ui.icon("folder") }}Przenieś</button></form>
-            {% endif %}
             {% endif %}
             <form method="post" action="/files/{{ f.id }}/delete" data-confirm="Przenieść „{{ f.original_name }}” do kosza?">
               <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-sm danger">{{ ui.icon("trash") }}Do kosza</button></form>

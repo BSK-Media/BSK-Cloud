@@ -289,6 +289,16 @@ W panelu klienta jest też **Nowy arkusz / Nowy dokument**.
 - **Kosz:** usunięte pliki (także przez klienta) można przywrócić przez 30 dni, potem znikają.
 - **Wyszukiwarka** (u góry ekranu): pliki, katalogi, klienci i kopie pracowników. Klient przeszukuje tylko swoje pliki.
 
+# Zespół i wspólne pliki
+- **Zespół** (menu administratora): zakładasz konta pracowników (imię, login, opcjonalnie e-mail). Portal
+  generuje hasło do przekazania; przy pierwszym logowaniu pracownik ustawia własne. Możesz nadać nowe hasło,
+  zablokować konto albo je usunąć (pliki wysłane przez pracownika zostają).
+- **Wspólne** (`/team`): przestrzeń robocza całego zespołu: katalogi, galeria z miniaturami, wysyłanie całych
+  folderów (z zachowaniem struktury), wersje plików, przenoszenie, zaznaczanie wielu plików, edycja online.
+  Na NAS: `bsk-dane/klienci/_wspolne`. Usunięte pliki trafiają do kosza administratora (30 dni).
+- Pracownik po zalogowaniu widzi **tylko** wspólne pliki, wyszukiwarkę i swoje konto. Nie widzi klientów,
+  Twojego dysku, kopii komputerów ani ustawień. Przy „Wspólne” w menu admina licznik nowych plików od zespołu.
+
 # Transfery (jak WeTransfer)
 **Transfery → Nowy transfer**: przeciągnij pliki, wpisz tytuł, wiadomość i (opcjonalnie) e-mail odbiorcy,
 termin ważności i hasło. Odbiorca dostaje link `https://cloud.bskmedia.pl/t/…` (także e-mailem):

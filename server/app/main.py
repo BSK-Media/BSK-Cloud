@@ -118,6 +118,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     chunk_store.cleanup()
     limiter = security.LoginLimiter()
     _bootstrap_admin(db, settings)
+    _team: list[int] = []
+
+    def tid(create: bool = True) -> int:
+        """Id wspólnej przestrzeni zespołu (konto techniczne zakładane przy pierwszym użyciu; bez create: 0)."""
+        if not _team:
+            row = db.one("SELECT id FROM users WHERE role = 'team' ORDER BY id LIMIT 1")
+            if row:
+                _team.append(row["id"])
+            elif create:
+                _team.append(_bootstrap_team(db))
+            else:
+                return 0
+        return _team[0]
     if settings.backup_dir and os.environ.get("BSK_BACKUP_SCHEDULER", "1") == "1":
         backup.start_scheduler(settings, db)
     if os.environ.get("BSK_ALERT_SCHEDULER", "1") == "1":
@@ -236,14 +249,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ctx.setdefault("nav", "")
         if ctx["user"] and not ctx["user"]["must_change_password"]:
             ctx.setdefault("unread_total", unread_for(ctx["user"]))
+            if ctx["user"]["role"] == "admin":
+                ctx.setdefault("team_new", team_unread(ctx["user"]))
         ctx["csrf"] = csrf_token(request)
         ctx["flashes"] = request.session.pop("flash", [])
         ctx["max_upload_mb"] = settings.max_upload_mb
         ctx["new_links"] = request.session.pop("new_link", None)
         return templates.TemplateResponse(request, name, ctx, status_code=status_code)
 
+    def team_owner():
+        """Wspólna przestrzeń zespołu BSK Media (konto techniczne bez logowania)."""
+        return db.one("SELECT * FROM users WHERE id = ?", tid())
+
+    def is_team(user) -> bool:
+        """Administrator albo pracownik — ma dostęp do wspólnej przestrzeni zespołu."""
+        return user["role"] in ("admin", "staff")
+
+    def require_team(request: Request):
+        user = require_user(request)
+        if not is_team(user):
+            raise HTTPException(403, "Brak dostępu.")
+        return user
+
+    def team_unread(user) -> int:
+        """Nowe pliki we wspólnej przestrzeni od innych osób od ostatniej wizyty."""
+        team = tid(create=False)
+        if not team:
+            return 0
+        seen = db.one("SELECT seen_at FROM seen WHERE user_id = ? AND client_id = ?", user["id"], team)
+        return db.one("SELECT COUNT(*) AS n FROM files WHERE client_id = ? AND uploaded_by != ? AND uploaded_at > ?"
+                      " AND deleted_at IS NULL", team, user["id"], seen["seen_at"] if seen else "")["n"]
+
     def space_of(user):
-        """Przestrzeń, w której pracuje użytkownik: osoba z firmy klienta -> konto główne firmy."""
+        """Przestrzeń, w której pracuje użytkownik: osoba z firmy klienta -> konto główne firmy,
+        pracownik -> wspólna przestrzeń zespołu."""
+        if user["role"] == "staff":
+            return team_owner()
         if user["role"] == "client" and user["space_id"]:
             owner = db.one("SELECT * FROM users WHERE id = ?", user["space_id"])
             if owner:
@@ -266,6 +307,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Przestrzeń na NAS: klient -> klienci/<login>, administrator (Mój dysk) -> klienci/_prywatne/<login>."""
         if client["role"] == "admin":
             return settings.clients_dir / "_prywatne" / storage.safe_slug(client["username"])
+        if client["role"] == "team":
+            return settings.clients_dir / "_wspolne"
         return settings.clients_dir / storage.safe_slug(client["username"])
 
     # ------------------------------------------------------------------ katalogi, kosz, wersje
@@ -352,7 +395,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def space_url(user, owner_id: int, folder_id: int | None = None) -> str:
         """Adres przestrzeni w panelu (klient / karta klienta u admina / Mój dysk)."""
-        if user["role"] == "admin":
+        if owner_id and owner_id == tid(create=False) and is_team(user):
+            base = "/team"
+        elif user["role"] == "admin":
             base = "/admin/my" if owner_id == user["id"] else f"/admin/clients/{owner_id}"
         else:
             base = "/files"
@@ -434,6 +479,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             owner = client_or_404(int(dest.get("client_id") or 0))
         elif kind == "self" and user["role"] == "client":
             owner = space_of(user)
+        elif kind == "team" and is_team(user):
+            owner = team_owner()
         else:
             raise HTTPException(403, "Brak dostępu do tej przestrzeni.")
         folder_row(owner["id"], folder_id)  # sprawdza, czy katalog należy do przestrzeni
@@ -770,7 +817,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user = current_user(request)
         if not user:
             return RedirectResponse("/login", 303)
-        return RedirectResponse("/admin" if user["role"] == "admin" else "/files", 303)
+        return RedirectResponse({"admin": "/admin", "staff": "/team"}.get(user["role"], "/files"), 303)
 
     @app.get("/healthz", include_in_schema=False)
     def healthz():
@@ -925,11 +972,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         check_csrf(request, csrf)
         user = require_user(request)
         f, path = file_for(user, file_id)
-        if user["role"] != "admin" and f["uploaded_by"] != user["id"]:
+        if not is_team(user) and f["uploaded_by"] != user["id"]:
             raise HTTPException(403, "Możesz usuwać tylko pliki wysłane przez siebie.")
         trash_file(f, user)
         flash(request, f"Plik {f['original_name']} trafił do kosza"
-              + (" — możesz go przywrócić w zakładce Kosz." if user["role"] == "admin" else "."))
+              + (" — możesz go przywrócić w zakładce Kosz." if user["role"] == "admin" else
+                 " — administrator może go przywrócić z kosza." if user["role"] == "staff" else "."))
         return RedirectResponse(space_url(user, f["client_id"], f["folder_id"]), 303)
 
     # ------------------------------------------------------------------ Mój dysk, katalogi, galeria, kosz, wyszukiwarka
@@ -961,9 +1009,124 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         flash(request, f"Zapisano plików na Twoim dysku: {count}.")
         return RedirectResponse(space_url(admin, admin["id"], folder_id), 303)
 
+    # ------------------------------------------------------------------ wspólna przestrzeń zespołu
+
+    @app.get("/team", response_class=HTMLResponse)
+    def team_space(request: Request, folder: int | None = None, show: int = 0):
+        user = require_team(request)
+        owner = team_owner()
+        space = space_ctx(owner, folder, show)
+        used = db.one("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS b FROM files WHERE client_id = ?"
+                      " AND deleted_at IS NULL", owner["id"])
+        mark_seen(user, owner["id"])
+        people = db.all("SELECT * FROM users WHERE (role = 'staff' AND space_id IS NOT NULL AND space_id != -1)"
+                        " OR role = 'admin' ORDER BY role, display_name, username")
+        return render(request, "team.html", space=space, base_url="/team", upload_action="/team/upload",
+                      used=used, nav="team", people=people,
+                      folder_path=client_dir(owner).as_posix().replace(settings.data_dir.as_posix(), "", 1))
+
+    @app.post("/team/upload")
+    def team_upload(
+        request: Request,
+        files: list[UploadFile] | None = File(None),
+        upload_ids: list[str] = Form([]),
+        note: str = Form(""),
+        folder_id: int | None = Form(None),
+        csrf: str = Form(""),
+    ):
+        check_csrf(request, csrf)
+        user = require_team(request)
+        owner = team_owner()
+        count = 0
+        for up in incoming(user, files, upload_ids):
+            if save_into(owner, user, up, note, folder_id):
+                count += 1
+        flash(request, f"Zapisano we wspólnych plikach: {count}.")
+        return RedirectResponse(space_url(user, owner["id"], folder_id), 303)
+
+    # ------------------------------------------------------------------ admin: konta pracowników (zespół)
+
+    def staff_or_404(staff_id: int):
+        m = db.one("SELECT * FROM users WHERE id = ? AND role = 'staff' AND space_id IS NOT NULL AND space_id != -1",
+                   staff_id)
+        if not m:
+            raise HTTPException(404, "Nie ma takiego pracownika.")
+        return m
+
+    @app.get("/admin/team", response_class=HTMLResponse)
+    def admin_team(request: Request):
+        require_user(request, "admin")
+        staff = db.all(
+            "SELECT u.*, (SELECT COUNT(*) FROM files f WHERE f.uploaded_by = u.id AND f.client_id = ?"
+            " AND f.deleted_at IS NULL) AS n_files FROM users u WHERE u.role = 'staff' AND u.space_id = ?"
+            " ORDER BY u.display_name, u.username", tid(), tid())
+        return render(request, "admin_team.html", staff=staff, nav="staff", public_url=settings.public_url,
+                      credentials=request.session.pop("staff_credentials", None))
+
+    @app.post("/admin/team")
+    def add_staff(request: Request, username: str = Form(...), display_name: str = Form(""), email: str = Form(""),
+                  csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        username = username.strip()
+        if not USERNAME_RE.match(username):
+            flash(request, "Login: 3–40 znaków, litery bez polskich znaków, cyfry, kropka, myślnik, podkreślnik.", "error")
+        elif db.one("SELECT 1 FROM users WHERE username = ?", username):
+            flash(request, "Taki login już istnieje.", "error")
+        else:
+            password = security.generate_password()
+            db.run("INSERT INTO users (username, password_hash, role, display_name, company, email, must_change_password,"
+                   " created_at, space_id) VALUES (?, ?, 'staff', ?, 'BSK Media', ?, 1, ?, ?)",
+                   username, security.hash_password(password), display_name.strip()[:120], email.strip()[:200],
+                   now_iso(), tid())
+            db.log(admin["id"], "staff_created", username)
+            request.session["staff_credentials"] = [username, password]
+        return RedirectResponse("/admin/team", 303)
+
+    @app.post("/admin/team/{staff_id}/reset-password")
+    def staff_reset(request: Request, staff_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        m = staff_or_404(staff_id)
+        password = security.generate_password()
+        db.run("UPDATE users SET password_hash = ?, must_change_password = 1, session_version = session_version + 1"
+               " WHERE id = ?", security.hash_password(password), staff_id)
+        db.log(admin["id"], "password_reset", m["username"])
+        request.session["staff_credentials"] = [m["username"], password]
+        return RedirectResponse("/admin/team", 303)
+
+    @app.post("/admin/team/{staff_id}/toggle")
+    def staff_toggle(request: Request, staff_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        m = staff_or_404(staff_id)
+        db.run("UPDATE users SET active = ?, session_version = session_version + 1 WHERE id = ?",
+               0 if m["active"] else 1, staff_id)
+        db.log(admin["id"], "staff_blocked" if m["active"] else "staff_activated", m["username"])
+        flash(request, f"Konto {m['username']} {'zablokowane' if m['active'] else 'odblokowane'}.")
+        return RedirectResponse("/admin/team", 303)
+
+    @app.post("/admin/team/{staff_id}/delete")
+    def staff_delete(request: Request, staff_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        m = staff_or_404(staff_id)
+        # pliki we wspólnej przestrzeni zostają; konto archiwalne nie loguje się i znika z listy
+        db.run("UPDATE users SET active = 0, space_id = -1, username = ?, session_version = session_version + 1"
+               " WHERE id = ?", f"usuniety-{staff_id}-{secrets.token_hex(3)}", staff_id)
+        db.log(admin["id"], "staff_deleted", m["username"])
+        flash(request, f"Usunięto konto {m['display_name'] or m['username']}. Wysłane przez nie pliki zostają we wspólnych.")
+        return RedirectResponse("/admin/team", 303)
+
     def space_owner_for_admin(admin, owner_id: int):
+        """Przestrzeń, którą użytkownik może porządkować: admin — klienci, swój dysk, wspólne;
+        pracownik — tylko wspólna przestrzeń zespołu."""
         owner = db.one("SELECT * FROM users WHERE id = ?", owner_id)
-        if not owner or (owner["role"] == "admin" and owner["id"] != admin["id"]):
+        if admin["role"] == "staff":
+            if not owner or owner["id"] != tid():
+                raise HTTPException(403, "Brak dostępu.")
+            return owner
+        if admin["role"] != "admin" or not owner or (owner["role"] == "admin" and owner["id"] != admin["id"]):
             raise HTTPException(404, "Nie ma takiej przestrzeni.")
         return owner
 
@@ -971,7 +1134,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def create_folder(request: Request, owner_id: int, name: str = Form(...), parent_id: int | None = Form(None),
                       csrf: str = Form("")):
         check_csrf(request, csrf)
-        admin = require_user(request, "admin")
+        admin = require_team(request)
         owner = space_owner_for_admin(admin, owner_id)
         parent = folder_row(owner_id, parent_id)
         clean = storage.safe_name(name.strip(), "")[:80]
@@ -991,7 +1154,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/folders/{folder_id}/rename")
     def rename_folder(request: Request, folder_id: int, name: str = Form(...), csrf: str = Form("")):
         check_csrf(request, csrf)
-        admin = require_user(request, "admin")
+        admin = require_team(request)
         folder = db.one("SELECT * FROM folders WHERE id = ?", folder_id)
         if not folder:
             raise HTTPException(404, "Nie ma takiego katalogu.")
@@ -1022,7 +1185,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/folders/{folder_id}/delete")
     def delete_folder(request: Request, folder_id: int, csrf: str = Form("")):
         check_csrf(request, csrf)
-        admin = require_user(request, "admin")
+        admin = require_team(request)
         folder = db.one("SELECT * FROM folders WHERE id = ?", folder_id)
         if not folder:
             raise HTTPException(404, "Nie ma takiego katalogu.")
@@ -1050,7 +1213,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user = require_user(request)
         if action not in ("trash", "move"):
             raise HTTPException(400, "Nieznana operacja.")
-        if action == "move" and user["role"] != "admin":
+        if action == "move" and not is_team(user):
             raise HTTPException(403, "Przenosić pliki może tylko BSK Media.")
         done = skipped = 0
         for fid in ids[:2000]:
@@ -1060,12 +1223,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 skipped += 1
                 continue
             if action == "trash":
-                if user["role"] != "admin" and f["uploaded_by"] != user["id"]:
+                if not is_team(user) and f["uploaded_by"] != user["id"]:
                     skipped += 1
                     continue
                 trash_file(f, user)
                 done += 1
-            elif action == "move" and user["role"] == "admin":
+            elif action == "move" and is_team(user):
                 owner = space_owner_for_admin(user, f["client_id"])
                 target = folder_row(owner["id"], folder_id)
                 if (f["folder_id"] or None) == (target["id"] if target else None):
@@ -1083,12 +1246,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.log(user["id"], f"bulk_{action}", f"{done} plików")
         verb = "Przeniesiono do kosza" if action == "trash" else "Przeniesiono"
         flash(request, f"{verb}: {done} plików." + (f" Pominięto {skipped} (brak uprawnień)." if skipped else ""))
-        return RedirectResponse(back if back.startswith(("/files", "/admin/")) else "/", 303)
+        return RedirectResponse(back if back.startswith(("/files", "/admin/", "/team")) else "/", 303)
 
     @app.post("/files/{file_id}/move")
     def move_file(request: Request, file_id: int, folder_id: int | None = Form(None), csrf: str = Form("")):
         check_csrf(request, csrf)
-        admin = require_user(request, "admin")
+        admin = require_team(request)
         f, path = file_for(admin, file_id)
         owner = space_owner_for_admin(admin, f["client_id"])
         target = folder_row(owner["id"], folder_id)
@@ -1141,7 +1304,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "SELECT f.*, o.username, o.company, o.display_name AS owner_name, o.role AS owner_role,"
             " d.display_name AS deleter FROM files f JOIN users o ON o.id = f.client_id"
             " LEFT JOIN users d ON d.id = f.deleted_by WHERE f.deleted_at IS NOT NULL"
-            " AND (o.role = 'client' OR o.id = ?) ORDER BY f.deleted_at DESC", admin["id"])
+            " AND (o.role IN ('client', 'team') OR o.id = ?) ORDER BY f.deleted_at DESC", admin["id"])
         items = []
         for r in rows:
             try:
@@ -1198,7 +1361,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if len(q) >= 2:
             like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
             if user["role"] == "admin":
-                scope, args = "(o.role = 'client' OR o.id = ?)", [user["id"]]
+                scope, args = "(o.role IN ('client', 'team') OR o.id = ?)", [user["id"]]
             else:
                 scope, args = "o.id = ?", [sid(user)]
             res["files"] = db.all(
@@ -2180,7 +2343,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, "Tego typu pliku nie da się otworzyć w edytorze online.")
         cfg = office.editor_config(secret=settings.office_secret, file_row=f, user=user,
                                    internal_app_url=settings.app_internal_url, mode=mode)
-        back = f"/admin/clients/{f['client_id']}" if user["role"] == "admin" else "/files"
+        back = space_url(user, f["client_id"], f["folder_id"]).removesuffix("#pliki")
         response = render(request, "editor.html", file=f, config=json.dumps(cfg), back=back,
                           office_url=settings.office_url, nav="clients" if user["role"] == "admin" else "files")
         # źródło CSP ze ścieżką musi kończyć się „/”, żeby obejmowało też pliki pod nią (/office/...)
@@ -2392,7 +2555,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             status = str((await request.json()).get("status", ""))
         except ValueError:
             raise HTTPException(400, "Nieprawidłowe dane.")
-        allowed = {"admin": {"review", "", "approved", "changes"}, "client": {"approved", "changes"}}[user["role"]]
+        allowed = {"admin": {"review", "", "approved", "changes"}, "staff": {"review", "", "approved", "changes"},
+                   "client": {"approved", "changes"}}.get(user["role"], set())
         if status not in allowed:
             raise HTTPException(400, "Niedozwolona zmiana statusu.")
         db.run("UPDATE files SET review_status = ?, review_by = ?, review_at = ? WHERE id = ?",
@@ -2540,8 +2704,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, "Nieprawidłowe dane.")
         owner, folder_id, note, review = resolve_dest(user, dest)
         who = user["display_name"] or user["username"]
-        if note.strip() and stored:
-            add_message(owner["id"] if owner["role"] == "client" else owner["id"], user, note)
+        if note.strip() and stored and owner["role"] == "client":
+            add_message(owner["id"], user, note)
         if stored and owner["role"] == "client":
             listing = ", ".join(names) + (f" i {stored - len(names)} innych" if stored > len(names) else "")
             if user["role"] == "client":
@@ -3019,6 +3183,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.quote = quote
     templates.env.filters["q"] = lambda v: quote(v or "", safe="")
     return app
+
+
+def _bootstrap_team(db: Database) -> int:
+    """Konto techniczne wspólnej przestrzeni zespołu (role 'team', bez możliwości logowania)."""
+    row = db.one("SELECT id FROM users WHERE role = 'team' ORDER BY id LIMIT 1")
+    if row:
+        return row["id"]
+    return db.run(
+        "INSERT INTO users (username, password_hash, role, display_name, company, active, created_at)"
+        " VALUES ('_wspolne', ?, 'team', 'Wspólne', 'BSK Media', 0, ?)",
+        security.hash_password(secrets.token_urlsafe(32)), now_iso(),
+    )
 
 
 def _bootstrap_admin(db: Database, settings: Settings) -> None:
