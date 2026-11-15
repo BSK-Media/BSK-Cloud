@@ -1,0 +1,99 @@
+{% import "_ui.html" as ui with context %}
+{% set m = s.memory %}
+{% if not s.host_view %}<div class="flash info">Ruch sieciowy dotyczy samego portalu, nie całego NAS — zaktualizuj plik <code>docker-compose.yml</code> (montowanie <code>/proc</code> i <code>/sys</code> tylko do odczytu) i uruchom portal ponownie.</div>{% endif %}
+<div class="grid g-2 mb" id="przeglad">
+  <section class="card">
+    <div class="card-head">{{ ui.icon("chart") }}<h2>Stan</h2></div>
+    <dl class="kv-rows">
+      <div><dt>Temperatura procesora</dt><dd>{% if s.cpu_temp is not none %}<span class="temp {{ charts.temp_color(s.cpu_temp) }}">{{ s.cpu_temp|round|int }} °C</span>{% else %}—{% endif %}</dd></div>
+      <div><dt>Obciążenie procesora</dt><dd>{{ s.cpu.usage if s.cpu.usage is not none else '—' }}%</dd></div>
+      {% for f in s.fans %}<div><dt>{{ f.label }}</dt><dd>{{ f.rpm }} obr./min</dd></div>{% endfor %}
+      <div class="sep"></div>
+      <div><dt>Czas pracy</dt><dd>{{ uptime }}</dd></div>
+      <div><dt>System</dt><dd class="small">Linux {{ s.kernel }}</dd></div>
+    </dl>
+  </section>
+  <section class="card">
+    <div class="card-head">{{ ui.icon("memory") }}<h2>Pamięć RAM</h2></div>
+    <div class="ring-row">{{ charts.ring(m.used, m.total) }}
+      <dl class="kv-rows grow"><div><dt>Używana</dt><dd>{{ m.used|size }}</dd></div><div><dt>Razem</dt><dd>{{ m.total|size }}</dd></div>
+        <div><dt>Dostępna</dt><dd>{{ m.available|size }}</dd></div></dl></div>
+  </section>
+</div>
+
+<section class="card" id="procesor">
+  <div class="card-head">{{ ui.icon("cpu") }}<h2>Procesor</h2><span class="spacer"></span><span class="muted small">{{ s.cpu.model }}</span></div>
+  <div class="stat-row">
+    <div><span>Obciążenie</span><b>{{ s.cpu.usage if s.cpu.usage is not none else '—' }}%</b></div>
+    <div><span>Rdzenie</span><b>{{ s.cpu.cores }}</b></div>
+    {% if s.cpu.mhz %}<div><span>Taktowanie</span><b>{{ s.cpu.mhz }} MHz</b></div>{% endif %}
+    {% if s.cpu.load %}<div><span>Średnie obciążenie (1 / 5 / 15 min)</span><b>{{ s.cpu.load|join(' / ') }}</b></div>{% endif %}
+    {% if s.cpu_temp is not none %}<div><span>Temperatura</span><b class="temp {{ charts.temp_color(s.cpu_temp) }}">{{ s.cpu_temp|round|int }} °C</b></div>{% endif %}
+  </div>
+  {{ charts.line_chart([("Obciążenie", h_cpu, "#2a78d6")], "Obciążenie procesora — ostatnie 10 minut", "Obciążenie (%)", 100) }}
+  {% if h_temp|select|list|length > 1 %}{{ charts.line_chart([("Temperatura", h_temp, "#eb6834")], "Temperatura procesora — ostatnie 10 minut", "Temperatura (°C)", 100) }}{% endif %}
+</section>
+
+<section class="card" id="pamiec">
+  <div class="card-head">{{ ui.icon("memory") }}<h2>Pamięć</h2><span class="spacer"></span>
+    <span class="muted small">Razem <b>{{ m.total|size }}</b> · Wykorzystanie <b>{{ m.percent }}%</b></span></div>
+  {{ charts.line_chart([("Wykorzystanie", h_mem, "#2a78d6")], "Wykorzystanie pamięci — ostatnie 10 minut", "Wykorzystanie (%)", 100) }}
+  <h3 class="mt">Struktura pamięci</h3>
+  <svg class="membar" width="100%" height="14" preserveAspectRatio="none" aria-hidden="true">
+    <rect width="100%" height="14" rx="7" fill="#eef1f5"/>
+    <rect width="{{ m.pct_used }}%" height="14" fill="#2a78d6"/>
+    <rect x="{{ m.pct_used }}%" width="{{ m.pct_cache }}%" height="14" fill="#eb6834"/>
+  </svg>
+  <div class="stat-row mt">
+    <div class="mark used"><span>Używana</span><b>{{ m.used|size }}</b></div>
+    <div class="mark cache"><span>Pamięć podręczna</span><b>{{ m.cache|size }}</b></div>
+    <div class="mark free"><span>Wolna</span><b>{{ m.remaining|size }}</b></div>
+    {% if m.swap_total %}<div><span>Plik wymiany (swap)</span><b>{{ m.swap_used|size }} z {{ m.swap_total|size }}</b></div>{% endif %}
+  </div>
+  <p class="hint">Pamięć podręczna to pliki trzymane w RAM dla szybszego dostępu — system zwalnia ją automatycznie, gdy programy potrzebują miejsca.</p>
+</section>
+
+<section class="card" id="siec">
+  <div class="card-head">{{ ui.icon("network") }}<h2>Sieć</h2></div>
+  <div class="table-wrap"><table class="list">
+    <thead><tr><th>Sieć</th><th>Wysyłanie</th><th>Pobieranie</th><th class="hide-sm">Łącze</th></tr></thead>
+    <tbody>
+      <tr><td><b>Razem</b></td><td class="num">{{ fmt_rate(s.net|sum(attribute='tx')) }}</td><td class="num">{{ fmt_rate(s.net|sum(attribute='rx')) }}</td><td class="hide-sm"></td></tr>
+      {% for n in s.net %}
+      <tr><td>{{ n.label }} <span class="muted small">{{ n.name }}</span></td><td class="num">{{ fmt_rate(n.tx) }}</td><td class="num">{{ fmt_rate(n.rx) }}</td>
+        <td class="hide-sm small">{% if not n.up %}<span class="tag off">odłączone</span>{% elif n.speed %}{{ (n.speed / 1000)|round(1) if n.speed >= 1000 else n.speed }} {{ 'Gb/s' if n.speed >= 1000 else 'Mb/s' }}{% endif %}</td></tr>
+      {% endfor %}
+    </tbody></table></div>
+  {{ charts.line_chart([("Wysyłanie", h_tx, "#2a78d6"), ("Pobieranie", h_rx, "#eb6834")], "Ruch sieciowy — ostatnie 10 minut", "MB/s") }}
+</section>
+
+<section class="card" id="dyski">
+  <div class="card-head">{{ ui.icon("drive") }}<h2>Dyski</h2></div>
+  <div class="disk-cards">
+    {% for d in s.disks %}
+    <div class="disk-card">
+      <div class="disk-head"><b>{{ d.model or d.name }}</b><span class="tag">{{ d.kind }}</span></div>
+      <div class="small muted">{{ d.name }} · {{ d.size|size }}</div>
+      <div class="stat-row compact mt">
+        <div><span>Temperatura</span><b class="temp {{ charts.temp_color(d.temp) }}">{{ (d.temp|round|int ~ ' °C') if d.temp is not none else '—' }}</b></div>
+        <div><span>Obciążenie</span><b>{{ d.util|round|int }}%</b></div>
+        <div><span>Odczyt</span><b>{{ fmt_rate(d.read) }}</b></div>
+        <div><span>Zapis</span><b>{{ fmt_rate(d.write) }}</b></div>
+      </div>
+      {{ charts.percent_meter(d.util, d.name ~ ': obciążenie ' ~ (d.util|round|int) ~ '%') }}
+    </div>
+    {% else %}{{ ui.empty("Brak danych o dyskach.", "drive") }}{% endfor %}
+  </div>
+  {{ charts.line_chart([("Odczyt", h_read, "#2a78d6"), ("Zapis", h_write, "#eb6834")], "Odczyt i zapis dysków — ostatnie 10 minut", "MB/s") }}
+  <p class="hint">Zajętość i wolne miejsce dysków widać na <a href="/admin">Pulpicie</a>.</p>
+</section>
+
+<section class="card" id="czujniki">
+  <div class="card-head">{{ ui.icon("thermo") }}<h2>Czujniki</h2></div>
+  {% if s.temps or s.fans %}
+  <div class="table-wrap"><table class="list compact"><tbody>
+    {% for t in s.temps %}<tr><td>{{ t.label }}</td><td class="num"><span class="temp {{ charts.temp_color(t.value) }}">{{ t.value }} °C</span></td></tr>{% endfor %}
+    {% for f in s.fans %}<tr><td>{{ ui.icon("fan") }} {{ f.label }}</td><td class="num">{{ f.rpm }} obr./min</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% else %}{{ ui.empty("NAS nie udostępnia czujników temperatury.", "thermo") }}{% endif %}
+</section>

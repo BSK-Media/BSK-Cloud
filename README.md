@@ -289,6 +289,13 @@ W panelu klienta jest też **Nowy arkusz / Nowy dokument**.
 - **Kosz:** usunięte pliki (także przez klienta) można przywrócić przez 30 dni, potem znikają.
 - **Wyszukiwarka** (u góry ekranu): pliki, katalogi, klienci i kopie pracowników. Klient przeszukuje tylko swoje pliki.
 
+# Stan NAS
+**Stan NAS** w menu administratora pokazuje to samo co Menedżer zadań UGOS, odświeżane co 5 sekund:
+temperaturę i obciążenie procesora, wentylatory, pamięć RAM (używana / pamięć podręczna / wolna), ruch
+na każdej karcie sieciowej (LAN 1, LAN 2), dyski (temperatura, obciążenie, odczyt i zapis) oraz wykresy
+z ostatnich 10 minut. Portal czyta te dane z systemu NAS przez `/proc` i `/sys` zamontowane w
+`docker-compose.yml` **tylko do odczytu**. Czujnik, którego NAS nie udostępnia, po prostu się nie pokazuje.
+
 # Zespół i wspólne pliki
 - **Zespół** (menu administratora): zakładasz konta pracowników (imię, login, opcjonalnie e-mail). Portal
   generuje hasło do przekazania; przy pierwszym logowaniu pracownik ustawia własne. Możesz nadać nowe hasło,

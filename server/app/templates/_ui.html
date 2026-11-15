@@ -3,6 +3,11 @@
 <svg class="icon {{ cls }}" viewBox="0 0 24 24" aria-hidden="true">
 {%- if name == "home" -%}<rect x="3" y="3" width="7" height="9" rx="2"/><rect x="14" y="3" width="7" height="5" rx="2"/><rect x="14" y="12" width="7" height="9" rx="2"/><rect x="3" y="16" width="7" height="5" rx="2"/>
 {%- elif name == "users" -%}<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.8c1.6.8 2.6 2.6 3 5.2"/>
+{%- elif name == "cpu" -%}<rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>
+{%- elif name == "memory" -%}<rect x="2" y="7" width="20" height="10" rx="2"/><path d="M6 7v10M10 7v10M14 7v10M18 7v10M5 20v-3M19 20v-3"/>
+{%- elif name == "thermo" -%}<path d="M14 14.8V5a2 2 0 0 0-4 0v9.8a4 4 0 1 0 4 0z"/><path d="M12 10v7"/>
+{%- elif name == "network" -%}<rect x="9" y="2" width="6" height="5" rx="1"/><rect x="2" y="17" width="6" height="5" rx="1"/><rect x="16" y="17" width="6" height="5" rx="1"/><path d="M12 7v5M5 17v-2.5h14V17M12 12v2.5"/>
+{%- elif name == "fan" -%}<circle cx="12" cy="12" r="2"/><path d="M12 10c-1-4 1-7 4-7 2 0 3 2 1 4l-3 3M14 12c4-1 7 1 7 4 0 2-2 3-4 1l-3-3M12 14c1 4-1 7-4 7-2 0-3-2-1-4l3-3M10 12c-4 1-7-1-7-4 0-2 2-3 4-1l3 3"/>
 {%- elif name == "refresh" -%}<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 3v5h5"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 21v-5h-5"/>
 {%- elif name == "laptop" -%}<rect x="4" y="4" width="16" height="11" rx="2"/><path d="M2 19h20"/>
 {%- elif name == "link" -%}<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>
