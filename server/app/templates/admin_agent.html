@@ -18,7 +18,8 @@
     {% elif not ai_status.ready %}
     {% if pull.running %}<p class="small mt">Pobieranie modelu: <b>{{ pull.status }}</b> — odśwież stronę, by zobaczyć postęp.</p>
     {% else %}
-    {% if pull.error %}<div class="flash error mt">Pobieranie nie powiodło się: {{ pull.error }}</div>{% endif %}
+    {% if pull.error %}<div class="flash error mt">Pobieranie nie powiodło się: {{ pull.error }}
+      {% if 'not found' in pull.error or 'does not exist' in pull.error or '404' in pull.error %}<br>Ollama nie ma modelu pod nazwą <code>{{ ai_model }}</code>. Sprawdź dokładną nazwę na ollama.com/library i wpisz ją w „Zmień model”.{% endif %}</div>{% endif %}
     <form method="post" action="/admin/agent/model" class="mt"><input type="hidden" name="csrf" value="{{ csrf }}">
       <button class="primary">{{ ui.icon("download") }}Pobierz model {{ ai_model }}</button></form>
     {% endif %}

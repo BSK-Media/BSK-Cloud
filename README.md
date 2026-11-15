@@ -320,18 +320,19 @@ zapisywane w bazie w formie zaszyfrowanej):
   priorytetowe problemy, nowe firmy z oceną i gotowe e-maile.
 
 Uruchomienie (raz):
-1. W `.env` (opcjonalnie): `BSK_AI_MODEL` (domyślnie `qwen3:32b-q8_0`, ok. 35 GB RAM; model zmienisz też w panelu), `BSK_AI_FOLDER` (domyślnie
+1. W `.env` (opcjonalnie): `BSK_AI_MODEL` (domyślnie `qwen3.8:27b`; model zmienisz też w panelu), `BSK_AI_FOLDER` (domyślnie
    `/volume1/bsk-cloud/ollama`, SSD), `BSK_AGENT_HOUR`. Poczta (`BSK_SMTP_*`, `BSK_NOTIFY_EMAIL`) musi działać.
 2. `sudo docker compose --profile tunnel --profile office --profile lan --profile ai up -d --build`
 3. Panel → **Agent AI** → *Pobierz model* (kilka–kilkanaście GB, raz). Potem dodaj strony.
 
 Strony klientów dodajesz w panelu pojedynczo albo wklejając całą listę adresów (*Dodaj wiele stron naraz*).
 
-**Wybór modelu.** Domyślny jest `qwen3:32b-q8_0`: Qwen3 32B w precyzji Q8 (ok. 35 GB RAM z 62 GB).
-Qwen3 to nowsza generacja z trybem „myślenia” (rozważa odpowiedź przed napisaniem), a Q8 prawie nie traci
-jakości względem pełnego modelu. Na procesorze pisze powoli (jedna odpowiedź to nawet kilkadziesiąt minut),
-ale agent pracuje całą dobę w tle, a Ty widzisz tylko wyniki. Model zmieniasz w panelu (*Zmień model*), potem
-*Pobierz model*. Karta **Co robi agent** pokazuje na żywo, nad czym pracuje, a **Zadania agenta** — harmonogram.
+**Wybór modelu.** Domyślny jest `qwen3.8:27b`: najnowsza generacja Qwen, która według testów producenta
+najlepiej trzyma się instrukcji (format e-maili, oceny w JSON) i rozumie też obrazy. Jeśli Ollama udostępnia wersję
+w wyższej precyzji (`qwen3.8:27b-q8_0`, ok. 30 GB RAM), wybierz ją w panelu. Na procesorze model pisze powoli,
+ale agent pracuje całą dobę w tle, a Ty widzisz tylko wyniki. Model zmieniasz w panelu (*Zmień model*, także
+dowolna nazwa z ollama.com/library), potem *Pobierz model*. Karta **Co robi agent** pokazuje na żywo, nad czym
+pracuje, a **Zadania agenta** — harmonogram.
 
 Model na procesorze NAS jest wolniejszy niż usługi w chmurze, ale agent pracuje w tle, więc to nie przeszkadza.
 Bez kontenera Ollama agent działa dalej: monitoruje, audytuje i przygotowuje e-maile z szablonu, tylko bez AI.
