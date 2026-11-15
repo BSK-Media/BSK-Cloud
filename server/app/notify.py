@@ -29,9 +29,14 @@ def configured(settings: Settings) -> bool:
 
 def _html(settings: Settings, title: str, lines: list[str], link: str, button: str) -> str:
     body = "".join(f'<p style="margin:0 0 10px;white-space:pre-line">{html.escape(line)}</p>' for line in lines if line)
+    return wrap(settings, title, body, link, button)
+
+
+def wrap(settings: Settings, title: str, body: str, link: str, button: str, width: int = 560) -> str:
+    """Szablon e-maila BSK Cloud wokół gotowego fragmentu HTML (body musi być już bezpieczny)."""
     return f"""<!doctype html><html><body style="margin:0;background:#f5f6f8;font-family:Segoe UI,Arial,sans-serif;color:#111827">
 <table width="100%" cellpadding="0" cellspacing="0" style="padding:28px 12px"><tr><td align="center">
-<table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border:1px solid #e7e9ee;border-radius:14px">
+<table width="{width}" cellpadding="0" cellspacing="0" style="max-width:{width}px;background:#fff;border:1px solid #e7e9ee;border-radius:14px">
 <tr><td style="padding:20px 26px;border-bottom:1px solid #f1f3f6">
 <img src="{html.escape(settings.public_url)}/static/icons/logo-email.png" width="110" height="70" alt="BSK Cloud" style="display:block;border:0"></td></tr>
 <tr><td style="padding:24px 26px;font-size:15px;line-height:1.55">
@@ -96,3 +101,24 @@ def send(settings: Settings, to: str, subject: str, lines: list[str], link: str,
 def notify_admin(settings: Settings, subject: str, body: str, link: str = "", throttle_key: str | None = None) -> None:
     send(settings, settings.notify_email, subject, body.split("\n\n"), link or settings.public_url,
          "Otwórz w panelu", throttle_key)
+
+
+def send_html(settings: Settings, to: str, subject: str, html_body: str, text: str, link: str, button: str,
+              wait: bool = False) -> str | None:
+    """E-mail z własną treścią HTML (np. raport z kafelkami i tabelami) w szablonie BSK Cloud."""
+    if not (configured(settings) and to):
+        return "Poczta nie jest skonfigurowana."
+    full = wrap(settings, subject, html_body, link, button, width=640)
+
+    def run() -> str | None:
+        try:
+            _deliver(settings, to, f"[{settings.site_name}] {subject}", text + f"\n\n{button}: {link}\n", full)
+            return None
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Nie udało się wysłać e-maila do %s", to)
+            return f"{type(exc).__name__}: {exc}"
+
+    if wait:
+        return run()
+    threading.Thread(target=run, daemon=True).start()
+    return None

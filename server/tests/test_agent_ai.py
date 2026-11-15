@@ -121,6 +121,7 @@ def test_agent_flow(env, monkeypatch):
     app, url, _ = env
     sent = []
     monkeypatch.setattr("app.notify.send", lambda settings, to, subject, lines, *a, **k: sent.append((to, subject, lines)))
+    monkeypatch.setattr("app.notify.send_html", lambda settings, to, subject, html_body, text, *a, **k: sent.append((to, subject, html_body)))
     c = TestClient(app)
     tok = re.search(r'name="csrf" value="([^"]+)"', c.get("/login").text).group(1)
     c.post("/login", data={"username": "admin", "password": "AdminHaslo123", "csrf": tok})
@@ -169,7 +170,8 @@ def test_agent_flow(env, monkeypatch):
         if sent:
             break
         time.sleep(0.1)
-    assert sent and sent[0][0] == "szef@bsk.test"
+    assert sent and sent[0][0] == "szef@bsk.test" and "Raport AI" in sent[0][1]
+    assert "Nowe możliwości sprzedażowe" in sent[0][2] and "Sklep ACME" in sent[0][2] and "Gotowe e-maile" in sent[0][2]
     c.post(f"/admin/agent/drafts/{d['id']}", data={"action": "sent", "csrf": tok})
     assert db.one("SELECT status FROM mail_drafts")["status"] == "sent"
     # bez modelu AI: e-mail z szablonu, agent działa dalej

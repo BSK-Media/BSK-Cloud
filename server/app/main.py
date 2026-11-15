@@ -26,7 +26,8 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import agents, ai, backup, charts, chunks, leads, monitor, office, security, storage, sysinfo, thumbs, transfers
+from . import agents, ai, backup, charts, chunks, gsc, integrations, leads, monitor, office, report, security, storage, sysinfo, thumbs, transfers
+from .secretbox import SecretBox, mask
 from .config import Settings
 from .db import Database, iso_in, now_iso
 from . import notify
@@ -135,6 +136,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         backup.start_scheduler(settings, db)
     monitor.init(db)
     leads.init(db)
+    integrations.init(db)
+    box = SecretBox(settings.secret_key)
     ai_cfg = ai.Config(url=settings.ai_url, model=monitor.state_get(db, "ai_model") or settings.ai_model)
     overpass_url = os.environ.get("BSK_OVERPASS_URL", leads.OVERPASS_URL)
 
@@ -151,11 +154,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if row:
             leads.run_search(db, row, add_lead_site, overpass_url, progress)
 
+    def agent_alert(subject: str, body: str) -> None:
+        notify_admin(settings, subject, body, f"{settings.public_url}/admin/agent")
+
+    def agent_summary(subject: str, lines: list[str], html_body: str | None = None) -> None:
+        link = f"{settings.public_url}/admin/agent"
+        if html_body:
+            notify.send_html(settings, settings.notify_email, subject, html_body, "\n\n".join(lines), link, "Otwórz agenta")
+        else:
+            notify.send(settings, settings.notify_email, subject, lines, link, "Otwórz agenta")
+
+    integ = integrations.Integrations(db, box, ai_cfg, notify_alert=agent_alert,
+                                      psi_url=os.environ.get("BSK_PSI_URL", gsc.PSI_URL))
     site_agent = monitor.Agent(
         db, ai_cfg,
-        notify_alert=lambda subject, body: notify_admin(settings, subject, body, f"{settings.public_url}/admin/agent"),
-        send_summary=lambda subject, lines: notify.send(settings, settings.notify_email, subject, lines,
-                                                        f"{settings.public_url}/admin/agent", "Otwórz agenta"),
+        notify_alert=agent_alert,
+        send_summary=agent_summary,
+        integrations=integ,
+        build_report=lambda progress: report.build(db, ai_cfg, settings.public_url, progress),
         summary_hour=settings.agent_hour, lead_search=run_lead_search)
     if os.environ.get("BSK_AGENT_SCHEDULER", "1") == "1":
         site_agent.start()
@@ -173,6 +189,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     templates.env.filters["initials"] = _initials
     templates.env.filters["ftype"] = _file_kind
     templates.env.globals["charts"] = charts
+    templates.env.filters["fromjson"] = lambda v: json.loads(v) if v else {}
     templates.env.globals["office_enabled"] = bool(settings.office_url and settings.office_secret)
     templates.env.globals["doc_type"] = office.doc_type
     templates.env.globals["nas_host"] = urllib.parse.urlsplit(settings.lan_url).hostname or "IP-NAS"
@@ -1353,8 +1370,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         clients = db.all("SELECT id, company, display_name, username FROM users WHERE role = 'client'"
                          " AND space_id IS NULL ORDER BY company, display_name, username")
         searches = db.all("SELECT * FROM lead_searches ORDER BY created_at")
+        devices = db.all("SELECT * FROM net_devices ORDER BY name")
         return render(request, "admin_agent.html", nav="agent", sites=sites, events=events, clients=clients,
                       drafts=drafts, mailto=_mailto, searches=searches, categories=list(leads.CATEGORIES),
+                      devices=devices, google_ok=bool(integ.google_account()), psi_ok=bool(integ.psi_key()),
                       models=ai.MODELS,
                       ai_status=ai.status(ai_cfg), ai_model=ai_cfg.model, pull=dict(ai.pull_state),
                       busy=site_agent.busy, summary_hour=settings.agent_hour, ov=site_agent.overview(),
@@ -1493,10 +1512,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return RedirectResponse("/admin/agent#firmy", 303)
 
     @app.post("/admin/agent/model/select")
-    def agent_select_model(request: Request, model: str = Form(...), csrf: str = Form("")):
+    def agent_select_model(request: Request, model: str = Form(""), custom_model: str = Form(""), csrf: str = Form("")):
         check_csrf(request, csrf)
         admin = require_user(request, "admin")
-        model = model.strip()[:80]
+        model = (custom_model.strip() or model.strip())[:80]
         if not re.fullmatch(r"[a-zA-Z0-9._:/-]+", model):
             flash(request, "Nieprawidłowa nazwa modelu.", "error")
         else:
@@ -1523,9 +1542,103 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         check_csrf(request, csrf)
         require_user(request, "admin")
         site = site_or_404(site_id)
-        in_background("audyt", monitor.audit_and_store, db, site, ai_cfg, site_agent.progress)
+        in_background("audyt", monitor.audit_and_store, db, site, ai_cfg, site_agent.progress, integ.score_lead)
         flash(request, "Audyt ruszył w tle. Wynik pojawi się za kilka minut (zalecenia AI mogą potrwać dłużej).")
         return RedirectResponse(f"/admin/agent/sites/{site_id}", 303)
+
+    # --- klucze API, dane dostępowe stron, sieć
+
+    @app.get("/admin/agent/settings", response_class=HTMLResponse)
+    def agent_settings_page(request: Request):
+        require_user(request, "admin")
+        sa = integ.google_account()
+        return render(request, "admin_agent_settings.html", nav="agent", google_email=sa["client_email"] if sa else "",
+                      psi_masked=mask(integ.psi_key()))
+
+    @app.post("/admin/agent/settings")
+    def agent_settings_save(request: Request, google_sa: str = Form(""), psi_key: str = Form(""),
+                            clear: str = Form(""), csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        if clear == "google":
+            monitor.state_set(db, "google_sa", "")
+            flash(request, "Usunięto klucz konta Google.")
+        elif clear == "psi":
+            monitor.state_set(db, "psi_key", "")
+            flash(request, "Usunięto klucz PageSpeed.")
+        else:
+            if google_sa.strip():
+                try:
+                    data = gsc.parse_service_account(google_sa.strip())
+                except ValueError as exc:
+                    flash(request, str(exc), "error")
+                    return RedirectResponse("/admin/agent/settings", 303)
+                monitor.state_set(db, "google_sa", box.seal(google_sa.strip()))
+                db.log(admin["id"], "google_sa_saved", data["client_email"])
+                flash(request, f"Zapisano konto Google {data['client_email']}. Dodaj ten adres w Search Console klientów.")
+            if psi_key.strip():
+                if not re.fullmatch(r"[A-Za-z0-9_\-]{20,60}", psi_key.strip()):
+                    flash(request, "Klucz PageSpeed wygląda na nieprawidłowy.", "error")
+                    return RedirectResponse("/admin/agent/settings", 303)
+                monitor.state_set(db, "psi_key", box.seal(psi_key.strip()))
+                db.log(admin["id"], "psi_key_saved")
+                flash(request, "Zapisano klucz PageSpeed Insights.")
+        return RedirectResponse("/admin/agent/settings", 303)
+
+    @app.post("/admin/agent/sites/{site_id}/integrations")
+    def agent_site_integrations(request: Request, site_id: int, gsc_property: str = Form(""), wp_user: str = Form(""),
+                                wp_pass: str = Form(""), wc_key: str = Form(""), wc_secret: str = Form(""),
+                                contact_email: str = Form(""), action: str = Form("save"), csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        site = site_or_404(site_id)
+        if action == "run":
+            in_background("integracje", integ.run_site, db.one("SELECT * FROM sites WHERE id = ?", site_id), site_agent.progress)
+            flash(request, "Sprawdzam WordPress, Google i PageSpeed w tle — wynik za kilka minut.")
+            return RedirectResponse(f"/admin/agent/sites/{site_id}#integracje", 303)
+        if action == "clear":
+            db.run("UPDATE sites SET wp_user = '', wp_pass = '', wc_key = '', wc_secret = '' WHERE id = ?", site_id)
+            flash(request, "Usunięto dane dostępowe WordPress i WooCommerce.")
+            return RedirectResponse(f"/admin/agent/sites/{site_id}#integracje", 303)
+        contact_email = contact_email.strip()[:200]
+        if contact_email and not monitor._EMAIL_RE.fullmatch(contact_email):
+            flash(request, "Nieprawidłowy adres e-mail.", "error")
+            return RedirectResponse(f"/admin/agent/sites/{site_id}#integracje", 303)
+        db.run("UPDATE sites SET gsc_property = ?, wp_user = ?, contact_email = ? WHERE id = ?",
+               gsc_property.strip()[:200], wp_user.strip()[:120], contact_email, site_id)
+        for col, val in (("wp_pass", wp_pass), ("wc_key", wc_key), ("wc_secret", wc_secret)):
+            if val.strip():  # puste pole = bez zmian (klucz zostaje)
+                db.run(f"UPDATE sites SET {col} = ? WHERE id = ?", box.seal(val.strip().replace(" ", "") if col == "wp_pass" else val.strip()), site_id)
+        db.run("UPDATE sites SET integ_at = NULL WHERE id = ?", site_id)  # sprawdź przy najbliższej okazji
+        db.log(admin["id"], "site_integrations_saved", site["url"])
+        flash(request, "Zapisano. Agent sprawdzi stronę z nowymi danymi w ciągu kilku minut.")
+        return RedirectResponse(f"/admin/agent/sites/{site_id}#integracje", 303)
+
+    HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,252}$")
+
+    @app.post("/admin/agent/net")
+    def agent_net_add(request: Request, name: str = Form(...), host: str = Form(...), community: str = Form(""),
+                      csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        host = host.strip()
+        if not HOST_RE.match(host):
+            flash(request, "Podaj adres IP albo nazwę urządzenia, np. 192.168.10.1.", "error")
+        else:
+            did = db.run("INSERT INTO net_devices (name, host, community, created_at) VALUES (?, ?, ?, ?)",
+                         name.strip()[:80] or host, host, box.seal(community.strip()[:80]), now_iso())
+            db.log(admin["id"], "net_device_added", host)
+            in_background("siec", integ.check_device, db.one("SELECT * FROM net_devices WHERE id = ?", did))
+            flash(request, f"Dodano {host}. Agent sprawdza urządzenie co 5 minut.")
+        return RedirectResponse("/admin/agent#siec", 303)
+
+    @app.post("/admin/agent/net/{device_id}/delete")
+    def agent_net_delete(request: Request, device_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        require_user(request, "admin")
+        db.run("DELETE FROM net_devices WHERE id = ?", device_id)
+        flash(request, "Usunięto urządzenie z monitoringu.")
+        return RedirectResponse("/admin/agent#siec", 303)
 
     @app.get("/admin/agent/live", response_class=HTMLResponse)
     def agent_live(request: Request):
@@ -1544,7 +1657,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                       " FROM site_checks WHERE site_id = ? AND ts > ?", site_id, since)
         recent = db.all("SELECT * FROM site_checks WHERE site_id = ? ORDER BY ts DESC LIMIT 96", site_id)
         draft = db.one("SELECT * FROM mail_drafts WHERE site_id = ? AND status = 'new' ORDER BY ts DESC LIMIT 1", site_id)
-        return render(request, "admin_agent_site.html", nav="agent", site=site,
+        return render(request, "admin_agent_site.html", nav="agent", site=site, sv=integrations.site_view(site, box),
+                      google_ok=bool(integ.google_account()), psi_ok=bool(integ.psi_key()),
                       audit=dict(audit) | {"data": json.loads(audit["report"])} if audit else None,
                       history=history, week=week, recent=list(reversed(recent)), ssl_days=_ssl_days(site["ssl_expires"]),
                       draft=draft, mailto=_mailto)
