@@ -303,16 +303,27 @@ Co robi:
   potencjalnego klienta krótką pierwszą wiadomość. Adres bierze z konta klienta w portalu, z formularza albo
   znajduje go na stronie (linki mailto, podstrona kontaktowa). **Agent nic nie wysyła sam**: w panelu
   poprawiasz treść i klikasz *Otwórz w poczcie*;
+- **sam wyszukuje nowe firmy**: w panelu ustawiasz branżę i miasto (np. „dentysta, Wrocław”), a agent raz
+  na dobę pobiera z publicznej bazy OpenStreetMap firmy, które mają stronę WWW, i dodaje kilka nowych jako
+  „potencjalny klient” (audyt, adres e-mail z bazy albo ze strony, gotowy e-mail);
 - **codziennie o 7:00** (`BSK_AGENT_HOUR`) wysyła podsumowanie: co zrobił, co nie działa, wyniki audytów,
   zalecenia i gotowe e-maile.
 
 Uruchomienie (raz):
-1. W `.env` (opcjonalnie): `BSK_AI_MODEL` (domyślnie `qwen2.5:14b`), `BSK_AI_FOLDER` (domyślnie
+1. W `.env` (opcjonalnie): `BSK_AI_MODEL` (domyślnie `qwen2.5:72b`, ok. 47 GB RAM; model zmienisz też w panelu), `BSK_AI_FOLDER` (domyślnie
    `/volume1/bsk-cloud/ollama`, SSD), `BSK_AGENT_HOUR`. Poczta (`BSK_SMTP_*`, `BSK_NOTIFY_EMAIL`) musi działać.
 2. `sudo docker compose --profile tunnel --profile office --profile lan --profile ai up -d --build`
 3. Panel → **Agent AI** → *Pobierz model* (kilka–kilkanaście GB, raz). Potem dodaj strony.
 
-Model na procesorze NAS jest wolny (odpowiedź zajmuje minuty), ale agent pracuje w tle, więc to nie przeszkadza.
+Strony klientów dodajesz w panelu pojedynczo albo wklejając całą listę adresów (*Dodaj wiele stron naraz*).
+
+**Wybór modelu.** Domyślny jest największy model, który mieści się w RAM obok portalu: `qwen2.5:72b`
+(ok. 47 GB z 62 GB). Na procesorze pisze powoli (jedna odpowiedź to kilkadziesiąt minut), ale agent pracuje
+całą dobę w tle, a Ty widzisz tylko wyniki. Lżejsze modele (np. `qwen3:30b`, ok. 19 GB) są kilka razy szybsze.
+Model zmieniasz w panelu (*Zmień model*), potem *Pobierz model*. Karta **Co robi agent** pokazuje na żywo,
+nad czym pracuje, a **Zadania agenta** — jego stały harmonogram.
+
+Model na procesorze NAS jest wolniejszy niż usługi w chmurze, ale agent pracuje w tle, więc to nie przeszkadza.
 Bez kontenera Ollama agent działa dalej: monitoruje, audytuje i przygotowuje e-maile z szablonu, tylko bez AI.
 Pierwsze e-maile z ofertą do firm, które nie wyraziły zgody na kontakt handlowy, mogą naruszać polskie przepisy
 — dlatego agent tylko przygotowuje szkice, a decyzja o wysyłce należy do Ciebie.

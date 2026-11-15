@@ -26,7 +26,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import agents, ai, backup, charts, chunks, monitor, office, security, storage, sysinfo, thumbs, transfers
+from . import agents, ai, backup, charts, chunks, leads, monitor, office, security, storage, sysinfo, thumbs, transfers
 from .config import Settings
 from .db import Database, iso_in, now_iso
 from . import notify
@@ -134,13 +134,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings.backup_dir and os.environ.get("BSK_BACKUP_SCHEDULER", "1") == "1":
         backup.start_scheduler(settings, db)
     monitor.init(db)
-    ai_cfg = ai.Config(url=settings.ai_url, model=settings.ai_model)
+    leads.init(db)
+    ai_cfg = ai.Config(url=settings.ai_url, model=monitor.state_get(db, "ai_model") or settings.ai_model)
+    overpass_url = os.environ.get("BSK_OVERPASS_URL", leads.OVERPASS_URL)
+
+    def add_lead_site(firm: dict, source: str) -> int:
+        url = monitor.normalize_url(firm["website"])
+        sid_ = db.run("INSERT INTO sites (url, name, kind, contact_email, phone, source, created_at)"
+                      " VALUES (?, ?, 'lead', ?, ?, ?, ?)", url, firm["name"], firm["email"], firm["phone"],
+                      source, now_iso())
+        monitor.event(db, "lead", f"Nowa firma: {firm['name']} ({firm['host']}) — {source}.", sid_)
+        return sid_
+
+    def run_lead_search(progress=None) -> None:
+        row = leads.due_search(db)
+        if row:
+            leads.run_search(db, row, add_lead_site, overpass_url, progress)
+
     site_agent = monitor.Agent(
         db, ai_cfg,
         notify_alert=lambda subject, body: notify_admin(settings, subject, body, f"{settings.public_url}/admin/agent"),
         send_summary=lambda subject, lines: notify.send(settings, settings.notify_email, subject, lines,
                                                         f"{settings.public_url}/admin/agent", "Otwórz agenta"),
-        summary_hour=settings.agent_hour)
+        summary_hour=settings.agent_hour, lead_search=run_lead_search)
     if os.environ.get("BSK_AGENT_SCHEDULER", "1") == "1":
         site_agent.start()
     if os.environ.get("BSK_ALERT_SCHEDULER", "1") == "1":
@@ -1336,10 +1352,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         " WHERE d.status = 'new' ORDER BY d.ts DESC")
         clients = db.all("SELECT id, company, display_name, username FROM users WHERE role = 'client'"
                          " AND space_id IS NULL ORDER BY company, display_name, username")
+        searches = db.all("SELECT * FROM lead_searches ORDER BY created_at")
         return render(request, "admin_agent.html", nav="agent", sites=sites, events=events, clients=clients,
-                      drafts=drafts, mailto=_mailto,
+                      drafts=drafts, mailto=_mailto, searches=searches, categories=list(leads.CATEGORIES),
+                      models=ai.MODELS,
                       ai_status=ai.status(ai_cfg), ai_model=ai_cfg.model, pull=dict(ai.pull_state),
-                      busy=site_agent.busy, summary_hour=settings.agent_hour,
+                      busy=site_agent.busy, summary_hour=settings.agent_hour, ov=site_agent.overview(),
                       summary_sent=monitor.state_get(db, "summary_sent_at"),
                       mail_ok=notify.configured(settings) and bool(settings.notify_email), ssl_days=_ssl_days)
 
@@ -1412,6 +1430,82 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         flash(request, f"Dodano {clean}. Pierwsze sprawdzenie za chwilę, audyt SEO w ciągu kilku minut.")
         return RedirectResponse("/admin/agent", 303)
 
+    @app.post("/admin/agent/sites/bulk")
+    def agent_add_sites_bulk(request: Request, urls: str = Form(""), kind: str = Form("client"), csrf: str = Form("")):
+        """Wiele stron naraz — jeden adres w wierszu (np. skopiowany z arkusza)."""
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        known = {r["url"] for r in db.all("SELECT url FROM sites")}
+        added, bad = 0, []
+        for line in urls.splitlines()[:500]:
+            raw = line.strip().split()[0] if line.strip() else ""
+            if not raw:
+                continue
+            try:
+                clean = monitor.normalize_url(raw.strip(",;"))
+            except ValueError:
+                bad.append(raw[:60])
+                continue
+            if clean in known:
+                continue
+            known.add(clean)
+            sid_ = db.run("INSERT INTO sites (url, kind, created_at) VALUES (?, ?, ?)", clean,
+                          "lead" if kind == "lead" else "client", now_iso())
+            monitor.event(db, "site", f"Dodano stronę {clean} do monitoringu.", sid_)
+            added += 1
+        db.log(admin["id"], "sites_bulk_added", str(added))
+        flash(request, f"Dodano stron: {added}." + (f" Pominięto nieprawidłowe: {', '.join(bad[:5])}." if bad else "")
+              + " Agent sprawdzi je w ciągu kilku minut.", "warn" if bad else "ok")
+        return RedirectResponse("/admin/agent", 303)
+
+    @app.post("/admin/agent/searches")
+    def agent_add_search(request: Request, category: str = Form(...), city: str = Form(...), per_day: int = Form(5),
+                         csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        city = leads.clean_city(city)
+        if category not in leads.CATEGORIES or not city:
+            flash(request, "Wybierz branżę i wpisz miasto.", "error")
+        else:
+            db.run("INSERT INTO lead_searches (category, city, per_day, created_at) VALUES (?, ?, ?, ?)",
+                   category, city, max(1, min(per_day, 50)), now_iso())
+            db.log(admin["id"], "lead_search_added", f"{category}, {city}")
+            flash(request, f"Agent będzie codziennie szukał: {category}, {city} (do {max(1, min(per_day, 50))} nowych firm dziennie).")
+        return RedirectResponse("/admin/agent#firmy", 303)
+
+    @app.post("/admin/agent/searches/{search_id}/{action}")
+    def agent_search_action(request: Request, search_id: int, action: str, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        require_user(request, "admin")
+        row = db.one("SELECT * FROM lead_searches WHERE id = ?", search_id)
+        if not row:
+            raise HTTPException(404, "Nie ma takiego wyszukiwania.")
+        if action == "delete":
+            db.run("DELETE FROM lead_searches WHERE id = ?", search_id)
+            flash(request, "Usunięto wyszukiwanie (znalezione firmy zostają na liście).")
+        elif action == "toggle":
+            db.run("UPDATE lead_searches SET active = 1 - active WHERE id = ?", search_id)
+        elif action == "run":
+            in_background("wyszukiwanie-firm", leads.run_search, db, row, add_lead_site, overpass_url)
+            flash(request, "Szukam firm w tle — nowe pojawią się na liście za chwilę, audyty i e-maile w ciągu kilku godzin.")
+        else:
+            raise HTTPException(400, "Nieznana operacja.")
+        return RedirectResponse("/admin/agent#firmy", 303)
+
+    @app.post("/admin/agent/model/select")
+    def agent_select_model(request: Request, model: str = Form(...), csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        model = model.strip()[:80]
+        if not re.fullmatch(r"[a-zA-Z0-9._:/-]+", model):
+            flash(request, "Nieprawidłowa nazwa modelu.", "error")
+        else:
+            ai_cfg.model = model
+            monitor.state_set(db, "ai_model", model)
+            db.log(admin["id"], "ai_model_selected", model)
+            flash(request, f"Wybrano model {model}." + ("" if ai.status(ai_cfg)["ready"] else " Teraz kliknij „Pobierz model”."))
+        return RedirectResponse("/admin/agent", 303)
+
     @app.post("/admin/agent/sites/{site_id}/delete")
     def agent_delete_site(request: Request, site_id: int, csrf: str = Form("")):
         check_csrf(request, csrf)
@@ -1429,9 +1523,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         check_csrf(request, csrf)
         require_user(request, "admin")
         site = site_or_404(site_id)
-        in_background("audyt", monitor.audit_and_store, db, site, ai_cfg)
+        in_background("audyt", monitor.audit_and_store, db, site, ai_cfg, site_agent.progress)
         flash(request, "Audyt ruszył w tle. Wynik pojawi się za kilka minut (zalecenia AI mogą potrwać dłużej).")
         return RedirectResponse(f"/admin/agent/sites/{site_id}", 303)
+
+    @app.get("/admin/agent/live", response_class=HTMLResponse)
+    def agent_live(request: Request):
+        """Karta „Co robi agent” odświeżana co 5 s."""
+        require_user(request, "admin")
+        return render(request, "_agent_now.html", ov=site_agent.overview(), ai_model=ai_cfg.model)
 
     @app.get("/admin/agent/sites/{site_id}", response_class=HTMLResponse)
     def agent_site(request: Request, site_id: int):
