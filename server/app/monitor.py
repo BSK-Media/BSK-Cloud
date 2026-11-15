@@ -94,6 +94,11 @@ CREATE TABLE IF NOT EXISTS mail_drafts (
 
 def init(db: Database) -> None:
     db.conn().executescript(SCHEMA)
+    cols = {r["name"] for r in db.all("PRAGMA table_info(sites)")}
+    if "source" not in cols:  # skąd agent ma firmę (np. „dentysta, Wrocław” z wyszukiwania)
+        db.run("ALTER TABLE sites ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+    if "phone" not in cols:
+        db.run("ALTER TABLE sites ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
 
 
 def normalize_url(raw: str) -> str:
@@ -482,9 +487,14 @@ lub dwóch zdaniach, jako listę zaczynającą się od „- ”. Gdzie to ma sen
 Nie wymyślaj problemów, których nie ma na liście. Bez wstępu i zakończenia."""
 
 
-def audit_and_store(db: Database, site, ai_cfg: ai.Config | None) -> int:
+def _noop(_text: str) -> None:
+    pass
+
+
+def audit_and_store(db: Database, site, ai_cfg: ai.Config | None, progress=_noop) -> int:
     """Audyt + zalecenia AI (gdy model jest dostępny). Zwraca id audytu."""
     name = site["name"] or site["url"]
+    progress(f"Audyt {name}: sprawdzam SEO, szybkość i linki")
     try:
         result = audit_site(site["url"])
     except (OSError, urllib.error.URLError, ValueError) as exc:
@@ -497,13 +507,14 @@ def audit_and_store(db: Database, site, ai_cfg: ai.Config | None) -> int:
             url=site["url"], score=result["score"], title=f.get("title", ""), description=f.get("description", ""),
             ttfb=f.get("ttfb_ms", "?"), html_kb=f.get("html_kb", "?"),
             issues="\n".join(f"- [{i['area']}] {i['text']}" for i in result["issues"]))
+        progress(f"Audyt {name}: model AI pisze zalecenia")
         ai_text = ai.generate(ai_cfg, prompt) or ""
     aid = db.run("INSERT INTO site_audits (site_id, ts, score, report, ai_text) VALUES (?, ?, ?, ?, ?)",
                  site["id"], now_iso(), result["score"], json.dumps(result, ensure_ascii=False), ai_text)
     event(db, "audit", f"Audyt {name}: {result['score']}/100 ({result['errors']} błędów, {result['warns']} uwag)"
           + (", zalecenia AI gotowe" if ai_text else ""), site["id"])
     if result["facts"].get("code", 0) and result["facts"].get("code", 0) < 400:
-        make_draft(db, site, result, ai_text, ai_cfg)
+        make_draft(db, site, result, ai_text, ai_cfg, progress)
     return aid
 
 
@@ -614,7 +625,7 @@ def _template_draft(site, result: dict) -> tuple[str, str]:
     return subject, body
 
 
-def make_draft(db: Database, site, result: dict, ai_text: str, ai_cfg: ai.Config | None) -> int | None:
+def make_draft(db: Database, site, result: dict, ai_text: str, ai_cfg: ai.Config | None, progress=_noop) -> int | None:
     """Gotowy e-mail do klienta / potencjalnego klienta z adresem odbiorcy. Nic nie jest wysyłane."""
     if not result["issues"]:
         return None
@@ -624,6 +635,7 @@ def make_draft(db: Database, site, result: dict, ai_text: str, ai_cfg: ai.Config
         if row and row["email"]:
             to, source = row["email"], "konto klienta w portalu"
     if not to:
+        progress(f"{site['name'] or site['url']}: szukam adresu e-mail na stronie")
         to, where = discover_email(site["url"])
         source = f"znaleziony na {where}" if to else ""
     subject, body, by_ai = "", "", 0
@@ -631,6 +643,7 @@ def make_draft(db: Database, site, result: dict, ai_text: str, ai_cfg: ai.Config
         prompt = DRAFT_PROMPTS["lead" if site["kind"] == "lead" else "client"].format(
             url=site["url"], score=result["score"], advice=ai_text or "(brak)",
             issues="\n".join(f"- {i['text']}" for i in result["issues"][:10]))
+        progress(f"{site['name'] or site['url']}: model AI pisze e-mail")
         text = ai.generate(ai_cfg, prompt)
         if text:
             subject, body = _split_subject(text, f"Strona {urllib.parse.urlsplit(site['url']).hostname}")
@@ -655,7 +668,7 @@ Dziennik:
 {log}"""
 
 
-def daily_summary(db: Database, ai_cfg: ai.Config | None) -> tuple[str, list[str]]:
+def daily_summary(db: Database, ai_cfg: ai.Config | None, progress=_noop) -> tuple[str, list[str]]:
     """Temat i akapity e-maila z podsumowaniem ostatnich 24 godzin."""
     since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
     events = db.all("SELECT * FROM agent_events WHERE ts > ? ORDER BY ts", since)
@@ -683,6 +696,7 @@ def daily_summary(db: Database, ai_cfg: ai.Config | None) -> tuple[str, list[str
                     " ORDER BY a.ts", since)
     intro = ""
     if ai_cfg and (log_lines or down or soon):
+        progress("Model AI pisze dzienne podsumowanie")
         intro = ai.generate(ai_cfg, SUMMARY_PROMPT.format(log="\n".join([status_line] + log_lines[-60:]))) or ""
     if intro:
         lines.append(intro.strip())
@@ -719,30 +733,62 @@ def _hhmm(iso: str) -> str:
 # ------------------------------------------------------------------ praca w tle
 
 class Agent:
-    def __init__(self, db: Database, ai_cfg: ai.Config | None, notify_alert, send_summary, summary_hour: int = 7):
+    """Dwie pętle w tle: szybka (sprawdzanie stron co 15 min, nie czeka na AI) i robocza
+    (wyszukiwanie firm, audyty z AI, gotowe e-maile, dzienne podsumowanie)."""
+
+    def __init__(self, db: Database, ai_cfg: ai.Config | None, notify_alert, send_summary, summary_hour: int = 7,
+                 lead_search=None):
         self.db, self.ai_cfg = db, ai_cfg
         self.notify_alert, self.send_summary = notify_alert, send_summary
         self.summary_hour = summary_hour
+        self.lead_search = lead_search  # funkcja: jedno zaległe wyszukiwanie firm (albo None)
         self.lock = threading.Lock()
-        self.busy = ""
+        self.now: dict[str, dict | None] = {"work": None, "checks": None}  # podgląd w panelu: co robi teraz
+        self.started_at = now_iso()
+
+    @property
+    def busy(self) -> str:
+        return (self.now["work"] or {}).get("text", "")
+
+    def _set(self, kind: str, text: str | None) -> None:
+        if text is None:
+            self.now[kind] = None
+        elif not self.now[kind] or self.now[kind]["text"] != text:
+            self.now[kind] = {"text": text, "since": now_iso()}
+
+    def progress(self, text: str) -> None:
+        self._set("work", text)
 
     def tick(self) -> None:
-        """Jeden obrót pętli: zaległe sprawdzenia, najwyżej jeden audyt, podsumowanie o ustalonej godzinie."""
-        with self.lock:
-            due = datetime.now(timezone.utc) - timedelta(seconds=CHECK_EVERY_S)
+        self.tick_checks()
+        self.tick_work()
+
+    def tick_checks(self) -> None:
+        """Zaległe sprawdzenia działania stron."""
+        due = datetime.now(timezone.utc) - timedelta(seconds=CHECK_EVERY_S)
+        try:
             for site in self.db.all("SELECT * FROM sites WHERE active = 1 AND (last_check IS NULL OR last_check < ?)",
                                     due.isoformat()):
-                self.busy = f"sprawdzam {site['url']}"
+                self._set("checks", f"Sprawdzam, czy działa {site['name'] or site['url']}")
                 check_site(self.db, site, self.notify_alert)
-            old = (datetime.now(timezone.utc) - timedelta(days=AUDIT_EVERY_DAYS)).isoformat()
-            site = self.db.one(
-                "SELECT s.* FROM sites s WHERE s.active = 1 AND NOT EXISTS (SELECT 1 FROM site_audits a"
-                " WHERE a.site_id = s.id AND a.ts > ?) ORDER BY s.id LIMIT 1", old)
-            if site:
-                self.busy = f"audyt {site['url']}"
-                audit_and_store(self.db, site, self.ai_cfg)
-            self.busy = ""
-            self._maybe_summary()
+        finally:
+            self._set("checks", None)
+
+    def tick_work(self) -> None:
+        """Wyszukiwanie firm (raz na dobę), najwyżej jeden audyt, podsumowanie o ustalonej godzinie."""
+        with self.lock:
+            try:
+                if self.lead_search:
+                    self.lead_search(self.progress)
+                old = (datetime.now(timezone.utc) - timedelta(days=AUDIT_EVERY_DAYS)).isoformat()
+                site = self.db.one(
+                    "SELECT s.* FROM sites s WHERE s.active = 1 AND NOT EXISTS (SELECT 1 FROM site_audits a"
+                    " WHERE a.site_id = s.id AND a.ts > ?) ORDER BY s.kind = 'lead', s.id LIMIT 1", old)
+                if site:
+                    audit_and_store(self.db, site, self.ai_cfg, self.progress)
+                self._maybe_summary()
+            finally:
+                self._set("work", None)
 
     def _maybe_summary(self) -> None:
         try:
@@ -756,21 +802,48 @@ class Agent:
             self.summary_now()
 
     def summary_now(self) -> None:
-        self.busy = "piszę podsumowanie dnia"
+        self.progress("Przygotowuję dzienne podsumowanie")
         try:
-            subject, lines = daily_summary(self.db, self.ai_cfg)
+            subject, lines = daily_summary(self.db, self.ai_cfg, self.progress)
             self.send_summary(subject, lines)
             state_set(self.db, "summary_sent_at", now_iso())
         finally:
-            self.busy = ""
+            self._set("work", None)
+
+    def overview(self) -> dict:
+        """Zadania agenta i ich stan — karta „Co robi agent” w panelu."""
+        db = self.db
+        sites = db.one("SELECT COUNT(*) AS n, SUM(status = 'down') AS down, SUM(kind = 'lead') AS leads"
+                       " FROM sites WHERE active = 1")
+        old = (datetime.now(timezone.utc) - timedelta(days=AUDIT_EVERY_DAYS)).isoformat()
+        queue = db.one("SELECT COUNT(*) AS n FROM sites s WHERE s.active = 1 AND NOT EXISTS (SELECT 1 FROM site_audits a"
+                       " WHERE a.site_id = s.id AND a.ts > ?)", old)["n"]
+        since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        day = db.one("SELECT (SELECT COUNT(*) FROM site_checks WHERE ts > ?) AS checks,"
+                     " (SELECT COUNT(*) FROM site_audits WHERE ts > ?) AS audits,"
+                     " (SELECT COUNT(*) FROM mail_drafts WHERE ts > ?) AS mails,"
+                     " (SELECT COUNT(*) FROM agent_events WHERE kind = 'lead' AND ts > ?) AS leads",
+                     since, since, since, since)
+        searches = db.all("SELECT category, city, per_day, active FROM lead_searches") if db.one(
+            "SELECT 1 FROM sqlite_master WHERE name = 'lead_searches'") else []
+        return {
+            "now": [x for x in (self.now["work"], self.now["checks"]) if x],
+            "sites": sites["n"] or 0, "down": sites["down"] or 0, "leads": sites["leads"] or 0,
+            "audit_queue": queue, "day": dict(day),
+            "drafts": db.one("SELECT COUNT(*) AS n FROM mail_drafts WHERE status = 'new'")["n"],
+            "searches": [dict(r) for r in searches if r["active"]],
+            "summary_hour": self.summary_hour, "summary_sent": state_get(db, "summary_sent_at"),
+            "recent": [dict(r) for r in db.all("SELECT ts, kind, text FROM agent_events ORDER BY ts DESC LIMIT 6")],
+        }
 
     def start(self) -> None:
-        def loop():
+        def loop(fn, name):
             time.sleep(60)
             while True:
                 try:
-                    self.tick()
+                    fn()
                 except Exception:  # noqa: BLE001 — agent nie może zatrzymać portalu
-                    log.exception("Błąd agenta stron")
+                    log.exception("Błąd agenta (%s)", name)
                 time.sleep(60)
-        threading.Thread(target=loop, name="agent-stron", daemon=True).start()
+        threading.Thread(target=loop, args=(self.tick_checks, "monitoring"), name="agent-monitoring", daemon=True).start()
+        threading.Thread(target=loop, args=(self.tick_work, "praca"), name="agent-praca", daemon=True).start()

@@ -18,11 +18,25 @@ _pull_lock = threading.Lock()
 pull_state = {"running": False, "status": "", "error": ""}
 
 
+# Propozycje w panelu: (nazwa w Ollamie, opis). Na samym procesorze szybkość zależy od liczby parametrów
+# AKTYWNYCH przy każdym słowie — modele MoE (wielu „ekspertów”, aktywna tylko część) zajmują dużo RAM,
+# a piszą prawie tak szybko jak małe modele.
+MODELS = [
+    ("qwen2.5:72b", "Qwen2.5 72B — zalecany, gdy liczy się jakość: ok. 47 GB RAM, bardzo dobry polski, wolny (agent pracuje w tle)"),
+    ("llama3.3:70b", "Llama 3.3 70B — ok. 43 GB RAM, dużo wiedzy, wolny"),
+    ("qwen3:32b", "Qwen3 32B — ok. 20 GB RAM, staranne analizy z „myśleniem”"),
+    ("qwen3:30b", "Qwen3 30B (MoE) — ok. 19 GB RAM, kilka razy szybszy, dobry polski"),
+    ("gpt-oss:20b", "gpt-oss 20B (MoE) — ok. 14 GB RAM, najszybszy, polski poprawny"),
+    ("gemma3:27b", "Gemma 3 27B — ok. 17 GB RAM, bardzo dobry polski, kilka razy wolniejszy"),
+    ("qwen2.5:14b", "Qwen2.5 14B — ok. 9 GB RAM, poprzedni domyślny"),
+]
+
+
 @dataclass
 class Config:
     url: str = "http://ollama:11434"
-    model: str = "qwen2.5:14b"
-    timeout_s: int = 1800  # procesor NAS: odpowiedź może trwać kilka–kilkanaście minut
+    model: str = "qwen2.5:72b"
+    timeout_s: int = 3 * 3600  # duży model na procesorze NAS: jedna odpowiedź może trwać kilkadziesiąt minut
     num_ctx: int = 8192
 
 
@@ -49,13 +63,33 @@ def generate(cfg: Config, prompt: str, system: str = "") -> str | None:
             "options": {"temperature": 0.3, "num_ctx": cfg.num_ctx}}
     if system:
         body["system"] = system
+    think = _think_setting(cfg.model)
+    if think is not None:
+        body["think"] = think  # krótsze „myślenie” = kilka razy szybsza odpowiedź na procesorze
     try:
-        with _post(cfg, "/api/generate", body, cfg.timeout_s) as r:
-            text = json.loads(r.read()).get("response", "")
+        try:
+            with _post(cfg, "/api/generate", body, cfg.timeout_s) as r:
+                text = json.loads(r.read()).get("response", "")
+        except urllib.error.HTTPError as exc:
+            if exc.code != 400 or "think" not in body:
+                raise
+            body.pop("think")  # starsza Ollama albo model bez tej opcji
+            with _post(cfg, "/api/generate", body, cfg.timeout_s) as r:
+                text = json.loads(r.read()).get("response", "")
     except (OSError, urllib.error.URLError, ValueError) as exc:
         log.warning("Model AI niedostępny: %s", exc)
         return None
     return _strip_thinking(text).strip() or None
+
+
+def _think_setting(model: str):
+    """Jakość ponad szybkość: modele z „myśleniem” rozważają odpowiedź przed napisaniem (wolniej, ale lepiej)."""
+    name = model.lower()
+    if name.startswith(("qwen3", "deepseek-r1")):
+        return True
+    if name.startswith("gpt-oss"):
+        return "high"
+    return None
 
 
 def _strip_thinking(text: str) -> str:

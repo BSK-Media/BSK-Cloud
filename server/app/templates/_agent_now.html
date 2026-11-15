@@ -1,0 +1,37 @@
+{% import "_ui.html" as ui with context %}
+<div class="grid g-main mb">
+  <section class="card">
+    <div class="card-head">{{ ui.icon("bot") }}<h2>Co robi agent</h2><span class="spacer"></span><span class="small muted">odświeża się co 5 s</span></div>
+    {% if ov.now %}
+      {% for n in ov.now %}<div class="agent-now"><span class="pulse" aria-hidden="true"></span><div><b>{{ n.text }}</b>
+        <div class="small muted">od {{ n.since|ago }}{% if 'model AI' in n.text %} · model <code>{{ ai_model }}</code> pracuje na procesorze NAS — to może potrwać{% endif %}</div></div></div>{% endfor %}
+    {% else %}
+      <div class="agent-now idle"><span class="dot" aria-hidden="true"></span><div><b>Czeka na kolejne zadanie</b>
+        <div class="small muted">sprawdza co minutę, czy jest coś do zrobienia</div></div></div>
+    {% endif %}
+    {% if ov.recent %}
+    <h3 class="mt">Ostatnio</h3>
+    <ul class="agent-recent">{% for e in ov.recent %}<li><span class="small muted nowrap">{{ e.ts|ago }}</span> {{ e.text }}</li>{% endfor %}</ul>
+    {% endif %}
+  </section>
+  <section class="card">
+    <div class="card-head">{{ ui.icon("list") }}<h2>Zadania agenta</h2></div>
+    <ul class="agent-tasks">
+      <li><b>Pilnuje {{ ov.sites }} stron</b> — sprawdza co 15 minut, czy działają; awarię zgłasza od razu e-mailem.
+        {% if ov.down %}<span class="tag danger">{{ ov.down }} nie działa</span>{% endif %}</li>
+      <li><b>Audyt SEO i wydajności</b> — każda strona raz w tygodniu, z zaleceniami AI.
+        {% if ov.audit_queue %}<span class="tag warn">{{ ov.audit_queue }} w kolejce</span>{% endif %}</li>
+      <li><b>Szuka nowych firm</b> — raz na dobę:
+        {% if ov.searches %}{% for q in ov.searches %}{{ q.category }} ({{ q.city }}, do {{ q.per_day }}){{ ', ' if not loop.last }}{% endfor %}{% else %}<span class="muted">brak ustawionych wyszukiwań</span>{% endif %}.</li>
+      <li><b>Przygotowuje gotowe e-maile</b> do klientów i potencjalnych klientów — nic nie wysyła sam.
+        {% if ov.drafts %}<span class="tag">{{ ov.drafts }} czeka na Ciebie</span>{% endif %}</li>
+      <li><b>Wysyła podsumowanie</b> codziennie o {{ ov.summary_hour }}:00{% if ov.summary_sent %} (ostatnie {{ ov.summary_sent|ago }}){% endif %}.</li>
+    </ul>
+    <div class="stat-row compact mt">
+      <div><span>Sprawdzeń / doba</span><b>{{ ov.day.checks }}</b></div>
+      <div><span>Audytów / doba</span><b>{{ ov.day.audits }}</b></div>
+      <div><span>Nowych firm / doba</span><b>{{ ov.day.leads }}</b></div>
+      <div><span>E-maili / doba</span><b>{{ ov.day.mails }}</b></div>
+    </div>
+  </section>
+</div>

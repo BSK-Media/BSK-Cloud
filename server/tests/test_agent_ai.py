@@ -55,10 +55,17 @@ class Ollama(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        self._json({"models": [{"name": "qwen2.5:14b"}]})
+        self._json({"models": [{"name": "qwen2.5:72b"}, {"name": "qwen3:30b"}]})
+
+    bodies: list = []
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        Ollama.bodies.append(body)
+        if body.get("model") == "stary:1b" and "think" in body:
+            self.send_response(400)
+            self.end_headers()
+            return
         Ollama.prompts.append(body["prompt"])
         if "Dziennik:" in body["prompt"]:
             text = "Dziś wszystko działa, jedna strona do poprawy."
@@ -196,3 +203,120 @@ def test_background_tick(env):
     assert len(summaries) == 1 and not alerts
     agent.tick()  # drugi obrót tego samego dnia: bez nowych sprawdzeń, audytu ani podsumowania
     assert db.one("SELECT COUNT(*) AS n FROM site_checks")["n"] == 1 and len(summaries) == 1
+
+
+class Overpass(BaseHTTPRequestHandler):
+    queries: list = []
+    site_url = ""
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        import urllib.parse as up
+        q = up.parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode())["data"][0]
+        Overpass.queries.append(q)
+        host = Overpass.site_url.split("//")[1]
+        els = [{"tags": {"name": "Gabinet Uśmiech", "website": Overpass.site_url + "/", "email": "rejestracja@usmiech.test",
+                         "phone": "+48 600 000 000", "addr:city": "Wrocław"}},
+               {"tags": {"name": "Ten sam", "contact:website": "http://" + host + "/"}},  # duplikat domeny
+               {"tags": {"name": "Tylko FB", "website": "https://facebook.com/x"}},
+               {"tags": {"name": "Bez strony"}}]
+        data = json.dumps({"elements": els}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+def test_lead_search_and_panel(tmp_path, monkeypatch):
+    from app import leads
+    site, site_url = serve(Site)
+    llm, llm_url = serve(Ollama)
+    osm, osm_url = serve(Overpass)
+    Overpass.site_url = site_url
+    monkeypatch.setenv("BSK_AGENT_SCHEDULER", "0")
+    monkeypatch.setenv("BSK_OVERPASS_URL", osm_url)
+    app = create_app(Settings(data_dir=tmp_path, secret_key="x" * 40, cookie_secure=False, admin_username="admin",
+                              admin_password="AdminHaslo123", ai_url=llm_url))
+    try:
+        c = TestClient(app)
+        tok = re.search(r'name="csrf" value="([^"]+)"', c.get("/login").text).group(1)
+        c.post("/login", data={"username": "admin", "password": "AdminHaslo123", "csrf": tok})
+        tok = re.search(r'name="csrf" value="([^"]+)"', c.get("/admin/agent").text).group(1)
+        db = app.state.db
+        # wyszukiwanie: dentysta, Wrocław -> jedna nowa firma (bez duplikatu domeny, FB i firm bez strony)
+        c.post("/admin/agent/searches", data={"category": "dentysta", "city": 'Wrocław"]', "per_day": 5, "csrf": tok})
+        assert c.post("/admin/agent/searches", data={"category": "hakerzy", "city": "X", "csrf": tok}).status_code == 200
+        assert db.one("SELECT COUNT(*) AS n FROM lead_searches")["n"] == 1
+        agent = monitor.Agent(db, ai.Config(url=llm_url, model="qwen3:30b"), lambda *a: None, lambda *a: None,
+                              summary_hour=25, lead_search=lambda *a: leads.run_search(db, leads.due_search(db), _add(db), osm_url)
+                              if leads.due_search(db) else None)
+        agent.tick_work()
+        q = Overpass.queries[0]
+        assert '"amenity"="dentist"' in q and '"name"="Wrocław"' in q and '"]"' not in q.split("area[")[1][:40]
+        lead = db.one("SELECT * FROM sites WHERE kind = 'lead'")
+        assert lead["name"] == "Gabinet Uśmiech" and lead["contact_email"] == "rejestracja@usmiech.test"
+        assert lead["source"] == "dentysta, Wrocław" and db.one("SELECT COUNT(*) AS n FROM sites")["n"] == 1
+        # ten sam obrót: audyt nowej firmy i e-mail na adres z OpenStreetMap
+        d = db.one("SELECT * FROM mail_drafts")
+        assert d["to_email"] == "rejestracja@usmiech.test" and d["email_source"] == "podany ręcznie"
+        # qwen3: „myślenie” włączone — jakość ponad szybkość
+        assert Ollama.bodies[-1]["think"] is True
+        agent.tick_work()  # drugi raz tego samego dnia — bez nowego wyszukiwania
+        assert len(Overpass.queries) == 1
+        page = c.get("/admin/agent").text
+        assert "Wyszukiwanie nowych firm" in page and "dentysta" in page and "Gabinet Uśmiech" in page
+        # wiele stron naraz
+        r = c.post("/admin/agent/sites/bulk", data={"urls": "klient1.pl\nhttps://www.klient2.com.pl/oferta\nzly adres\nklient1.pl",
+                                                    "kind": "client", "csrf": tok})
+        assert "Dodano stron: 2" in r.text and "zly" in r.text
+        # wybór modelu z panelu (zapamiętany)
+        c.post("/admin/agent/model/select", data={"model": "gpt-oss:20b", "csrf": tok})
+        assert monitor.state_get(db, "ai_model") == "gpt-oss:20b" and "gpt-oss:20b" in c.get("/admin/agent").text
+        assert c.post("/admin/agent/model/select", data={"model": "zły model; rm", "csrf": tok}).status_code == 200
+        assert monitor.state_get(db, "ai_model") == "gpt-oss:20b"
+        # starsza Ollama odrzuca „think” -> ponowienie bez tej opcji
+        assert ai.generate(ai.Config(url=llm_url, model="stary:1b"), "Napisz zalecenia") is not None
+        assert "think" not in Ollama.bodies[-1]
+    finally:
+        for srv in (site, llm, osm):
+            srv.shutdown()
+
+
+def _add(db):
+    def add(firm, source):
+        return db.run("INSERT INTO sites (url, name, kind, contact_email, phone, source, created_at)"
+                      " VALUES (?, ?, 'lead', ?, ?, ?, '2026-01-01')", monitor.normalize_url(firm["website"]),
+                      firm["name"], firm["email"], firm["phone"], source)
+    return add
+
+
+def test_live_status_card(env):
+    """Karta „Co robi agent”: zadania, bieżąca czynność, odświeżany fragment."""
+    app, url, llm = env
+    db = app.state.db
+    c = TestClient(app)
+    tok = re.search(r'name="csrf" value="([^"]+)"', c.get("/login").text).group(1)
+    c.post("/login", data={"username": "admin", "password": "AdminHaslo123", "csrf": tok})
+    db.run("INSERT INTO sites (url, name, kind, created_at) VALUES (?, 'Klient', 'client', '2026-01-01')", url + "/")
+    live = c.get("/admin/agent/live").text
+    assert "<html" not in live and "Czeka na kolejne zadanie" in live and "Pilnuje 1 stron" in live
+    assert "1 w kolejce" in live
+    # podgląd w trakcie pracy: postęp audytu widoczny z innego wątku
+    seen = []
+    agent = monitor.Agent(db, ai.Config(url=llm, model="qwen2.5:72b"), lambda *a: None, lambda *a: None, summary_hour=25)
+    orig = monitor.ai.generate
+
+    def slow_generate(cfg, prompt, system=""):
+        seen.append(agent.overview()["now"][0]["text"])
+        return orig(cfg, prompt, system)
+    monitor.ai.generate = slow_generate
+    try:
+        agent.tick_work()
+    finally:
+        monitor.ai.generate = orig
+    assert any("model AI pisze zalecenia" in t for t in seen) and any("model AI pisze e-mail" in t for t in seen)
+    assert agent.overview()["now"] == []
+    assert "Co robi agent" in c.get("/admin/agent").text
