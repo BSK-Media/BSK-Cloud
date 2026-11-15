@@ -98,6 +98,20 @@ services:
       - lan_data:/data
       - lan_config:/config
 
+  # Agent AI: lokalny model językowy na NAS (tylko procesor; dane nie wychodzą poza NAS).
+  # Uruchomienie: docker compose --profile ai up -d   (model pobierasz przyciskiem w panelu Agent AI)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: bsk-ollama
+    profiles: [ai]
+    restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: 15m      # model zostaje w RAM 15 min po ostatnim zadaniu, potem zwalnia pamięć
+      OLLAMA_NUM_PARALLEL: "1"
+    volumes:
+      # modele (kilka–kilkanaście GB) — szybki dysk SSD
+      - ${BSK_AI_FOLDER:-/volume1/bsk-cloud/ollama}:/root/.ollama
+
   # Alternatywa dla przekierowania portów (np. gdy operator daje CGNAT / brak publicznego IP).
   cloudflared:
     image: cloudflare/cloudflared:latest

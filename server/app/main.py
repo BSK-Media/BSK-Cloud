@@ -26,7 +26,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import agents, backup, charts, chunks, office, security, storage, sysinfo, thumbs, transfers
+from . import agents, ai, backup, charts, chunks, monitor, office, security, storage, sysinfo, thumbs, transfers
 from .config import Settings
 from .db import Database, iso_in, now_iso
 from . import notify
@@ -133,6 +133,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return _team[0]
     if settings.backup_dir and os.environ.get("BSK_BACKUP_SCHEDULER", "1") == "1":
         backup.start_scheduler(settings, db)
+    monitor.init(db)
+    ai_cfg = ai.Config(url=settings.ai_url, model=settings.ai_model)
+    site_agent = monitor.Agent(
+        db, ai_cfg,
+        notify_alert=lambda subject, body: notify_admin(settings, subject, body, f"{settings.public_url}/admin/agent"),
+        send_summary=lambda subject, lines: notify.send(settings, settings.notify_email, subject, lines,
+                                                        f"{settings.public_url}/admin/agent", "Otwórz agenta"),
+        summary_hour=settings.agent_hour)
+    if os.environ.get("BSK_AGENT_SCHEDULER", "1") == "1":
+        site_agent.start()
     if os.environ.get("BSK_ALERT_SCHEDULER", "1") == "1":
         agents.start_alerts(settings, db, lambda subject, body, link: notify_admin(settings, subject, body, link))
 
@@ -1295,6 +1305,171 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return FileResponse(path, filename=f["original_name"], content_disposition_type="inline", headers={
             "X-Frame-Options": "SAMEORIGIN", "Content-Security-Policy": "frame-ancestors 'self'",
             "Cache-Control": "private, max-age=600"})
+
+    # ------------------------------------------------------------------ agent AI: strony klientów
+
+    def site_or_404(site_id: int):
+        site = db.one("SELECT * FROM sites WHERE id = ?", site_id)
+        if not site:
+            raise HTTPException(404, "Nie ma takiej strony.")
+        return site
+
+    def in_background(name: str, fn, *args) -> None:
+        def run():
+            try:
+                fn(*args)
+            except Exception:  # noqa: BLE001
+                log.exception("Agent: %s", name)
+        threading.Thread(target=run, name=name, daemon=True).start()
+
+    @app.get("/admin/agent", response_class=HTMLResponse)
+    def agent_page(request: Request):
+        require_user(request, "admin")
+        sites = db.all(
+            "SELECT s.*, u.company, u.display_name AS client_name, u.username AS client_login,"
+            " (SELECT score FROM site_audits a WHERE a.site_id = s.id ORDER BY a.ts DESC LIMIT 1) AS score,"
+            " (SELECT ts FROM site_audits a WHERE a.site_id = s.id ORDER BY a.ts DESC LIMIT 1) AS audit_ts"
+            " FROM sites s LEFT JOIN users u ON u.id = s.client_id ORDER BY s.name, s.url")
+        events = db.all("SELECT e.*, s.name, s.url FROM agent_events e LEFT JOIN sites s ON s.id = e.site_id"
+                        " ORDER BY e.ts DESC LIMIT 60")
+        drafts = db.all("SELECT d.*, s.name, s.url, s.kind FROM mail_drafts d JOIN sites s ON s.id = d.site_id"
+                        " WHERE d.status = 'new' ORDER BY d.ts DESC")
+        clients = db.all("SELECT id, company, display_name, username FROM users WHERE role = 'client'"
+                         " AND space_id IS NULL ORDER BY company, display_name, username")
+        return render(request, "admin_agent.html", nav="agent", sites=sites, events=events, clients=clients,
+                      drafts=drafts, mailto=_mailto,
+                      ai_status=ai.status(ai_cfg), ai_model=ai_cfg.model, pull=dict(ai.pull_state),
+                      busy=site_agent.busy, summary_hour=settings.agent_hour,
+                      summary_sent=monitor.state_get(db, "summary_sent_at"),
+                      mail_ok=notify.configured(settings) and bool(settings.notify_email), ssl_days=_ssl_days)
+
+    def _mailto(d) -> str:
+        """Link otwierający gotowy e-mail w programie pocztowym (Outlook, Gmail, Poczta…)."""
+        q = urllib.parse.urlencode({"subject": d["subject"], "body": d["body"]}, quote_via=urllib.parse.quote)
+        return f"mailto:{urllib.parse.quote(d['to_email'], safe='@.+-_')}?{q}"
+
+    def draft_or_404(draft_id: int):
+        d = db.one("SELECT * FROM mail_drafts WHERE id = ?", draft_id)
+        if not d:
+            raise HTTPException(404, "Nie ma takiego e-maila.")
+        return d
+
+    @app.post("/admin/agent/drafts/{draft_id}")
+    def agent_draft_update(request: Request, draft_id: int, to_email: str = Form(""), subject: str = Form(""),
+                           body: str = Form(""), action: str = Form("save"), csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        d = draft_or_404(draft_id)
+        if action in ("sent", "dismissed"):
+            db.run("UPDATE mail_drafts SET status = ? WHERE id = ?", action, draft_id)
+            db.log(admin["id"], f"draft_{action}", f"{d['to_email']}: {d['subject']}")
+            flash(request, "Oznaczono jako wysłany." if action == "sent" else "Odrzucono e-mail.")
+            return RedirectResponse("/admin/agent#maile", 303)
+        to_email = to_email.strip()[:200]
+        if to_email and not monitor._EMAIL_RE.fullmatch(to_email):
+            flash(request, "Nieprawidłowy adres e-mail.", "error")
+        else:
+            db.run("UPDATE mail_drafts SET to_email = ?, subject = ?, body = ? WHERE id = ?",
+                   to_email, subject.strip()[:200] or d["subject"], body.strip()[:10000] or d["body"], draft_id)
+            if to_email and d["site_id"]:
+                db.run("UPDATE sites SET contact_email = ? WHERE id = ? AND contact_email = ''", to_email, d["site_id"])
+            flash(request, "Zapisano zmiany w e-mailu.")
+        return RedirectResponse(f"/admin/agent#mail-{draft_id}", 303)
+
+    def _ssl_days(iso: str | None):
+        if not iso:
+            return None
+        try:
+            return (datetime.fromisoformat(iso) - datetime.now(timezone.utc)).days
+        except ValueError:
+            return None
+
+    @app.post("/admin/agent/sites")
+    def agent_add_site(request: Request, url: str = Form(...), name: str = Form(""), client_id: int | None = Form(None),
+                       kind: str = Form("client"), contact_email: str = Form(""), csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        try:
+            clean = monitor.normalize_url(url)
+        except ValueError as exc:
+            flash(request, str(exc), "error")
+            return RedirectResponse("/admin/agent", 303)
+        if client_id:
+            client_or_404(client_id)
+        if db.one("SELECT 1 FROM sites WHERE url = ?", clean):
+            flash(request, "Ta strona jest już monitorowana.", "warn")
+            return RedirectResponse("/admin/agent", 303)
+        contact_email = contact_email.strip()[:200]
+        if contact_email and not monitor._EMAIL_RE.fullmatch(contact_email):
+            flash(request, "Nieprawidłowy adres e-mail.", "error")
+            return RedirectResponse("/admin/agent", 303)
+        sid_ = db.run("INSERT INTO sites (url, name, client_id, kind, contact_email, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                      clean, name.strip()[:120], client_id or None, "lead" if kind == "lead" else "client",
+                      contact_email, now_iso())
+        monitor.event(db, "site", f"Dodano stronę {name.strip() or clean} do monitoringu.", sid_)
+        db.log(admin["id"], "site_added", clean)
+        in_background("pierwsze-sprawdzenie", monitor.check_site, db, db.one("SELECT * FROM sites WHERE id = ?", sid_))
+        flash(request, f"Dodano {clean}. Pierwsze sprawdzenie za chwilę, audyt SEO w ciągu kilku minut.")
+        return RedirectResponse("/admin/agent", 303)
+
+    @app.post("/admin/agent/sites/{site_id}/delete")
+    def agent_delete_site(request: Request, site_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        site = site_or_404(site_id)
+        db.run("DELETE FROM site_checks WHERE site_id = ?", site_id)
+        db.run("DELETE FROM site_audits WHERE site_id = ?", site_id)
+        db.run("DELETE FROM sites WHERE id = ?", site_id)
+        db.log(admin["id"], "site_deleted", site["url"])
+        flash(request, f"Usunięto {site['url']} z monitoringu.")
+        return RedirectResponse("/admin/agent", 303)
+
+    @app.post("/admin/agent/sites/{site_id}/audit")
+    def agent_audit_now(request: Request, site_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        require_user(request, "admin")
+        site = site_or_404(site_id)
+        in_background("audyt", monitor.audit_and_store, db, site, ai_cfg)
+        flash(request, "Audyt ruszył w tle. Wynik pojawi się za kilka minut (zalecenia AI mogą potrwać dłużej).")
+        return RedirectResponse(f"/admin/agent/sites/{site_id}", 303)
+
+    @app.get("/admin/agent/sites/{site_id}", response_class=HTMLResponse)
+    def agent_site(request: Request, site_id: int):
+        require_user(request, "admin")
+        site = site_or_404(site_id)
+        audit = db.one("SELECT * FROM site_audits WHERE site_id = ? ORDER BY ts DESC LIMIT 1", site_id)
+        history = db.all("SELECT ts, score FROM site_audits WHERE site_id = ? ORDER BY ts DESC LIMIT 12", site_id)
+        since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        week = db.one("SELECT COUNT(*) AS n, SUM(ok) AS ok, AVG(CASE WHEN ok = 1 THEN ms END) AS ms"
+                      " FROM site_checks WHERE site_id = ? AND ts > ?", site_id, since)
+        recent = db.all("SELECT * FROM site_checks WHERE site_id = ? ORDER BY ts DESC LIMIT 96", site_id)
+        draft = db.one("SELECT * FROM mail_drafts WHERE site_id = ? AND status = 'new' ORDER BY ts DESC LIMIT 1", site_id)
+        return render(request, "admin_agent_site.html", nav="agent", site=site,
+                      audit=dict(audit) | {"data": json.loads(audit["report"])} if audit else None,
+                      history=history, week=week, recent=list(reversed(recent)), ssl_days=_ssl_days(site["ssl_expires"]),
+                      draft=draft, mailto=_mailto)
+
+    @app.post("/admin/agent/model")
+    def agent_pull_model(request: Request, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        if ai.pull(ai_cfg):
+            db.log(admin["id"], "ai_model_pull", ai_cfg.model)
+            flash(request, f"Pobieranie modelu {ai_cfg.model} ruszyło w tle (kilka–kilkanaście GB, może potrwać).")
+        else:
+            flash(request, "Pobieranie już trwa.", "warn")
+        return RedirectResponse("/admin/agent", 303)
+
+    @app.post("/admin/agent/summary")
+    def agent_summary_now(request: Request, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        require_user(request, "admin")
+        if not (notify.configured(settings) and settings.notify_email):
+            flash(request, "Poczta nie jest skonfigurowana (BSK_SMTP_* i BSK_NOTIFY_EMAIL w .env).", "error")
+        else:
+            in_background("podsumowanie", site_agent.summary_now)
+            flash(request, f"Agent pisze podsumowanie — przyjdzie na {settings.notify_email} (z AI może to potrwać kilka minut).")
+        return RedirectResponse("/admin/agent", 303)
 
     # ------------------------------------------------------------------ stan NAS (jak Menedżer zadań UGOS)
 

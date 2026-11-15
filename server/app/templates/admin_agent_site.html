@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}{{ site.name or site.url }} — Agent AI{% endblock %}
+{% block heading %}{{ site.name or site.url }}{% endblock %}
+{% block subtitle %}<div class="subtitle"><a href="{{ site.url }}" target="_blank" rel="noopener">{{ site.url }}</a>
+  · {% if site.status == 'up' %}<span class="tag ok">● działa</span>{% elif site.status == 'down' %}<span class="tag danger">● nie działa</span>{% else %}czeka na sprawdzenie{% endif %}
+  · sprawdzono {{ site.last_check|ago }}</div>{% endblock %}
+{% block actions %}<a class="button" href="/admin/agent">{{ ui.icon("back") }}Agent AI</a>
+<form method="post" action="/admin/agent/sites/{{ site.id }}/audit" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}">
+  <button class="primary">{{ ui.icon("refresh") }}Audytuj teraz</button></form>{% endblock %}
+{% block content %}
+<div class="kpis">
+  {{ ui.kpi("Wynik audytu", (audit.score ~ "/100") if audit else "—", (audit.ts|ago) if audit else "audyt w kolejce", "chart") }}
+  {{ ui.kpi("Dostępność (7 dni)", ((week.ok * 100 / week.n)|round(1) ~ "%") if week.n else "—", (week.n ~ " sprawdzeń") if week.n else "", "shield") }}
+  {{ ui.kpi("Średni czas odpowiedzi", ((week.ms|round|int) ~ " ms") if week.ms else "—", "ostatnie 7 dni", "clock") }}
+  {{ ui.kpi("Certyfikat SSL", (ssl_days ~ " dni") if ssl_days is not none else "—", "do wygaśnięcia", "lock") }}
+</div>
+{% if recent|length > 1 %}
+<section class="card">
+  <div class="card-head"><h2>Czas odpowiedzi — ostatnie sprawdzenia</h2></div>
+  {{ charts.line_chart([("Czas odpowiedzi", recent|map(attribute='ms')|list, "#2a78d6")], "Czas odpowiedzi strony", "ms") }}
+</section>
+{% endif %}
+{% if draft %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("message") }}<h2>Gotowy e-mail</h2><span class="spacer"></span>
+    {% if draft.to_email %}<a class="button btn-sm primary" href="{{ mailto(draft) }}">Otwórz w poczcie</a>{% endif %}
+    <a class="button btn-sm" href="/admin/agent#mail-{{ draft.id }}">Edytuj</a></div>
+  <p class="small"><b>Do:</b> {{ draft.to_email or '(brak adresu)' }}{% if draft.email_source %} <span class="muted">— {{ draft.email_source }}</span>{% endif %}<br><b>Temat:</b> {{ draft.subject }}</p>
+  <div class="ai-text">{{ draft.body }}</div>
+</section>
+{% endif %}
+{% if audit %}
+{% set d = audit.data %}
+{% if audit.ai_text %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("bot") }}<h2>Zalecenia AI</h2><span class="spacer"></span><span class="small muted">lokalny model na NAS</span></div>
+  <div class="ai-text">{{ audit.ai_text }}</div>
+</section>
+{% endif %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("list") }}<h2>Wyniki audytu</h2><span class="spacer"></span><span class="small muted">{{ audit.ts|dt }}</span></div>
+  {% if d.issues %}
+  <div class="table-wrap"><table class="list compact"><tbody>
+    {% for i in d.issues|sort(attribute='level') %}<tr>
+      <td class="nowrap"><span class="tag {{ 'danger' if i.level == 'error' else 'warn' }}">{{ 'błąd' if i.level == 'error' else 'uwaga' }}</span></td>
+      <td class="small muted nowrap">{{ i.area }}</td><td class="small">{{ i.text }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% else %}<p><span class="tag ok">● bez uwag</span> Audyt nie znalazł problemów.</p>{% endif %}
+  {% set f = d.facts %}
+  <dl class="kv-rows mt">
+    {% if f.title is defined %}<div><dt>Tytuł</dt><dd class="small">{{ f.title or '—' }}</dd></div>{% endif %}
+    {% if f.description is defined %}<div><dt>Opis</dt><dd class="small">{{ f.description or '—' }}</dd></div>{% endif %}
+    {% if f.ttfb_ms is defined %}<div><dt>Odpowiedź serwera</dt><dd>{{ f.ttfb_ms }} ms</dd></div>{% endif %}
+    {% if f.html_kb is defined %}<div><dt>Rozmiar HTML</dt><dd>{{ f.html_kb }} KB · kompresja: {{ f.compression or '—' }}</dd></div>{% endif %}
+    {% if f.images is defined %}<div><dt>Obrazy / skrypty / style</dt><dd>{{ f.images }} / {{ f.scripts }} / {{ f.styles }}</dd></div>{% endif %}
+  </dl>
+</section>
+{% endif %}
+{% if history|length > 1 %}
+<section class="card">
+  <div class="card-head"><h2>Historia wyników</h2></div>
+  <div class="chips">{% for h in history %}<span class="chip-link"><b>{{ h.score }}</b>/100 · {{ h.ts|dt }}</span>{% endfor %}</div>
+</section>
+{% endif %}
+{% endblock %}

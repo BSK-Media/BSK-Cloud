@@ -984,3 +984,14 @@ document.querySelectorAll("[data-live]").forEach((box) => {
     document.querySelectorAll(".page-tabs a").forEach((x) => x.classList.toggle("on", x === a));
   }));
 });
+
+// kopiowanie gotowego e-maila (agent AI)
+document.querySelectorAll("[data-copy-text]").forEach((btn) => btn.addEventListener("click", async () => {
+  const form = btn.closest("form");
+  const val = (name) => (form && form.querySelector(`[name=${name}]`) ? form.querySelector(`[name=${name}]`).value : "");
+  const text = form ? `Do: ${val("to_email")}\nTemat: ${val("subject")}\n\n${val("body")}` : btn.dataset.copyText;
+  try { await navigator.clipboard.writeText(text); } catch (_) { /* brak uprawnień do schowka */ }
+  const old = btn.innerHTML;
+  btn.textContent = "Skopiowano ✓";
+  setTimeout(() => { btn.innerHTML = old; }, 1600);
+}));

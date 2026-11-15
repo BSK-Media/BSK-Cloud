@@ -649,3 +649,10 @@ body.tpage { min-height: 100vh; margin: 0; display: flex; align-items: center; p
 .disk-card .disk-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
 .chart-unit { margin: 10px 0 2px; }
 .chart-wait { padding: 30px 0; text-align: center; }
+
+/* agent AI */
+.score { font-size: 1.05rem; } .score.good { color: #0a7a0a; } .score.warning { color: #a86a00; } .score.critical { color: var(--critical); }
+.ai-text { white-space: pre-line; line-height: 1.6; }
+.draft { border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+.draft-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.draft textarea { font-family: inherit; line-height: 1.5; }

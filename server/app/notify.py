@@ -28,7 +28,7 @@ def configured(settings: Settings) -> bool:
 
 
 def _html(settings: Settings, title: str, lines: list[str], link: str, button: str) -> str:
-    body = "".join(f'<p style="margin:0 0 10px">{html.escape(line)}</p>' for line in lines if line)
+    body = "".join(f'<p style="margin:0 0 10px;white-space:pre-line">{html.escape(line)}</p>' for line in lines if line)
     return f"""<!doctype html><html><body style="margin:0;background:#f5f6f8;font-family:Segoe UI,Arial,sans-serif;color:#111827">
 <table width="100%" cellpadding="0" cellspacing="0" style="padding:28px 12px"><tr><td align="center">
 <table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border:1px solid #e7e9ee;border-radius:14px">
