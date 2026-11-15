@@ -969,3 +969,18 @@ document.querySelectorAll("[data-browser]").forEach((browser) => {
     sel.forEach((b) => { const h = document.createElement("input"); h.type = "hidden"; h.name = "ids"; h.value = b.value; bar.append(h); });
   });
 });
+
+// ---------------------------------------------------------------- stan NAS: odświeżanie co 5 s bez przeładowania
+document.querySelectorAll("[data-live]").forEach((box) => {
+  const refresh = async () => {
+    if (document.hidden) return;
+    try {
+      const res = await fetch(box.dataset.live, { credentials: "same-origin", cache: "no-store" });
+      if (res.ok) box.innerHTML = await res.text();
+    } catch (_) { /* chwilowy brak połączenia */ }
+  };
+  setInterval(refresh, 5000);
+  document.querySelectorAll(".page-tabs a").forEach((a) => a.addEventListener("click", () => {
+    document.querySelectorAll(".page-tabs a").forEach((x) => x.classList.toggle("on", x === a));
+  }));
+});

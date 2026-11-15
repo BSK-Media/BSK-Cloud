@@ -176,3 +176,60 @@ def sparkline(values: list[int], width: int = 120, height: int = 32) -> Markup:
 def day_range(days: int) -> list[date]:
     today = date.today()
     return [today - timedelta(days=days - 1 - i) for i in range(days)]
+
+
+def percent_meter(pct: float | None, tip: str, warn: float = 80, crit: float = 90) -> Markup:
+    """Pasek procentowy (procesor, RAM, temperatura względem progu) z kolorem stanu."""
+    pct = max(0.0, min(100.0, float(pct or 0)))
+    color = CRITICAL if pct >= crit else WARNING if pct >= warn else SERIES[0]
+    return Markup(f'<div class="meter" title="{escape(tip)}" role="meter" aria-valuemin="0" aria-valuemax="100" '
+                  f'aria-valuenow="{pct:.0f}" aria-label="{escape(tip)}">{_bar_svg(pct, color)}</div>')
+
+
+def temp_color(value: float | None) -> str:
+    if value is None:
+        return "muted"
+    return "critical" if value >= 85 else "warning" if value >= 70 else "good"
+
+
+def line_chart(series: list[tuple[str, list, str]], title: str, unit: str = "%", top: float | None = None) -> Markup:
+    """Wykres z ostatnich 10 minut (próbka co 5 s): oś Y z podziałką, kilka serii, legenda przy >= 2 seriach."""
+    W, H, L, R, T, B = 720, 200, 44, 8, 10, 22
+    pw, ph = W - L - R, H - T - B
+    all_vals = [v for _, vals, _ in series for v in vals if v is not None]
+    if len(all_vals) < 2:
+        return Markup('<div class="chart-wait muted small">Zbieram dane… wykres pojawi się po kilkunastu sekundach.</div>')
+    raw = top or max(all_vals)
+    step = 1
+    for m in (0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 25, 50, 100, 200, 500, 1000):
+        step = m
+        if (raw or 1) / m <= 5:
+            break
+    ticks = max(1, math.ceil((raw or 1) / step))
+    hi = top or step * ticks
+    if top:
+        ticks, step = 5, top / 5
+    parts = [f'<svg viewBox="0 0 {W} {H}" class="chart" role="img" aria-label="{escape(title)}"><title>{escape(title)}</title>']
+    for i in range(ticks + 1):
+        y = T + ph - ph * i / ticks
+        v = step * i
+        lbl = f"{v:.0f}" if v >= 1 or v == 0 else f"{v:.1f}"
+        parts.append(f'<line x1="{L}" x2="{W - R}" y1="{y:.1f}" y2="{y:.1f}" stroke="{GRID}" stroke-width="1"/>')
+        parts.append(f'<text x="{L - 6}" y="{y + 4:.1f}" text-anchor="end" class="tick">{lbl}</text>')
+    n = max(len(vals) for _, vals, _ in series)
+    dx = pw / max(1, n - 1)
+    for _, vals, color in series:
+        pts = [(L + i * dx, T + ph - ph * min(v, hi) / hi) for i, v in enumerate(vals) if v is not None]
+        if len(pts) < 2:
+            continue
+        line = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+        parts.append(f'<polygon points="{pts[0][0]:.1f},{T + ph} {line} {pts[-1][0]:.1f},{T + ph}" fill="{color}" fill-opacity=".08"/>')
+        parts.append(f'<polyline points="{line}" fill="none" stroke="{color}" stroke-width="2" stroke-linejoin="round"/>')
+    parts.append(f'<text x="{L}" y="{H - 5}" class="tick">10 min temu</text>'
+                 f'<text x="{W - R}" y="{H - 5}" text-anchor="end" class="tick">teraz</text></svg>')
+    legend = ""
+    if len(series) > 1:
+        legend = '<div class="legend">' + "".join(
+            f'<span class="legend-item">{swatch(c)}{escape(lbl)}</span>' for lbl, _, c in series) + "</div>"
+    unit_lbl = f'<div class="chart-unit small muted">{escape(unit)}</div>'
+    return Markup(unit_lbl + legend + "".join(parts))

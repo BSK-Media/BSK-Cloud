@@ -26,7 +26,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import agents, backup, charts, chunks, office, security, storage, thumbs, transfers
+from . import agents, backup, charts, chunks, office, security, storage, sysinfo, thumbs, transfers
 from .config import Settings
 from .db import Database, iso_in, now_iso
 from . import notify
@@ -1295,6 +1295,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return FileResponse(path, filename=f["original_name"], content_disposition_type="inline", headers={
             "X-Frame-Options": "SAMEORIGIN", "Content-Security-Policy": "frame-ancestors 'self'",
             "Cache-Control": "private, max-age=600"})
+
+    # ------------------------------------------------------------------ stan NAS (jak Menedżer zadań UGOS)
+
+    nas = sysinfo.SysInfo()
+    templates.env.globals["fmt_rate"] = sysinfo.fmt_rate
+
+    def nas_ctx() -> dict:
+        nas.start()
+        snap = nas.snapshot()
+        hist = snap["history"]
+        return {"s": snap, "uptime": sysinfo.fmt_uptime(snap["uptime"]),
+                "h_cpu": [h["cpu"] for h in hist], "h_mem": [h["mem"] for h in hist],
+                "h_temp": [h["temp"] for h in hist],
+                "h_rx": [h["rx"] / 1048576 for h in hist], "h_tx": [h["tx"] / 1048576 for h in hist],
+                "h_read": [h["read"] / 1048576 for h in hist], "h_write": [h["write"] / 1048576 for h in hist]}
+
+    @app.get("/admin/system", response_class=HTMLResponse)
+    def system_page(request: Request):
+        require_user(request, "admin")
+        return render(request, "admin_system.html", nav="system", **nas_ctx())
+
+    @app.get("/admin/system/live", response_class=HTMLResponse)
+    def system_live(request: Request):
+        """Fragment strony odświeżany co 5 s (bez przeładowania)."""
+        require_user(request, "admin")
+        return render(request, "_system_live.html", **nas_ctx())
 
     @app.get("/admin/trash", response_class=HTMLResponse)
     def trash_page(request: Request):

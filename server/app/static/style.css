@@ -623,3 +623,29 @@ body.tpage { min-height: 100vh; margin: 0; display: flex; align-items: center; p
 .kv > div { display: flex; flex-direction: column; gap: 3px; }
 .kv > div > span:first-child { font-size: .78rem; color: var(--muted); }
 .kv .tag { align-self: flex-start; }
+
+/* stan NAS */
+.page-tabs { display: inline-flex; flex-wrap: wrap; position: sticky; top: 8px; z-index: 5; }
+.page-tabs a { padding: 6px 12px; border-radius: 9px; color: var(--muted); font-weight: 550; text-decoration: none; }
+.page-tabs a:hover, .page-tabs a.on { background: #fff; color: var(--ink); }
+.kv-rows { margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.kv-rows > div { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+.kv-rows dt { color: var(--muted); }
+.kv-rows dd { margin: 0; font-weight: 650; text-align: right; }
+.kv-rows .sep { border-top: 1px solid var(--line); margin: 4px 0; }
+.kv-rows.grow { flex: 1; }
+.ring-row { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; }
+.stat-row { display: flex; flex-wrap: wrap; gap: 14px 30px; margin-bottom: 14px; }
+.stat-row > div { display: flex; flex-direction: column; gap: 2px; }
+.stat-row > div > span { font-size: .78rem; color: var(--muted); }
+.stat-row > div > b { font-size: 1.25rem; font-weight: 650; }
+.stat-row.compact > div > b { font-size: 1rem; }
+.stat-row .mark { border-left: 3px solid; padding-left: 10px; }
+.stat-row .mark.used { border-color: #2a78d6; } .stat-row .mark.cache { border-color: #eb6834; } .stat-row .mark.free { border-color: #d6dbe3; }
+.membar { display: block; border-radius: 7px; }
+.temp.good { color: #0a7a0a; } .temp.warning { color: #a86a00; } .temp.critical { color: var(--critical); }
+.disk-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; margin-bottom: 14px; }
+.disk-card { border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+.disk-card .disk-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.chart-unit { margin: 10px 0 2px; }
+.chart-wait { padding: 30px 0; text-align: center; }

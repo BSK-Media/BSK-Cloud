@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Stan NAS — {{ site_name }}{% endblock %}
+{% block heading %}Stan NAS{% endblock %}
+{% block subtitle %}<div class="subtitle">{{ s.hostname or 'NAS' }} · {{ s.cpu.model or 'procesor' }} · odświeża się co 5 sekund</div>{% endblock %}
+{% block content %}
+<nav class="tabs page-tabs mb" aria-label="Sekcje">
+  <a href="#przeglad" class="on">Przegląd</a><a href="#procesor">Procesor</a><a href="#pamiec">Pamięć</a>
+  <a href="#siec">Sieć</a><a href="#dyski">Dyski</a><a href="#czujniki">Czujniki</a>
+</nav>
+<div data-live="/admin/system/live">{% include "_system_live.html" %}</div>
+{% endblock %}

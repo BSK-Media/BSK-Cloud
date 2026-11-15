@@ -22,6 +22,10 @@ services:
       - ${BSK_DB_FOLDER:-/volume1/bsk-cloud/baza}:/baza
       # Codzienna kopia bazy i plików klientów — drugi dysk (SSD 1 TB)
       - ${BSK_BACKUP_FOLDER:-/volume2/bsk-kopie}:/kopia
+      # Stan NAS w panelu (RAM, procesor, temperatury, sieć) — tylko do odczytu
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc/hostname:/host/hostname:ro
     ports:
       # Dostęp w sieci firmowej (np. http://192.168.1.50:8090) — przydaje się do testów
       # i dla agentów kopii w biurze. Usuń, jeśli nie potrzebujesz.
