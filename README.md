@@ -309,6 +309,16 @@ Co robi:
 - **codziennie o 7:00** (`BSK_AGENT_HOUR`) wysyła podsumowanie: co zrobił, co nie działa, wyniki audytów,
   zalecenia i gotowe e-maile.
 
+Integracje (opcjonalne, klucze w panelu **Agent AI → Ustawienia i klucze API** i na stronie klienta;
+zapisywane w bazie w formie zaszyfrowanej):
+- **WordPress / WooCommerce**: hasło aplikacji WordPress i klucz REST API WooCommerce (tylko odczyt). Agent
+  codziennie sprawdza wersję WordPressa i PHP, nieaktualne wtyczki, nieudane zamówienia i spadki sprzedaży;
+- **Google Search Console**: konto usługi Google (plik JSON). Agent porównuje kliknięcia i pozycje z poprzednim
+  tygodniem i zgłasza spadki; **PageSpeed Insights**: klucz API Google (wynik Lighthouse na telefonie);
+- **sieć biurowa**: router, switche i punkty dostępowe (ping co 5 minut, z SNMP także restarty i stan portów);
+- **ocena potencjału** każdej znalezionej firmy (0–100 z uzasadnieniem), a raport dzienny ma kafelki,
+  priorytetowe problemy, nowe firmy z oceną i gotowe e-maile.
+
 Uruchomienie (raz):
 1. W `.env` (opcjonalnie): `BSK_AI_MODEL` (domyślnie `qwen3:32b-q8_0`, ok. 35 GB RAM; model zmienisz też w panelu), `BSK_AI_FOLDER` (domyślnie
    `/volume1/bsk-cloud/ollama`, SSD), `BSK_AGENT_HOUR`. Poczta (`BSK_SMTP_*`, `BSK_NOTIFY_EMAIL`) musi działać.

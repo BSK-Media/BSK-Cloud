@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Ustawienia agenta — {{ site_name }}{% endblock %}
+{% block heading %}Ustawienia i klucze API{% endblock %}
+{% block subtitle %}<div class="subtitle">Klucze są zapisane w bazie w formie zaszyfrowanej. Klucze WordPress i WooCommerce wpisujesz osobno przy każdej stronie klienta.</div>{% endblock %}
+{% block actions %}<a class="button" href="/admin/agent">{{ ui.icon("back") }}Agent AI</a>{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("chart") }}<h2>Google Search Console</h2>
+    <span class="spacer"></span>{% if google_email %}<span class="tag ok">● podłączone</span>{% else %}<span class="tag off">niepodłączone</span>{% endif %}</div>
+  <p>Agent co dobę porównuje kliknięcia, wyświetlenia i średnią pozycję w Google z poprzednim tygodniem i zgłasza spadki.</p>
+  {% if google_email %}<p>Konto usługi: <code>{{ google_email }}</code> — dodaj ten adres w Search Console każdego klienta
+    (<i>Ustawienia → Użytkownicy i uprawnienia → Dodaj użytkownika</i>, uprawnienie „Ograniczone”).</p>{% endif %}
+  <details {{ 'open' if not google_email }}><summary class="small">Jak zdobyć klucz (jednorazowo, ok. 10 minut)</summary>
+    <ol class="steps small">
+      <li>Wejdź na <b>console.cloud.google.com</b> i utwórz projekt, np. „BSK Agent”.</li>
+      <li><i>Interfejsy API i usługi → Biblioteka</i> → włącz <b>Google Search Console API</b>.</li>
+      <li><i>Interfejsy API i usługi → Dane logowania → Utwórz dane logowania → Konto usługi</i>, nazwa np. „bsk-agent”.</li>
+      <li>Otwórz konto usługi → <i>Klucze → Dodaj klucz → JSON</i>. Pobierze się plik — otwórz go w Notatniku i wklej całą zawartość poniżej.</li>
+      <li>Adres e-mail konta usługi (kończy się na <code>.iam.gserviceaccount.com</code>) dodaj w Search Console klientów.</li>
+      <li>Przy każdej stronie klienta w agencie wpisz nazwę usługi z Search Console, np. <code>sc-domain:klient.pl</code> albo <code>https://www.klient.pl/</code>.</li>
+    </ol></details>
+  <form method="post" action="/admin/agent/settings" class="stack mt">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Klucz konta usługi Google (plik JSON) <textarea name="google_sa" rows="5" placeholder='{"type": "service_account", ...}' autocomplete="off" spellcheck="false"></textarea></label>
+    <div class="row"><button class="primary">Zapisz klucz Google</button>
+      {% if google_email %}<button name="clear" value="google" class="ghost danger" data-confirm="Usunąć klucz Google?">Usuń klucz</button>{% endif %}</div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">{{ ui.icon("chart") }}<h2>PageSpeed Insights</h2>
+    <span class="spacer"></span>{% if psi_masked %}<span class="tag ok">● {{ psi_masked }}</span>{% else %}<span class="tag off">brak — agent mierzy szybkość sam</span>{% endif %}</div>
+  <p>Opcjonalnie: wynik Google Lighthouse (telefon) — wydajność, SEO, dostępność, LCP. Bez klucza agent i tak sprawdza czas odpowiedzi, wagę strony i obrazy.</p>
+  <details><summary class="small">Jak zdobyć klucz</summary>
+    <ol class="steps small"><li>W tym samym projekcie Google Cloud włącz <b>PageSpeed Insights API</b>.</li>
+      <li><i>Dane logowania → Utwórz dane logowania → Klucz interfejsu API</i>, skopiuj i wklej poniżej (warto ograniczyć klucz do PageSpeed Insights API).</li></ol></details>
+  <form method="post" action="/admin/agent/settings" class="stack mt">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Klucz API PageSpeed <input name="psi_key" autocomplete="off" placeholder="AIza…"></label>
+    <div class="row"><button class="primary">Zapisz klucz</button>
+      {% if psi_masked %}<button name="clear" value="psi" class="ghost danger">Usuń klucz</button>{% endif %}</div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">{{ ui.icon("key") }}<h2>WordPress i WooCommerce</h2></div>
+  <p>Dane dostępowe wpisujesz przy każdej stronie klienta (Agent AI → nazwa strony → <b>Integracje</b>). Wszystko tylko do odczytu:</p>
+  <ul class="small">
+    <li><b>WordPress</b>: w panelu WordPress klienta <i>Użytkownicy → Profil → Hasła aplikacji</i> — wpisz nazwę „BSK Agent” i skopiuj wygenerowane hasło (konto administratora). Agent widzi wtyczki i ich wersje.</li>
+    <li><b>WooCommerce</b>: <i>WooCommerce → Ustawienia → Zaawansowane → REST API → Dodaj klucz</i>, uprawnienia „Odczyt”. Agent widzi wersję PHP, aktualizacje wtyczek i zamówienia (nieudane, spadek sprzedaży).</li>
+  </ul>
+</section>
+
+<section class="card">
+  <div class="card-head">{{ ui.icon("network") }}<h2>Sieć biurowa (SNMP)</h2></div>
+  <p class="small">Urządzenia dodajesz na stronie <a href="/admin/agent#siec">Agent AI → Sieć biurowa</a>. Żeby agent widział restarty i stan portów, włącz SNMP v2c w urządzeniu (w Ruijie: <i>Obszar roboczy → SNMP</i>) i wpisz to samo „community” (np. <code>public</code>). Bez SNMP agent sprawdza tylko, czy urządzenie odpowiada.</p>
+</section>
+{% endblock %}

@@ -491,7 +491,7 @@ def _noop(_text: str) -> None:
     pass
 
 
-def audit_and_store(db: Database, site, ai_cfg: ai.Config | None, progress=_noop) -> int:
+def audit_and_store(db: Database, site, ai_cfg: ai.Config | None, progress=_noop, lead_scorer=None) -> int:
     """Audyt + zalecenia AI (gdy model jest dostępny). Zwraca id audytu."""
     name = site["name"] or site["url"]
     progress(f"Audyt {name}: sprawdzam SEO, szybkość i linki")
@@ -514,6 +514,8 @@ def audit_and_store(db: Database, site, ai_cfg: ai.Config | None, progress=_noop
     event(db, "audit", f"Audyt {name}: {result['score']}/100 ({result['errors']} błędów, {result['warns']} uwag)"
           + (", zalecenia AI gotowe" if ai_text else ""), site["id"])
     if result["facts"].get("code", 0) and result["facts"].get("code", 0) < 400:
+        if lead_scorer and site["kind"] == "lead":
+            lead_scorer(site, result, progress)
         make_draft(db, site, result, ai_text, ai_cfg, progress)
     return aid
 
@@ -737,11 +739,13 @@ class Agent:
     (wyszukiwanie firm, audyty z AI, gotowe e-maile, dzienne podsumowanie)."""
 
     def __init__(self, db: Database, ai_cfg: ai.Config | None, notify_alert, send_summary, summary_hour: int = 7,
-                 lead_search=None):
+                 lead_search=None, integrations=None, build_report=None):
         self.db, self.ai_cfg = db, ai_cfg
         self.notify_alert, self.send_summary = notify_alert, send_summary
         self.summary_hour = summary_hour
         self.lead_search = lead_search  # funkcja: jedno zaległe wyszukiwanie firm (albo None)
+        self.integrations = integrations  # WordPress/WooCommerce, Google, sieć, ocena leadów (albo None)
+        self.build_report = build_report  # raport HTML (albo None = tekst)
         self.lock = threading.Lock()
         self.now: dict[str, dict | None] = {"work": None, "checks": None}  # podgląd w panelu: co robi teraz
         self.started_at = now_iso()
@@ -771,6 +775,8 @@ class Agent:
                                     due.isoformat()):
                 self._set("checks", f"Sprawdzam, czy działa {site['name'] or site['url']}")
                 check_site(self.db, site, self.notify_alert)
+            if self.integrations:
+                self.integrations.net_tick(lambda t: self._set("checks", t))
         finally:
             self._set("checks", None)
 
@@ -785,7 +791,12 @@ class Agent:
                     "SELECT s.* FROM sites s WHERE s.active = 1 AND NOT EXISTS (SELECT 1 FROM site_audits a"
                     " WHERE a.site_id = s.id AND a.ts > ?) ORDER BY s.kind = 'lead', s.id LIMIT 1", old)
                 if site:
-                    audit_and_store(self.db, site, self.ai_cfg, self.progress)
+                    audit_and_store(self.db, site, self.ai_cfg, self.progress,
+                                    self.integrations.score_lead if self.integrations else None)
+                if self.integrations:
+                    due = self.integrations.due_site()
+                    if due:
+                        self.integrations.run_site(due, self.progress)
                 self._maybe_summary()
             finally:
                 self._set("work", None)
@@ -804,8 +815,12 @@ class Agent:
     def summary_now(self) -> None:
         self.progress("Przygotowuję dzienne podsumowanie")
         try:
-            subject, lines = daily_summary(self.db, self.ai_cfg, self.progress)
-            self.send_summary(subject, lines)
+            if self.build_report:
+                rep_ = self.build_report(self.progress)
+                self.send_summary(rep_["subject"], rep_["lines"], rep_["html"])
+            else:
+                subject, lines = daily_summary(self.db, self.ai_cfg, self.progress)
+                self.send_summary(subject, lines)
             state_set(self.db, "summary_sent_at", now_iso())
         finally:
             self._set("work", None)
