@@ -46,6 +46,9 @@ class Settings:
     office_internal_url: str = "http://office"
     office_secret: str = ""
     app_internal_url: str = "http://app:8000"
+    ai_url: str = "http://ollama:11434"  # lokalny model AI (kontener ollama, profil „ai”)
+    ai_model: str = "qwen2.5:14b"
+    agent_hour: int = 7  # o tej godzinie (czas polski) agent wysyła dzienne podsumowanie
     extra: dict = field(default_factory=dict)
 
     @property
@@ -132,4 +135,7 @@ class Settings:
             office_internal_url=os.environ.get("BSK_OFFICE_INTERNAL_URL", "http://office").rstrip("/"),
             office_secret=os.environ.get("BSK_OFFICE_SECRET", ""),
             app_internal_url=os.environ.get("BSK_APP_INTERNAL_URL", "http://app:8000").rstrip("/"),
+            ai_url=os.environ.get("BSK_AI_URL", "http://ollama:11434").rstrip("/"),
+            ai_model=os.environ.get("BSK_AI_MODEL", "qwen2.5:14b"),
+            agent_hour=_int("BSK_AGENT_HOUR", 7),
         )

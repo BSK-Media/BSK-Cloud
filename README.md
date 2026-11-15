@@ -289,6 +289,34 @@ W panelu klienta jest też **Nowy arkusz / Nowy dokument**.
 - **Kosz:** usunięte pliki (także przez klienta) można przywrócić przez 30 dni, potem znikają.
 - **Wyszukiwarka** (u góry ekranu): pliki, katalogi, klienci i kopie pracowników. Klient przeszukuje tylko swoje pliki.
 
+# Agent AI (lokalnie na NAS)
+Agent pracuje w tle i pilnuje stron klientów oraz potencjalnych klientów. Wszystko działa na NAS: model
+językowy uruchamia kontener **Ollama** (sam procesor, bez wysyłania danych do zewnętrznych usług AI).
+
+Co robi:
+- **co 15 minut** sprawdza, czy strona działa (kod HTTP, czas odpowiedzi, certyfikat SSL). Awarię i powrót
+  strony zgłasza od razu e-mailem;
+- **raz w tygodniu** robi audyt SEO i wydajności: tytuł, opis, nagłówki H1, alt obrazów, viewport, język,
+  adres kanoniczny, Open Graph, robots.txt, sitemap, HTTPS, kompresja, czas odpowiedzi, ciężkie obrazy,
+  uszkodzone linki. Lokalny model pisze do tego zalecenia po polsku;
+- przygotowuje **gotowy e-mail** z adresem odbiorcy: dla klienta raport z propozycją poprawek, dla
+  potencjalnego klienta krótką pierwszą wiadomość. Adres bierze z konta klienta w portalu, z formularza albo
+  znajduje go na stronie (linki mailto, podstrona kontaktowa). **Agent nic nie wysyła sam**: w panelu
+  poprawiasz treść i klikasz *Otwórz w poczcie*;
+- **codziennie o 7:00** (`BSK_AGENT_HOUR`) wysyła podsumowanie: co zrobił, co nie działa, wyniki audytów,
+  zalecenia i gotowe e-maile.
+
+Uruchomienie (raz):
+1. W `.env` (opcjonalnie): `BSK_AI_MODEL` (domyślnie `qwen2.5:14b`), `BSK_AI_FOLDER` (domyślnie
+   `/volume1/bsk-cloud/ollama`, SSD), `BSK_AGENT_HOUR`. Poczta (`BSK_SMTP_*`, `BSK_NOTIFY_EMAIL`) musi działać.
+2. `sudo docker compose --profile tunnel --profile office --profile lan --profile ai up -d --build`
+3. Panel → **Agent AI** → *Pobierz model* (kilka–kilkanaście GB, raz). Potem dodaj strony.
+
+Model na procesorze NAS jest wolny (odpowiedź zajmuje minuty), ale agent pracuje w tle, więc to nie przeszkadza.
+Bez kontenera Ollama agent działa dalej: monitoruje, audytuje i przygotowuje e-maile z szablonu, tylko bez AI.
+Pierwsze e-maile z ofertą do firm, które nie wyraziły zgody na kontakt handlowy, mogą naruszać polskie przepisy
+— dlatego agent tylko przygotowuje szkice, a decyzja o wysyłce należy do Ciebie.
+
 # Stan NAS
 **Stan NAS** w menu administratora pokazuje to samo co Menedżer zadań UGOS, odświeżane co 5 sekund:
 temperaturę i obciążenie procesora, wentylatory, pamięć RAM (używana / pamięć podręczna / wolna), ruch
