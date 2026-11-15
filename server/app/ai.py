@@ -22,9 +22,10 @@ pull_state = {"running": False, "status": "", "error": ""}
 # AKTYWNYCH przy każdym słowie — modele MoE (wielu „ekspertów”, aktywna tylko część) zajmują dużo RAM,
 # a piszą prawie tak szybko jak małe modele.
 MODELS = [
-    ("qwen2.5:72b", "Qwen2.5 72B — zalecany, gdy liczy się jakość: ok. 47 GB RAM, bardzo dobry polski, wolny (agent pracuje w tle)"),
+    ("qwen3:32b-q8_0", "Qwen3 32B Q8 — zalecany: ok. 35 GB RAM, nowsza generacja z „myśleniem”, prawie bez strat kwantyzacji"),
+    ("qwen3:32b", "Qwen3 32B Q4 — ok. 20 GB RAM, ten sam model w lżejszej wersji"),
+    ("qwen2.5:72b", "Qwen2.5 72B — ok. 47 GB RAM, starsza generacja, bardzo dobry polski, wolny"),
     ("llama3.3:70b", "Llama 3.3 70B — ok. 43 GB RAM, dużo wiedzy, wolny"),
-    ("qwen3:32b", "Qwen3 32B — ok. 20 GB RAM, staranne analizy z „myśleniem”"),
     ("qwen3:30b", "Qwen3 30B (MoE) — ok. 19 GB RAM, kilka razy szybszy, dobry polski"),
     ("gpt-oss:20b", "gpt-oss 20B (MoE) — ok. 14 GB RAM, najszybszy, polski poprawny"),
     ("gemma3:27b", "Gemma 3 27B — ok. 17 GB RAM, bardzo dobry polski, kilka razy wolniejszy"),
@@ -35,9 +36,9 @@ MODELS = [
 @dataclass
 class Config:
     url: str = "http://ollama:11434"
-    model: str = "qwen2.5:72b"
+    model: str = "qwen3:32b-q8_0"
     timeout_s: int = 3 * 3600  # duży model na procesorze NAS: jedna odpowiedź może trwać kilkadziesiąt minut
-    num_ctx: int = 8192
+    num_ctx: int = 16384  # miejsce na „myślenie” modelu i dłuższe strony
 
 
 def _post(cfg: Config, path: str, body: dict, timeout: float):
@@ -65,7 +66,7 @@ def generate(cfg: Config, prompt: str, system: str = "") -> str | None:
         body["system"] = system
     think = _think_setting(cfg.model)
     if think is not None:
-        body["think"] = think  # krótsze „myślenie” = kilka razy szybsza odpowiedź na procesorze
+        body["think"] = think  # model rozważa odpowiedź przed napisaniem (rozumowanie nie trafia do tekstu)
     try:
         try:
             with _post(cfg, "/api/generate", body, cfg.timeout_s) as r:
