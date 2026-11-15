@@ -22,8 +22,11 @@ pull_state = {"running": False, "status": "", "error": ""}
 # AKTYWNYCH przy każdym słowie — modele MoE (wielu „ekspertów”, aktywna tylko część) zajmują dużo RAM,
 # a piszą prawie tak szybko jak małe modele.
 MODELS = [
-    ("qwen3:32b-q8_0", "Qwen3 32B Q8 — zalecany: ok. 35 GB RAM, nowsza generacja z „myśleniem”, prawie bez strat kwantyzacji"),
-    ("qwen3:32b", "Qwen3 32B Q4 — ok. 20 GB RAM, ten sam model w lżejszej wersji"),
+    ("qwen3.8:27b", "Qwen3.8 27B — zalecany: najnowsza generacja, najlepiej trzyma się instrukcji, rozumie też obrazy (ok. 19 GB RAM)"),
+    ("qwen3.8:27b-q8_0", "Qwen3.8 27B Q8 — ten sam model w wyższej precyzji (ok. 30 GB RAM), jeśli Ollama udostępnia taką wersję"),
+    ("qwen3.6:27b", "Qwen3.6 27B — poprzednia generacja (ok. 19 GB RAM)"),
+    ("qwen3:32b-q8_0", "Qwen3 32B Q8 — ok. 35 GB RAM, starsza generacja"),
+    ("qwen3:32b", "Qwen3 32B Q4 — ok. 20 GB RAM"),
     ("qwen2.5:72b", "Qwen2.5 72B — ok. 47 GB RAM, starsza generacja, bardzo dobry polski, wolny"),
     ("llama3.3:70b", "Llama 3.3 70B — ok. 43 GB RAM, dużo wiedzy, wolny"),
     ("qwen3:30b", "Qwen3 30B (MoE) — ok. 19 GB RAM, kilka razy szybszy, dobry polski"),
@@ -36,7 +39,7 @@ MODELS = [
 @dataclass
 class Config:
     url: str = "http://ollama:11434"
-    model: str = "qwen3:32b-q8_0"
+    model: str = "qwen3.8:27b"
     timeout_s: int = 3 * 3600  # duży model na procesorze NAS: jedna odpowiedź może trwać kilkadziesiąt minut
     num_ctx: int = 16384  # miejsce na „myślenie” modelu i dłuższe strony
 

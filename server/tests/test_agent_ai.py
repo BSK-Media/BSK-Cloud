@@ -55,7 +55,7 @@ class Ollama(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        self._json({"models": [{"name": "qwen3:32b-q8_0"}, {"name": "qwen3:30b"}]})
+        self._json({"models": [{"name": "qwen3.8:27b"}, {"name": "qwen3:30b"}]})
 
     bodies: list = []
 
