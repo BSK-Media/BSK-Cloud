@@ -149,7 +149,8 @@ def test_agent_flow(env, monkeypatch):
     assert d["to_email"] == "biuro@sklep.test" and "/kontakt" in d["email_source"]
     assert d["subject"] == "Kilka poprawek na stronie" and "<think>" not in d["body"] and d["by_ai"] == 1
     assert any("pierwszy e-mail" in p for p in Ollama.prompts)  # prompt dla potencjalnego klienta
-    page = c.get("/admin/agent").text
+    assert 'href="/admin/agent/maile"' in c.get("/admin/agent").text  # podzakładki w menu bocznym
+    page = c.get("/admin/agent/maile").text
     assert "Gotowe e-maile" in page and "biuro@sklep.test" in page and "mailto:biuro@sklep.test?subject=" in page
     assert "napisane przez AI" in page
     assert "Gotowy e-mail" in c.get(f"/admin/agent/sites/{site['id']}").text
@@ -251,6 +252,7 @@ def test_lead_search_and_panel(tmp_path, monkeypatch):
         # wyszukiwanie: dentysta, Wrocław -> jedna nowa firma (bez duplikatu domeny, FB i firm bez strony)
         c.post("/admin/agent/searches", data={"category": "dentysta", "city": 'Wrocław"]', "per_day": 5, "csrf": tok})
         assert c.post("/admin/agent/searches", data={"category": "hakerzy", "city": "X", "csrf": tok}).status_code == 200
+        assert c.post("/admin/agent/searches", data={"city": "X", "csrf": tok}).status_code == 200  # bez branży
         assert db.one("SELECT COUNT(*) AS n FROM lead_searches")["n"] == 1
         agent = monitor.Agent(db, ai.Config(url=llm_url, model="qwen3:30b"), lambda *a: None, lambda *a: None,
                               summary_hour=25, lead_search=lambda *a: leads.run_search(db, leads.due_search(db), _add(db), osm_url)
@@ -268,8 +270,18 @@ def test_lead_search_and_panel(tmp_path, monkeypatch):
         assert Ollama.bodies[-1]["think"] is True
         agent.tick_work()  # drugi raz tego samego dnia — bez nowego wyszukiwania
         assert len(Overpass.queries) == 1
-        page = c.get("/admin/agent").text
+        page = c.get("/admin/agent/firmy").text
         assert "Wyszukiwanie nowych firm" in page and "dentysta" in page and "Gabinet Uśmiech" in page
+        assert 'data-check-all="category"' in page
+        # kilka branż naraz i „Wszystkie branże”
+        c.post("/admin/agent/searches", data={"category": ["dentysta", "hotel / pensjonat", "hakerzy"], "city": "Opole", "csrf": tok})
+        c.post("/admin/agent/searches", data={"all_categories": "1", "city": "Kraków", "per_day": 10, "csrf": tok})
+        rows = db.all("SELECT id, category FROM lead_searches ORDER BY id")
+        assert [r["category"] for r in rows[1:]] == ["dentysta|hotel / pensjonat", leads.ALL]
+        assert "wszystkie branże" in c.get("/admin/agent/firmy").text
+        q = leads.build_query(leads.ALL, "Kraków")
+        assert '"amenity"="dentist"' in q and q.count("nwr[") >= len(leads.CATEGORIES)
+        db.run("DELETE FROM lead_searches WHERE id > ?", rows[0]["id"])
         # wiele stron naraz
         r = c.post("/admin/agent/sites/bulk", data={"urls": "klient1.pl\nhttps://www.klient2.com.pl/oferta\nzly adres\nklient1.pl",
                                                     "kind": "client", "csrf": tok})

@@ -1,0 +1,55 @@
+{% import "_ui.html" as ui %}
+{# Wspólne elementy podzakładek Agenta AI #}
+{% macro draft_card(d) %}
+<div class="draft" id="mail-{{ d.id }}">
+  <form method="post" action="/admin/agent/drafts/{{ d.id }}" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="draft-head"><a href="/admin/agent/sites/{{ d.site_id }}"><b>{{ d.name or d.url }}</b></a>
+      <span class="tag {{ 'agency' if d.kind == 'lead' else '' }}">{{ 'nowa firma' if d.kind == 'lead' else 'klient' }}</span>
+      {% if d.kind == 'lead' and d.lead_score is not none %}<span class="tag">potencjał {{ d.lead_score }}/100</span>{% endif %}
+      {% if d.by_ai %}<span class="tag">{{ ui.icon("bot") }}napisane przez AI</span>{% endif %}
+      <span class="spacer"></span><span class="small muted">{{ d.ts|ago }}</span></div>
+    <label>Do <input name="to_email" type="email" value="{{ d.to_email }}" placeholder="adres nie został znaleziony — wpisz ręcznie">
+      {% if d.email_source %}<span class="hint">Adres: {{ d.email_source }}</span>{% endif %}</label>
+    <label>Temat <input name="subject" value="{{ d.subject }}"></label>
+    <label>Treść <textarea name="body" rows="10">{{ d.body }}</textarea></label>
+    {% if d.status == 'new' %}
+    <div class="row">
+      {% if d.to_email %}<a class="button primary" href="{{ mailto(d) }}">{{ ui.icon("message") }}Otwórz w poczcie</a>{% endif %}
+      <button type="button" data-copy-text="1">{{ ui.icon("copy") }}Kopiuj</button>
+      <button name="action" value="save">Zapisz zmiany</button>
+      <span class="spacer"></span>
+      <button name="action" value="sent" class="ghost">✓ Wysłany</button>
+      <button name="action" value="dismissed" class="ghost danger">Odrzuć</button>
+    </div>
+    {% endif %}
+  </form>
+</div>
+{% endmacro %}
+
+{% macro status_tag(s) -%}
+{% if s.status == 'up' %}<span class="tag ok">● działa</span>{% elif s.status == 'down' %}<span class="tag danger">● nie działa</span>{% else %}<span class="tag off">czeka</span>{% endif %}
+{%- endmacro %}
+
+{% macro audit_score(s) -%}
+{% if s.score is not none %}<b class="score {{ 'good' if s.score >= 80 else ('warning' if s.score >= 50 else 'critical') }}">{{ s.score }}</b><span class="small muted">/100 · {{ s.audit_ts|ago }}</span>{% else %}<span class="small muted">w kolejce</span>{% endif %}
+{%- endmacro %}
+
+{% macro delete_site(s) -%}
+<form method="post" action="/admin/agent/sites/{{ s.id }}/delete" class="inline" data-confirm="Usunąć {{ s.url }} z listy agenta? Historia sprawdzeń, audytów i e-maili zostanie usunięta.">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-sm ghost danger" title="Usuń">{{ ui.icon("trash") }}</button></form>
+{%- endmacro %}
+
+{% macro bulk_form(kind) %}
+<details class="mt"><summary class="button btn-sm">{{ ui.icon("list") }}Dodaj wiele naraz</summary>
+  <form method="post" action="/admin/agent/sites/bulk" class="stack mt">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="{{ kind }}">
+    <label>Adresy stron — jeden w wierszu (np. skopiowane z arkusza)
+      <textarea name="urls" rows="8" placeholder="firma1.pl&#10;https://www.firma2.com.pl&#10;sklep-firmy3.pl"></textarea></label>
+    <div class="row"><button class="primary">Dodaj wszystkie</button></div>
+  </form></details>
+{% endmacro %}
+
+{% macro event_tag(kind) -%}
+<span class="tag {{ 'danger' if kind in ['down', 'net-down', 'problem'] else ('ok' if kind in ['up', 'net-up'] else '') }}">{{ {'down': 'awaria', 'up': 'działa', 'audit': 'audyt', 'site': 'strona', 'mail': 'e-mail', 'lead': 'nowa firma', 'problem': 'problem', 'integ': 'integracje', 'net-down': 'sieć', 'net-up': 'sieć', 'net-restart': 'restart', 'net-port': 'porty'}.get(kind, kind) }}</span>
+{%- endmacro %}

@@ -291,7 +291,8 @@ def test_panel_settings_integrations_network_report(tmp_path, monkeypatch):
                                                                     "ports": {}, "error": ""})
         integ.check_device(db.one("SELECT * FROM net_devices"))
         assert alerts == ["AWARIA sieci: Brama"]
-        assert "Sieć biurowa" in c.get("/admin/agent").text
+        page = c.get("/admin/agent/siec").text
+        assert "Sieć biurowa" in page and "Brama" in page
         # ocena leada bez AI (heurystyka) i z AI (JSON)
         db.run("INSERT INTO sites (url, name, kind, contact_email, phone, source, created_at)"
                " VALUES ('https://firma.test/', 'Firma', 'lead', 'biuro@firma.test', '600', 'dentysta, Wrocław', '2099-01-01')")

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% import "_agent.html" as ag with context %}
+{% block title %}Gotowe e-maile — Agent AI — {{ site_name }}{% endblock %}
+{% block heading %}Gotowe e-maile{% endblock %}
+{% block subtitle %}<div class="subtitle">Agent nic nie wysyła sam — przejrzyj, popraw i otwórz w swojej poczcie. Najpierw klienci, potem firmy z najwyższym potencjałem.</div>{% endblock %}
+{% block content %}
+<div class="row mb"><a href="/admin/agent/maile" class="button btn-sm {{ 'primary' if show == 'new' else 'ghost' }}">Do wysłania ({{ agent_counts.mails }})</a>
+  <a href="/admin/agent/maile?show=sent" class="button btn-sm {{ 'primary' if show == 'sent' else 'ghost' }}">Wysłane</a></div>
+{% for d in drafts %}{{ ag.draft_card(d) }}{% else %}
+<section class="card">{{ ui.empty("Brak e-maili do wysłania. Agent przygotuje je po audycie stron (raz w tygodniu albo po „Audytuj teraz”)." if show == 'new' else "Nie oznaczono jeszcze żadnego e-maila jako wysłany.", "message") }}</section>{% endfor %}
+{% endblock %}

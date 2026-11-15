@@ -44,7 +44,12 @@
         <a href="/admin/team" class="{{ 'active' if nav == 'staff' }}">{{ ui.icon("user") }}Zespół</a>
         <a href="/admin/devices" class="{{ 'active' if nav == 'devices' }}">{{ ui.icon("laptop") }}Kopie komputerów</a>
         <a href="/admin/transfers" class="{{ 'active' if nav in ['transfers', 'shares'] }}">{{ ui.icon("link") }}Transfery</a>
-        <a href="/admin/agent" class="{{ 'active' if nav == 'agent' }}">{{ ui.icon("bot") }}Agent AI</a>
+        {% set in_agent = (nav or '').startswith('agent') %}
+        <a href="/admin/agent" class="{{ 'open' if in_agent }}">{{ ui.icon("bot") }}Agent AI{% if agent_counts and agent_counts.mails and not in_agent %}<span class="badge info">{{ agent_counts.mails }}</span>{% endif %}</a>
+        {% if in_agent %}<div class="subnav">
+          {% for key, href, label, icon in AGENT_PAGES %}{% set n = {'agent-mails': agent_counts.mails, 'agent-sites': agent_counts.down, 'agent-net': agent_counts.net_down}.get(key) if agent_counts else 0 %}
+          <a href="{{ href }}" class="{{ 'active' if nav == key }}">{{ ui.icon(icon) }}{{ label }}{% if n %}<span class="badge {{ 'info' if key == 'agent-mails' }}">{{ n }}</span>{% endif %}</a>{% endfor %}
+        </div>{% endif %}
         <div class="nav-label">System</div>
         <a href="/admin/system" class="{{ 'active' if nav == 'system' }}">{{ ui.icon("cpu") }}Stan NAS</a>
         <a href="/admin/trash" class="{{ 'active' if nav == 'trash' }}">{{ ui.icon("trash") }}Kosz</a>

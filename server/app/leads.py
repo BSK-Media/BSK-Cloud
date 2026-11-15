@@ -71,18 +71,46 @@ def clean_city(city: str) -> str:
     return re.sub(r"[^\w\s.'-]", "", city, flags=re.UNICODE).strip()[:80]
 
 
+ALL = "*"
+SEP = "|"
+
+
+def parse_categories(value: str) -> list[str]:
+    """Zapisane branże wyszukiwania: „*” = wszystkie, inaczej lista rozdzielona „|” (stare wpisy: jedna branża)."""
+    if value == ALL:
+        return list(CATEGORIES)
+    return [c for c in value.split(SEP) if c in CATEGORIES]
+
+
+def categories_label(value: str) -> str:
+    if value == ALL:
+        return "wszystkie branże"
+    cats = parse_categories(value)
+    return ", ".join(cats) if len(cats) <= 4 else f"{', '.join(cats[:3])} i {len(cats) - 3} innych"
+
+
+def category_of(tags: dict, cats: list[str]) -> str:
+    """Branża znalezionej firmy (po znacznikach OpenStreetMap)."""
+    for c in cats:
+        if any(tags.get(k) == v for k, v in CATEGORIES[c]):
+            return c
+    return ""
+
+
 def build_query(category: str, city: str, limit: int = 200) -> str:
-    tags = CATEGORIES[category]
+    cats = parse_categories(category)
+    tags = [t for c in cats for t in CATEGORIES[c]]
     city = clean_city(city)
+    limit = limit if len(cats) <= 3 else max(limit, 600)
     parts = []
     for k, v in tags:
         for site_key in ("website", "contact:website"):
             parts.append(f'nwr["{k}"="{v}"]["{site_key}"](area.a);')
-    return (f'[out:json][timeout:90];area["name"="{city}"]["boundary"="administrative"]->.a;'
+    return (f'[out:json][timeout:{90 if len(cats) <= 3 else 170}];area["name"="{city}"]["boundary"="administrative"]->.a;'
             f'({"".join(parts)});out tags {int(limit)};')
 
 
-def search(category: str, city: str, url: str = OVERPASS_URL, timeout: float = 120) -> list[dict]:
+def search(category: str, city: str, url: str = OVERPASS_URL, timeout: float = 180) -> list[dict]:
     """Firmy ze stroną WWW: [{name, website, email, phone, address}] (bez duplikatów domen)."""
     data = urllib.parse.urlencode({"data": build_query(category, city)}).encode()
     req = urllib.request.Request(url, data=data, headers={"User-Agent": UA})
@@ -104,6 +132,7 @@ def search(category: str, city: str, url: str = OVERPASS_URL, timeout: float = 1
         email = (t.get("email") or t.get("contact:email") or "").split(";")[0].strip()
         addr = " ".join(x for x in (t.get("addr:street", ""), t.get("addr:housenumber", ""), t.get("addr:city", "")) if x)
         out.append({"name": t.get("name", host)[:120], "website": site, "host": host,
+                    "category": category_of(t, parse_categories(category)),
                     "email": email if re.fullmatch(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}", email) else "",
                     "phone": (t.get("phone") or t.get("contact:phone") or "")[:40], "address": addr[:200]})
     return out
@@ -112,7 +141,7 @@ def search(category: str, city: str, url: str = OVERPASS_URL, timeout: float = 1
 def run_search(db: Database, row, add_site, url: str = OVERPASS_URL, progress=None) -> int:
     """Jedno wyszukiwanie: dodaje do `per_day` nowych firm (bez stron już znanych agentowi)."""
     if progress:
-        progress(f"Szukam nowych firm: {row['category']}, {row['city']}")
+        progress(f"Szukam nowych firm: {categories_label(row['category'])}, {row['city']}")
     try:
         found = search(row["category"], row["city"], url)
     except (OSError, urllib.error.URLError, ValueError) as exc:
@@ -127,7 +156,7 @@ def run_search(db: Database, row, add_site, url: str = OVERPASS_URL, progress=No
             break
         if firm["host"] in known:
             continue
-        add_site(firm, f"{row['category']}, {row['city']}")
+        add_site(firm, f"{firm.get('category') or categories_label(row['category'])}, {row['city']}")
         known.add(firm["host"])
         added += 1
     db.run("UPDATE lead_searches SET last_run = ?, found = found + ?, last_error = '' WHERE id = ?",

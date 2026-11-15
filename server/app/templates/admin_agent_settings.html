@@ -2,7 +2,7 @@
 {% block title %}Ustawienia agenta — {{ site_name }}{% endblock %}
 {% block heading %}Ustawienia i klucze API{% endblock %}
 {% block subtitle %}<div class="subtitle">Klucze są zapisane w bazie w formie zaszyfrowanej. Klucze WordPress i WooCommerce wpisujesz osobno przy każdej stronie klienta.</div>{% endblock %}
-{% block actions %}<a class="button" href="/admin/agent">{{ ui.icon("back") }}Agent AI</a>{% endblock %}
+
 {% block content %}
 <section class="card">
   <div class="card-head">{{ ui.icon("chart") }}<h2>Google Search Console</h2>
@@ -44,7 +44,7 @@
 
 <section class="card">
   <div class="card-head">{{ ui.icon("key") }}<h2>WordPress i WooCommerce</h2></div>
-  <p>Dane dostępowe wpisujesz przy każdej stronie klienta (Agent AI → nazwa strony → <b>Integracje</b>). Wszystko tylko do odczytu:</p>
+  <p>Dane dostępowe wpisujesz przy każdej stronie klienta (Agent AI → Strony klientów → nazwa strony → <b>Integracje</b>). Wszystko tylko do odczytu:</p>
   <ul class="small">
     <li><b>WordPress</b>: w panelu WordPress klienta <i>Użytkownicy → Profil → Hasła aplikacji</i> — wpisz nazwę „BSK Agent” i skopiuj wygenerowane hasło (konto administratora). Agent widzi wtyczki i ich wersje.</li>
     <li><b>WooCommerce</b>: <i>WooCommerce → Ustawienia → Zaawansowane → REST API → Dodaj klucz</i>, uprawnienia „Odczyt”. Agent widzi wersję PHP, aktualizacje wtyczek i zamówienia (nieudane, spadek sprzedaży).</li>
@@ -53,6 +53,6 @@
 
 <section class="card">
   <div class="card-head">{{ ui.icon("network") }}<h2>Sieć biurowa (SNMP)</h2></div>
-  <p class="small">Urządzenia dodajesz na stronie <a href="/admin/agent#siec">Agent AI → Sieć biurowa</a>. Żeby agent widział restarty i stan portów, włącz SNMP v2c w urządzeniu (w Ruijie: <i>Obszar roboczy → SNMP</i>) i wpisz to samo „community” (np. <code>public</code>). Bez SNMP agent sprawdza tylko, czy urządzenie odpowiada.</p>
+  <p class="small">Urządzenia dodajesz na stronie <a href="/admin/agent/siec">Agent AI → Sieć biurowa</a>. Żeby agent widział restarty i stan portów, włącz SNMP v2c w urządzeniu (w Ruijie: <i>Obszar roboczy → SNMP</i>) i wpisz to samo „community” (np. <code>public</code>). Bez SNMP agent sprawdza tylko, czy urządzenie odpowiada.</p>
 </section>
 {% endblock %}

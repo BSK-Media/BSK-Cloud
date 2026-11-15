@@ -4,7 +4,7 @@
 {% block subtitle %}<div class="subtitle"><a href="{{ site.url }}" target="_blank" rel="noopener">{{ site.url }}</a>
   · {% if site.status == 'up' %}<span class="tag ok">● działa</span>{% elif site.status == 'down' %}<span class="tag danger">● nie działa</span>{% else %}czeka na sprawdzenie{% endif %}
   · sprawdzono {{ site.last_check|ago }}</div>{% endblock %}
-{% block actions %}<a class="button" href="/admin/agent">{{ ui.icon("back") }}Agent AI</a>
+{% block actions %}<a class="button" href="{{ '/admin/agent/firmy' if site.kind == 'lead' else '/admin/agent/strony' }}">{{ ui.icon("back") }}{{ 'Nowe firmy' if site.kind == 'lead' else 'Strony klientów' }}</a>
 <form method="post" action="/admin/agent/sites/{{ site.id }}/audit" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}">
   <button class="primary">{{ ui.icon("refresh") }}Audytuj teraz</button></form>{% endblock %}
 {% block content %}
@@ -12,7 +12,7 @@
   {{ ui.kpi("Wynik audytu", (audit.score ~ "/100") if audit else "—", (audit.ts|ago) if audit else "audyt w kolejce", "chart") }}
   {{ ui.kpi("Dostępność (7 dni)", ((week.ok * 100 / week.n)|round(1) ~ "%") if week.n else "—", (week.n ~ " sprawdzeń") if week.n else "", "shield") }}
   {{ ui.kpi("Średni czas odpowiedzi", ((week.ms|round|int) ~ " ms") if week.ms else "—", "ostatnie 7 dni", "clock") }}
-  {{ ui.kpi("Certyfikat SSL", (ssl_days ~ " dni") if ssl_days is not none else "—", "do wygaśnięcia", "lock") }}
+  {{ ui.kpi("Certyfikat SSL", (site_ssl_days ~ " dni") if site_ssl_days is not none else "—", "do wygaśnięcia", "lock") }}
 </div>
 {% if recent|length > 1 %}
 <section class="card">
@@ -24,7 +24,7 @@
 <section class="card">
   <div class="card-head">{{ ui.icon("message") }}<h2>Gotowy e-mail</h2><span class="spacer"></span>
     {% if draft.to_email %}<a class="button btn-sm primary" href="{{ mailto(draft) }}">Otwórz w poczcie</a>{% endif %}
-    <a class="button btn-sm" href="/admin/agent#mail-{{ draft.id }}">Edytuj</a></div>
+    <a class="button btn-sm" href="/admin/agent/maile#mail-{{ draft.id }}">Edytuj</a></div>
   <p class="small"><b>Do:</b> {{ draft.to_email or '(brak adresu)' }}{% if draft.email_source %} <span class="muted">— {{ draft.email_source }}</span>{% endif %}<br><b>Temat:</b> {{ draft.subject }}</p>
   <div class="ai-text">{{ draft.body }}</div>
 </section>

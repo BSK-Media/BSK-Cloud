@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% import "_agent.html" as ag with context %}
+{% block title %}Sieć biurowa — Agent AI — {{ site_name }}{% endblock %}
+{% block heading %}Sieć biurowa{% endblock %}
+{% block subtitle %}<div class="subtitle">Router, switche, punkty dostępowe — sprawdzane co 5 minut; awaria i restart od razu w e-mailu.</div>{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("network") }}<h2>Sieć biurowa</h2><span class="spacer"></span>
+    <span class="hint">Router, switche, punkty dostępowe — co 5 minut; awaria i restart od razu w e-mailu</span></div>
+  {% if devices %}
+  <div class="table-wrap"><table class="list compact">
+    <thead><tr><th>Urządzenie</th><th>Stan</th><th class="hide-sm">Odpowiedź</th><th class="hide-sm">Pracuje od</th><th class="hide-sm">Porty</th><th></th></tr></thead>
+    <tbody>{% for d in devices %}{% set ports = d.ports|fromjson %}
+    <tr><td><b>{{ d.name }}</b><div class="small muted">{{ d.host }}{% if d.snmp_name %} · {{ d.snmp_name }}{% endif %}</div></td>
+      <td>{% if d.status == 'up' %}<span class="tag ok">● działa</span>{% elif d.status == 'down' %}<span class="tag danger">● nie odpowiada</span>{% else %}<span class="tag off">czeka</span>{% endif %}
+        {% if d.last_error %}<div class="small muted">{{ d.last_error }}</div>{% endif %}</td>
+      <td class="hide-sm num">{{ (d.last_ms ~ ' ms') if d.last_ms is not none else '—' }}</td>
+      <td class="hide-sm small">{% if d.uptime_s %}{{ (d.uptime_s // 86400) }} dni {{ (d.uptime_s % 86400) // 3600 }} godz.{% else %}—{% endif %}</td>
+      <td class="hide-sm small">{% if ports %}{{ ports.values()|select('equalto', 'up')|list|length }}/{{ ports|length }} aktywnych{% else %}—{% endif %}</td>
+      <td class="actions"><form method="post" action="/admin/agent/net/{{ d.id }}/delete" class="inline" data-confirm="Przestać monitorować {{ d.name }}?">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-sm ghost danger" title="Usuń">{{ ui.icon("trash") }}</button></form></td></tr>
+    {% endfor %}</tbody></table></div>
+  {% endif %}
+  <form method="post" action="/admin/agent/net" class="form-grid mt">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Nazwa <input name="name" placeholder="np. Router Ruijie"></label>
+    <label>Adres IP <input name="host" required placeholder="np. 192.168.10.1"></label>
+    <label>SNMP community (opcjonalnie) <input name="community" placeholder="np. public" autocomplete="off">
+      <span class="hint">Z SNMP agent widzi też restarty i porty. W Ruijie: Obszar roboczy → SNMP.</span></label>
+    <div class="row"><button class="primary">{{ ui.icon("plus") }}Dodaj urządzenie</button></div>
+  </form>
+</section>
+{% endblock %}

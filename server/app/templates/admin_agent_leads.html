@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% import "_agent.html" as ag with context %}
+{% block title %}Nowe firmy — Agent AI — {{ site_name }}{% endblock %}
+{% block heading %}Nowe firmy{% endblock %}
+{% block subtitle %}<div class="subtitle">Agent sam wyszukuje firmy, robi audyt ich stron, ocenia potencjał sprzedażowy i przygotowuje pierwszy e-mail do Twojej akceptacji.</div>{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("search") }}<h2>Wyszukiwanie nowych firm</h2><span class="spacer"></span>
+    <span class="hint">Raz na dobę, z publicznej bazy OpenStreetMap — tylko firmy, które mają stronę WWW</span></div>
+  {% if searches %}
+  <div class="table-wrap"><table class="list compact">
+    <thead><tr><th>Branże</th><th>Miasto</th><th>Dziennie</th><th>Znaleziono</th><th class="hide-sm">Ostatnio</th><th></th></tr></thead>
+    <tbody>
+    {% for q in searches %}<tr class="{{ '' if q.active else 'inactive' }}">
+      <td><b>{{ q.label }}</b></td><td>{{ q.city }}</td><td>{{ q.per_day }}</td><td>{{ q.found }}</td>
+      <td class="hide-sm small muted">{{ q.last_run|ago if q.last_run else 'jeszcze nie' }}{% if q.last_error %}<div class="small danger">{{ q.last_error }}</div>{% endif %}</td>
+      <td class="actions">
+        <form method="post" action="/admin/agent/searches/{{ q.id }}/run" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-sm ghost" title="Szukaj teraz">{{ ui.icon("refresh") }}</button></form>
+        <form method="post" action="/admin/agent/searches/{{ q.id }}/toggle" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-sm ghost" title="{{ 'Wstrzymaj' if q.active else 'Wznów' }}">{{ '❚❚' if q.active else '▶' }}</button></form>
+        <form method="post" action="/admin/agent/searches/{{ q.id }}/delete" class="inline" data-confirm="Usunąć to wyszukiwanie? Znalezione firmy zostaną na liście."><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-sm ghost danger" title="Usuń">{{ ui.icon("trash") }}</button></form>
+      </td></tr>{% endfor %}
+    </tbody></table></div>
+  {% endif %}
+  <form method="post" action="/admin/agent/searches" class="stack mt">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <fieldset class="cats"><legend>Branże</legend>
+      <label class="check all"><input type="checkbox" name="all_categories" value="1" data-check-all="category"> <b>Wszystkie branże</b></label>
+      <div class="cat-grid">{% for c in categories %}<label class="check"><input type="checkbox" name="category" value="{{ c }}"> {{ c }}</label>{% endfor %}</div>
+    </fieldset>
+    <div class="form-grid">
+      <label>Miasto <input name="city" required placeholder="np. Wrocław"></label>
+      <label>Nowych firm dziennie <input name="per_day" type="number" min="1" max="50" value="5"></label>
+    </div>
+    <div class="row"><button class="primary">{{ ui.icon("plus") }}Dodaj wyszukiwanie</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">{{ ui.icon("chart") }}<h2>Znalezione firmy</h2><span class="spacer"></span><span class="hint">Od najwyższego potencjału sprzedażowego</span></div>
+  {% if sites %}
+  <div class="table-wrap"><table class="list">
+    <thead><tr><th>Firma</th><th>Potencjał</th><th class="hide-sm">Audyt strony</th><th class="hide-sm">Kontakt</th><th>E-mail</th><th></th></tr></thead>
+    <tbody>
+    {% for s in sites %}<tr>
+      <td><a href="/admin/agent/sites/{{ s.id }}"><b>{{ s.name or s.url }}</b></a>
+        <div class="small muted">{{ s.url }}{% if s.source %} · {{ s.source }}{% endif %}</div>
+        {% if s.lead_reason %}<div class="small">{{ s.lead_reason }}</div>{% endif %}</td>
+      <td>{% if s.lead_score is not none %}<b class="score {{ 'good' if s.lead_score >= 70 else ('warning' if s.lead_score >= 40 else '') }}">{{ s.lead_score }}</b><span class="small muted">/100</span>{% else %}<span class="small muted">w kolejce</span>{% endif %}</td>
+      <td class="hide-sm">{{ ag.audit_score(s) }}</td>
+      <td class="hide-sm small">{{ s.contact_email or '—' }}{% if s.phone %}<div class="muted">{{ s.phone }}</div>{% endif %}</td>
+      <td>{% if s.draft_status == 'new' %}<a class="tag" href="/admin/agent/maile">gotowy</a>{% elif s.draft_status == 'sent' %}<span class="tag ok">wysłany</span>{% elif s.draft_status == 'dismissed' %}<span class="tag off">odrzucony</span>{% else %}<span class="small muted">—</span>{% endif %}</td>
+      <td class="actions">{{ ag.delete_site(s) }}</td>
+    </tr>{% endfor %}
+    </tbody></table></div>
+  {% else %}{{ ui.empty("Agent jeszcze nie znalazł firm — dodaj wyszukiwanie powyżej albo wpisz firmy ręcznie poniżej.", "search") }}{% endif %}
+  <details class="mt"><summary class="button btn-sm">{{ ui.icon("plus") }}Dodaj firmę ręcznie</summary>
+    <form method="post" action="/admin/agent/sites" class="form-grid mt">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="lead">
+      <label>Adres strony <input name="url" required placeholder="np. firma.pl"></label>
+      <label>Nazwa (opcjonalnie) <input name="name"></label>
+      <label>E-mail kontaktowy (opcjonalnie) <input name="contact_email" type="email" placeholder="agent spróbuje znaleźć go na stronie"></label>
+      <div class="row"><button class="primary">Dodaj firmę</button></div>
+    </form></details>
+  {{ ag.bulk_form("lead") }}
+</section>
+{% endblock %}

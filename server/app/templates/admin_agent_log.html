@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% import "_agent.html" as ag with context %}
+{% block title %}Dziennik agenta — Agent AI — {{ site_name }}{% endblock %}
+{% block heading %}Dziennik agenta{% endblock %}
+{% block subtitle %}<div class="subtitle">Wszystko, co agent zrobił — ostatnie 300 wpisów.</div>{% endblock %}
+{% block content %}
+<div class="row mb">{% for k, label in [('', 'Wszystko'), ('awarie', 'Awarie i problemy'), ('audyty', 'Audyty'), ('firmy', 'Nowe firmy'), ('maile', 'E-maile')] %}
+  <a href="/admin/agent/dziennik{{ '?kind=' ~ k if k }}" class="button btn-sm {{ 'primary' if kind == k else 'ghost' }}">{{ label }}</a>{% endfor %}</div>
+<section class="card">
+  {% if events %}
+  <div class="table-wrap"><table class="list compact"><tbody>
+    {% for e in events %}<tr><td class="small muted nowrap">{{ e.ts|dt }}</td><td>{{ ag.event_tag(e.kind) }}</td>
+      <td class="small">{% if e.site_id %}<a href="/admin/agent/sites/{{ e.site_id }}">{{ e.text }}</a>{% else %}{{ e.text }}{% endif %}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% else %}{{ ui.empty("Brak wpisów.", "list") }}{% endif %}
+</section>
+{% endblock %}
