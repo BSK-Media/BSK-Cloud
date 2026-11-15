@@ -666,3 +666,21 @@ label.radio input { width: auto; margin-top: 3px; }
 .agent-recent, .agent-tasks { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; }
 .agent-recent { list-style: none; padding-left: 0; font-size: .9rem; }
 .agent-tasks .tag { margin-left: 6px; }
+
+/* podzakładki Agenta AI w menu bocznym */
+.nav a.open { color: #fff; }
+.nav a.open .icon { color: #7fb2f0; }
+.subnav { display: flex; flex-direction: column; gap: 1px; margin: 2px 0 6px 21px; padding-left: 10px; border-left: 1px solid #2c3a55; }
+.nav .subnav a { padding: 6px 10px; font-size: .86rem; gap: 9px; }
+.nav .subnav a .icon { width: 15px; height: 15px; }
+.badge.info { background: #3b82f6; }
+.agent-shortcuts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.agent-shortcuts a.kpi { color: inherit; text-decoration: none; transition: transform .12s, box-shadow .12s; }
+.agent-shortcuts a.kpi:hover { transform: translateY(-1px); border-color: var(--accent); }
+.agent-shortcuts .hint .danger { color: var(--critical); font-weight: 600; }
+fieldset.cats { border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px 14px; margin: 0; }
+fieldset.cats legend { padding: 0 6px; font-weight: 600; font-size: .9rem; }
+fieldset.cats .check.all { padding: 6px 0 10px; border-bottom: 1px solid var(--line-2); margin-bottom: 10px; }
+.cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px 14px; }
+.cat-grid .check { font-size: .88rem; }
+@media (max-width: 900px) { .agent-shortcuts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

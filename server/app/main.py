@@ -1355,30 +1355,84 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 log.exception("Agent: %s", name)
         threading.Thread(target=run, name=name, daemon=True).start()
 
+    AGENT_PAGES = [  # podzakładki Agenta AI w menu bocznym: (nav, adres, nazwa, ikona)
+        ("agent", "/admin/agent", "Przegląd", "bot"),
+        ("agent-mails", "/admin/agent/maile", "Gotowe e-maile", "message"),
+        ("agent-sites", "/admin/agent/strony", "Strony klientów", "chart"),
+        ("agent-leads", "/admin/agent/firmy", "Nowe firmy", "search"),
+        ("agent-net", "/admin/agent/siec", "Sieć biurowa", "network"),
+        ("agent-log", "/admin/agent/dziennik", "Dziennik", "list"),
+        ("agent-settings", "/admin/agent/settings", "Ustawienia i klucze", "key"),
+    ]
+    templates.env.globals["AGENT_PAGES"] = AGENT_PAGES
+
+    def agent_render(request: Request, template: str, nav: str, **ctx):
+        """Wspólne dane podzakładek agenta (liczniki w menu)."""
+        counts = db.one("SELECT (SELECT COUNT(*) FROM mail_drafts WHERE status = 'new') AS mails,"
+                        " (SELECT COUNT(*) FROM sites WHERE active = 1 AND status = 'down') AS down,"
+                        " (SELECT COUNT(*) FROM net_devices WHERE status = 'down') AS net_down")
+        return render(request, template, nav=nav, agent_counts=dict(counts), mailto=_mailto, ssl_days=_ssl_days,
+                      summary_hour=settings.agent_hour, **ctx)
+
+    def agent_sites(kind: str):
+        order = "s.lead_score IS NULL, s.lead_score DESC, s.created_at DESC" if kind == "lead" else "s.name, s.url"
+        return db.all(
+            "SELECT s.*, u.company, u.display_name AS client_name, u.username AS client_login,"
+            " (SELECT score FROM site_audits a WHERE a.site_id = s.id ORDER BY a.ts DESC LIMIT 1) AS score,"
+            " (SELECT ts FROM site_audits a WHERE a.site_id = s.id ORDER BY a.ts DESC LIMIT 1) AS audit_ts,"
+            " (SELECT status FROM mail_drafts d WHERE d.site_id = s.id ORDER BY d.ts DESC LIMIT 1) AS draft_status"
+            f" FROM sites s LEFT JOIN users u ON u.id = s.client_id WHERE s.kind = ? ORDER BY {order}", kind)
+
     @app.get("/admin/agent", response_class=HTMLResponse)
     def agent_page(request: Request):
         require_user(request, "admin")
-        sites = db.all(
-            "SELECT s.*, u.company, u.display_name AS client_name, u.username AS client_login,"
-            " (SELECT score FROM site_audits a WHERE a.site_id = s.id ORDER BY a.ts DESC LIMIT 1) AS score,"
-            " (SELECT ts FROM site_audits a WHERE a.site_id = s.id ORDER BY a.ts DESC LIMIT 1) AS audit_ts"
-            " FROM sites s LEFT JOIN users u ON u.id = s.client_id ORDER BY s.name, s.url")
-        events = db.all("SELECT e.*, s.name, s.url FROM agent_events e LEFT JOIN sites s ON s.id = e.site_id"
-                        " ORDER BY e.ts DESC LIMIT 60")
-        drafts = db.all("SELECT d.*, s.name, s.url, s.kind FROM mail_drafts d JOIN sites s ON s.id = d.site_id"
-                        " WHERE d.status = 'new' ORDER BY d.ts DESC")
+        return agent_render(request, "admin_agent.html", "agent", models=ai.MODELS, ov=site_agent.overview(),
+                            ai_status=ai.status(ai_cfg), ai_model=ai_cfg.model, pull=dict(ai.pull_state),
+                            summary_sent=monitor.state_get(db, "summary_sent_at"),
+                            mail_ok=notify.configured(settings) and bool(settings.notify_email),
+                            google_ok=bool(integ.google_account()), psi_ok=bool(integ.psi_key()))
+
+    @app.get("/admin/agent/maile", response_class=HTMLResponse)
+    def agent_mails_page(request: Request, show: str = "new"):
+        require_user(request, "admin")
+        status = "sent" if show == "sent" else "new"
+        drafts = db.all("SELECT d.*, s.name, s.url, s.kind, s.lead_score FROM mail_drafts d JOIN sites s ON s.id = d.site_id"
+                        " WHERE d.status = ? ORDER BY " + ("s.kind = 'client' DESC, s.lead_score DESC, d.ts DESC"
+                                                           if status == "new" else "d.ts DESC LIMIT 100"), status)
+        return agent_render(request, "admin_agent_mails.html", "agent-mails", drafts=drafts, show=status)
+
+    @app.get("/admin/agent/strony", response_class=HTMLResponse)
+    def agent_sites_page(request: Request):
+        require_user(request, "admin")
         clients = db.all("SELECT id, company, display_name, username FROM users WHERE role = 'client'"
                          " AND space_id IS NULL ORDER BY company, display_name, username")
-        searches = db.all("SELECT * FROM lead_searches ORDER BY created_at")
-        devices = db.all("SELECT * FROM net_devices ORDER BY name")
-        return render(request, "admin_agent.html", nav="agent", sites=sites, events=events, clients=clients,
-                      drafts=drafts, mailto=_mailto, searches=searches, categories=list(leads.CATEGORIES),
-                      devices=devices, google_ok=bool(integ.google_account()), psi_ok=bool(integ.psi_key()),
-                      models=ai.MODELS,
-                      ai_status=ai.status(ai_cfg), ai_model=ai_cfg.model, pull=dict(ai.pull_state),
-                      busy=site_agent.busy, summary_hour=settings.agent_hour, ov=site_agent.overview(),
-                      summary_sent=monitor.state_get(db, "summary_sent_at"),
-                      mail_ok=notify.configured(settings) and bool(settings.notify_email), ssl_days=_ssl_days)
+        return agent_render(request, "admin_agent_sites.html", "agent-sites", sites=agent_sites("client"),
+                            clients=clients, google_ok=bool(integ.google_account()))
+
+    @app.get("/admin/agent/firmy", response_class=HTMLResponse)
+    def agent_leads_page(request: Request):
+        require_user(request, "admin")
+        searches = [dict(r) | {"label": leads.categories_label(r["category"])}
+                    for r in db.all("SELECT * FROM lead_searches ORDER BY created_at")]
+        return agent_render(request, "admin_agent_leads.html", "agent-leads", sites=agent_sites("lead"),
+                            searches=searches, categories=list(leads.CATEGORIES))
+
+    @app.get("/admin/agent/siec", response_class=HTMLResponse)
+    def agent_net_page(request: Request):
+        require_user(request, "admin")
+        return agent_render(request, "admin_agent_net.html", "agent-net",
+                            devices=db.all("SELECT * FROM net_devices ORDER BY name"))
+
+    @app.get("/admin/agent/dziennik", response_class=HTMLResponse)
+    def agent_log_page(request: Request, kind: str = ""):
+        require_user(request, "admin")
+        groups = {"awarie": ("down", "up", "net-down", "net-up", "net-restart", "net-port", "problem"),
+                  "audyty": ("audit", "integ"), "firmy": ("lead",), "maile": ("mail",)}
+        sel = groups.get(kind)
+        where, args = (f" WHERE e.kind IN ({','.join('?' * len(sel))})", list(sel)) if sel else ("", [])
+        events = db.all("SELECT e.*, s.name, s.url FROM agent_events e LEFT JOIN sites s ON s.id = e.site_id"
+                        f"{where} ORDER BY e.ts DESC LIMIT 300", *args)
+        return agent_render(request, "admin_agent_log.html", "agent-log", events=events, kind=kind)
 
     def _mailto(d) -> str:
         """Link otwierający gotowy e-mail w programie pocztowym (Outlook, Gmail, Poczta…)."""
@@ -1401,7 +1455,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.run("UPDATE mail_drafts SET status = ? WHERE id = ?", action, draft_id)
             db.log(admin["id"], f"draft_{action}", f"{d['to_email']}: {d['subject']}")
             flash(request, "Oznaczono jako wysłany." if action == "sent" else "Odrzucono e-mail.")
-            return RedirectResponse("/admin/agent#maile", 303)
+            return RedirectResponse("/admin/agent/maile", 303)
         to_email = to_email.strip()[:200]
         if to_email and not monitor._EMAIL_RE.fullmatch(to_email):
             flash(request, "Nieprawidłowy adres e-mail.", "error")
@@ -1411,7 +1465,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if to_email and d["site_id"]:
                 db.run("UPDATE sites SET contact_email = ? WHERE id = ? AND contact_email = ''", to_email, d["site_id"])
             flash(request, "Zapisano zmiany w e-mailu.")
-        return RedirectResponse(f"/admin/agent#mail-{draft_id}", 303)
+        return RedirectResponse(f"/admin/agent/maile#mail-{draft_id}", 303)
 
     def _ssl_days(iso: str | None):
         if not iso:
@@ -1426,20 +1480,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                        kind: str = Form("client"), contact_email: str = Form(""), csrf: str = Form("")):
         check_csrf(request, csrf)
         admin = require_user(request, "admin")
+        back = "/admin/agent/firmy" if kind == "lead" else "/admin/agent/strony"
         try:
             clean = monitor.normalize_url(url)
         except ValueError as exc:
             flash(request, str(exc), "error")
-            return RedirectResponse("/admin/agent", 303)
+            return RedirectResponse(back, 303)
         if client_id:
             client_or_404(client_id)
         if db.one("SELECT 1 FROM sites WHERE url = ?", clean):
             flash(request, "Ta strona jest już monitorowana.", "warn")
-            return RedirectResponse("/admin/agent", 303)
+            return RedirectResponse(back, 303)
         contact_email = contact_email.strip()[:200]
         if contact_email and not monitor._EMAIL_RE.fullmatch(contact_email):
             flash(request, "Nieprawidłowy adres e-mail.", "error")
-            return RedirectResponse("/admin/agent", 303)
+            return RedirectResponse(back, 303)
         sid_ = db.run("INSERT INTO sites (url, name, client_id, kind, contact_email, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                       clean, name.strip()[:120], client_id or None, "lead" if kind == "lead" else "client",
                       contact_email, now_iso())
@@ -1447,7 +1502,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.log(admin["id"], "site_added", clean)
         in_background("pierwsze-sprawdzenie", monitor.check_site, db, db.one("SELECT * FROM sites WHERE id = ?", sid_))
         flash(request, f"Dodano {clean}. Pierwsze sprawdzenie za chwilę, audyt SEO w ciągu kilku minut.")
-        return RedirectResponse("/admin/agent", 303)
+        return RedirectResponse(back, 303)
 
     @app.post("/admin/agent/sites/bulk")
     def agent_add_sites_bulk(request: Request, urls: str = Form(""), kind: str = Form("client"), csrf: str = Form("")):
@@ -1475,22 +1530,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.log(admin["id"], "sites_bulk_added", str(added))
         flash(request, f"Dodano stron: {added}." + (f" Pominięto nieprawidłowe: {', '.join(bad[:5])}." if bad else "")
               + " Agent sprawdzi je w ciągu kilku minut.", "warn" if bad else "ok")
-        return RedirectResponse("/admin/agent", 303)
+        return RedirectResponse("/admin/agent/firmy" if kind == "lead" else "/admin/agent/strony", 303)
 
     @app.post("/admin/agent/searches")
-    def agent_add_search(request: Request, category: str = Form(...), city: str = Form(...), per_day: int = Form(5),
-                         csrf: str = Form("")):
+    def agent_add_search(request: Request, category: list[str] = Form([]), all_categories: str = Form(""),
+                         city: str = Form(...), per_day: int = Form(5), csrf: str = Form("")):
         check_csrf(request, csrf)
         admin = require_user(request, "admin")
         city = leads.clean_city(city)
-        if category not in leads.CATEGORIES or not city:
-            flash(request, "Wybierz branżę i wpisz miasto.", "error")
+        chosen = [c for c in category if c in leads.CATEGORIES]
+        value = leads.ALL if all_categories or len(chosen) == len(leads.CATEGORIES) else leads.SEP.join(dict.fromkeys(chosen))
+        if not value or not city:
+            flash(request, "Zaznacz co najmniej jedną branżę (albo „Wszystkie branże”) i wpisz miasto.", "error")
         else:
+            per_day = max(1, min(per_day, 50))
             db.run("INSERT INTO lead_searches (category, city, per_day, created_at) VALUES (?, ?, ?, ?)",
-                   category, city, max(1, min(per_day, 50)), now_iso())
-            db.log(admin["id"], "lead_search_added", f"{category}, {city}")
-            flash(request, f"Agent będzie codziennie szukał: {category}, {city} (do {max(1, min(per_day, 50))} nowych firm dziennie).")
-        return RedirectResponse("/admin/agent#firmy", 303)
+                   value, city, per_day, now_iso())
+            label = leads.categories_label(value)
+            db.log(admin["id"], "lead_search_added", f"{label}, {city}")
+            flash(request, f"Agent będzie codziennie szukał: {label}, {city} (do {per_day} nowych firm dziennie).")
+        return RedirectResponse("/admin/agent/firmy", 303)
 
     @app.post("/admin/agent/searches/{search_id}/{action}")
     def agent_search_action(request: Request, search_id: int, action: str, csrf: str = Form("")):
@@ -1509,7 +1568,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             flash(request, "Szukam firm w tle — nowe pojawią się na liście za chwilę, audyty i e-maile w ciągu kilku godzin.")
         else:
             raise HTTPException(400, "Nieznana operacja.")
-        return RedirectResponse("/admin/agent#firmy", 303)
+        return RedirectResponse("/admin/agent/firmy", 303)
 
     @app.post("/admin/agent/model/select")
     def agent_select_model(request: Request, model: str = Form(""), custom_model: str = Form(""), csrf: str = Form("")):
@@ -1535,7 +1594,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.run("DELETE FROM sites WHERE id = ?", site_id)
         db.log(admin["id"], "site_deleted", site["url"])
         flash(request, f"Usunięto {site['url']} z monitoringu.")
-        return RedirectResponse("/admin/agent", 303)
+        return RedirectResponse("/admin/agent/firmy" if site["kind"] == "lead" else "/admin/agent/strony", 303)
 
     @app.post("/admin/agent/sites/{site_id}/audit")
     def agent_audit_now(request: Request, site_id: int, csrf: str = Form("")):
@@ -1552,7 +1611,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def agent_settings_page(request: Request):
         require_user(request, "admin")
         sa = integ.google_account()
-        return render(request, "admin_agent_settings.html", nav="agent", google_email=sa["client_email"] if sa else "",
+        return agent_render(request, "admin_agent_settings.html", "agent-settings", google_email=sa["client_email"] if sa else "",
                       psi_masked=mask(integ.psi_key()))
 
     @app.post("/admin/agent/settings")
@@ -1630,7 +1689,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.log(admin["id"], "net_device_added", host)
             in_background("siec", integ.check_device, db.one("SELECT * FROM net_devices WHERE id = ?", did))
             flash(request, f"Dodano {host}. Agent sprawdza urządzenie co 5 minut.")
-        return RedirectResponse("/admin/agent#siec", 303)
+        return RedirectResponse("/admin/agent/siec", 303)
 
     @app.post("/admin/agent/net/{device_id}/delete")
     def agent_net_delete(request: Request, device_id: int, csrf: str = Form("")):
@@ -1638,7 +1697,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         require_user(request, "admin")
         db.run("DELETE FROM net_devices WHERE id = ?", device_id)
         flash(request, "Usunięto urządzenie z monitoringu.")
-        return RedirectResponse("/admin/agent#siec", 303)
+        return RedirectResponse("/admin/agent/siec", 303)
 
     @app.get("/admin/agent/live", response_class=HTMLResponse)
     def agent_live(request: Request):
@@ -1657,11 +1716,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                       " FROM site_checks WHERE site_id = ? AND ts > ?", site_id, since)
         recent = db.all("SELECT * FROM site_checks WHERE site_id = ? ORDER BY ts DESC LIMIT 96", site_id)
         draft = db.one("SELECT * FROM mail_drafts WHERE site_id = ? AND status = 'new' ORDER BY ts DESC LIMIT 1", site_id)
-        return render(request, "admin_agent_site.html", nav="agent", site=site, sv=integrations.site_view(site, box),
+        return agent_render(request, "admin_agent_site.html", "agent-leads" if site["kind"] == "lead" else "agent-sites",
+                      site=site, sv=integrations.site_view(site, box),
                       google_ok=bool(integ.google_account()), psi_ok=bool(integ.psi_key()),
                       audit=dict(audit) | {"data": json.loads(audit["report"])} if audit else None,
-                      history=history, week=week, recent=list(reversed(recent)), ssl_days=_ssl_days(site["ssl_expires"]),
-                      draft=draft, mailto=_mailto)
+                      history=history, week=week, recent=list(reversed(recent)), site_ssl_days=_ssl_days(site["ssl_expires"]),
+                      draft=draft)
 
     @app.post("/admin/agent/model")
     def agent_pull_model(request: Request, csrf: str = Form("")):

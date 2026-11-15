@@ -995,3 +995,13 @@ document.querySelectorAll("[data-copy-text]").forEach((btn) => btn.addEventListe
   btn.textContent = "Skopiowano ✓";
   setTimeout(() => { btn.innerHTML = old; }, 1600);
 }));
+
+// „Wszystkie branże”: zaznacza / odznacza wszystkie pola danej grupy w formularzu
+document.querySelectorAll("input[data-check-all]").forEach((all) => {
+  const boxes = () => all.form.querySelectorAll(`input[type=checkbox][name="${all.dataset.checkAll}"]`);
+  all.addEventListener("change", () => boxes().forEach((b) => { b.checked = all.checked; }));
+  boxes().forEach((b) => b.addEventListener("change", () => {
+    const list = [...boxes()];
+    all.checked = list.every((x) => x.checked);
+  }));
+});

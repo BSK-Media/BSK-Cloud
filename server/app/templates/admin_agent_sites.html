@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% import "_agent.html" as ag with context %}
+{% block title %}Strony klientów — Agent AI — {{ site_name }}{% endblock %}
+{% block heading %}Strony klientów{% endblock %}
+{% block subtitle %}<div class="subtitle">Działanie co 15 minut, audyt SEO i wydajności co tydzień, WordPress / WooCommerce / Google raz na dobę.</div>{% endblock %}
+{% block content %}
+<section class="card">
+  {% if sites %}
+  <div class="table-wrap"><table class="list">
+    <thead><tr><th>Strona</th><th>Stan</th><th class="hide-sm">Odpowiedź</th><th class="hide-sm">SSL</th><th>Audyt</th><th class="hide-sm">Integracje</th><th></th></tr></thead>
+    <tbody>
+    {% for s in sites %}{% set days = ssl_days(s.ssl_expires) %}{% set it = s.integ|fromjson %}
+    <tr>
+      <td><a href="/admin/agent/sites/{{ s.id }}"><b>{{ s.name or s.url }}</b></a>
+        <div class="small muted">{{ s.url }}{% if s.client_id %} · {{ s.company or s.client_name or s.client_login }}{% endif %}</div></td>
+      <td>{{ ag.status_tag(s) }}{% if s.status == 'down' and s.last_error %}<div class="small muted">{{ s.last_error }}</div>{% endif %}</td>
+      <td class="hide-sm num">{{ (s.last_ms ~ ' ms') if s.last_ms is not none else '—' }}</td>
+      <td class="hide-sm">{% if days is none %}—{% elif days < 14 %}<span class="tag danger">{{ days }} dni</span>{% elif days < 30 %}<span class="tag warn">{{ days }} dni</span>{% else %}<span class="small muted">{{ days }} dni</span>{% endif %}</td>
+      <td>{{ ag.audit_score(s) }}</td>
+      <td class="hide-sm small">{% if it.wp %}<span class="tag">WP</span>{% endif %}{% if it.wp and it.wp.orders %}<span class="tag">Woo</span>{% endif %}{% if it.gsc and not it.gsc.error %}<span class="tag">Google</span>{% endif %}
+        {% set errs = (it.issues or [])|selectattr('level', 'equalto', 'error')|list %}{% if errs %}<span class="tag danger">{{ errs|length }} błędów</span>{% elif not (it.wp or it.gsc) %}<span class="muted">—</span>{% endif %}</td>
+      <td class="actions">{{ ag.delete_site(s) }}</td>
+    </tr>{% endfor %}
+    </tbody></table></div>
+  {% else %}{{ ui.empty("Dodaj pierwszą stronę klienta — agent zacznie ją pilnować od razu.", "chart") }}{% endif %}
+</section>
+<section class="card">
+  <div class="card-head">{{ ui.icon("plus") }}<h2>Dodaj stronę klienta</h2></div>
+  <form method="post" action="/admin/agent/sites" class="form-grid">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="client">
+    <label>Adres strony <input name="url" required placeholder="np. klient.pl"></label>
+    <label>Nazwa (opcjonalnie) <input name="name" placeholder="np. Sklep ACME"></label>
+    <label>E-mail kontaktowy (opcjonalnie) <input name="contact_email" type="email" placeholder="do raportów dla klienta"></label>
+    <label>Konto klienta w portalu (opcjonalnie)
+      <select name="client_id"><option value="">— bez przypisania —</option>
+        {% for c in clients %}<option value="{{ c.id }}">{{ c.company or c.display_name or c.username }}</option>{% endfor %}</select></label>
+    <div class="row"><button class="primary">{{ ui.icon("plus") }}Dodaj stronę</button></div>
+  </form>
+  {{ ag.bulk_form("client") }}
+  <p class="hint mt">Klucze WordPress, WooCommerce i Search Console wpisujesz po kliknięciu nazwy strony (sekcja „Integracje”).</p>
+</section>
+{% endblock %}

@@ -303,13 +303,17 @@ Co robi:
   potencjalnego klienta krótką pierwszą wiadomość. Adres bierze z konta klienta w portalu, z formularza albo
   znajduje go na stronie (linki mailto, podstrona kontaktowa). **Agent nic nie wysyła sam**: w panelu
   poprawiasz treść i klikasz *Otwórz w poczcie*;
-- **sam wyszukuje nowe firmy**: w panelu ustawiasz branżę i miasto (np. „dentysta, Wrocław”), a agent raz
+- **sam wyszukuje nowe firmy**: w panelu zaznaczasz branże (jedną, kilka albo
+  „Wszystkie branże”) i miasto (np. „dentysta, Wrocław”), a agent raz
   na dobę pobiera z publicznej bazy OpenStreetMap firmy, które mają stronę WWW, i dodaje kilka nowych jako
   „potencjalny klient” (audyt, adres e-mail z bazy albo ze strony, gotowy e-mail);
 - **codziennie o 7:00** (`BSK_AGENT_HOUR`) wysyła podsumowanie: co zrobił, co nie działa, wyniki audytów,
   zalecenia i gotowe e-maile.
 
-Integracje (opcjonalne, klucze w panelu **Agent AI → Ustawienia i klucze API** i na stronie klienta;
+Panel agenta ma w menu bocznym podzakładki: *Przegląd* (co robi teraz, model, podsumowanie),
+*Gotowe e-maile*, *Strony klientów*, *Nowe firmy*, *Sieć biurowa*, *Dziennik* i *Ustawienia i klucze*.
+
+Integracje (opcjonalne, klucze w panelu **Agent AI → Ustawienia i klucze** i na stronie klienta;
 zapisywane w bazie w formie zaszyfrowanej):
 - **WordPress / WooCommerce**: hasło aplikacji WordPress i klucz REST API WooCommerce (tylko odczyt). Agent
   codziennie sprawdza wersję WordPressa i PHP, nieaktualne wtyczki, nieudane zamówienia i spadki sprzedaży;
