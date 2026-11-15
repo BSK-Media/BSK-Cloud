@@ -42,7 +42,11 @@ code { background: var(--line-2); padding: .1rem .38rem; border-radius: 6px; fon
 /* ---------- układ aplikacji ---------- */
 .shell { display: grid; grid-template-columns: 252px 1fr; min-height: 100vh; }
 .sidebar { background: var(--side); color: var(--side-ink); display: flex; flex-direction: column;
-  position: sticky; top: 0; height: 100vh; padding: 18px 14px; }
+  position: sticky; top: 0; height: 100vh; height: 100dvh; padding: 18px 14px;
+  overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #2c3a55 transparent; }
+.sidebar > * { flex-shrink: 0; }
+.sidebar::-webkit-scrollbar { width: 6px; }
+.sidebar::-webkit-scrollbar-thumb { background: #2c3a55; border-radius: 3px; }
 .brand { display: flex; align-items: center; gap: 10px; color: #fff; font-weight: 700; font-size: 1.02rem;
   padding: 4px 8px 18px; text-decoration: none; }
 .brand:hover { text-decoration: none; }

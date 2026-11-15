@@ -1005,3 +1005,11 @@ document.querySelectorAll("input[data-check-all]").forEach((all) => {
     all.checked = list.every((x) => x.checked);
   }));
 });
+
+// menu boczne: aktywna zakładka zawsze widoczna (np. podzakładki Agenta AI na niskim ekranie)
+(() => {
+  const side = document.querySelector(".sidebar"), active = side && side.querySelector(".nav a.active");
+  if (active && active.getBoundingClientRect().bottom > side.clientHeight - 80) {
+    side.scrollTop = active.offsetTop - side.clientHeight / 2;
+  }
+})();
