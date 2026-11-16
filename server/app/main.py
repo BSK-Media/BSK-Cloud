@@ -1774,9 +1774,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         ctx["gs"] = report_cache.get(key, lambda: gsc.gsc_report(sa, prop, rng["cur"], rng["cmp"],
                                                                                  token_url=integ.token_url, base=integ.gsc_url))
                 except urllib.error.HTTPError as exc:
-                    ctx["g_error"] = (f"Google odmówił dostępu (HTTP {exc.code}) — sprawdź, czy konto usługi jest dodane do tej "
-                                      "usługi i czy w Google Cloud jest włączone odpowiednie API.") if exc.code in (401, 403) \
-                        else f"Google zwrócił błąd HTTP {exc.code}."
+                    detail = gsc.google_error(exc)
+                    ctx["g_error"] = ((f"Google odmówił dostępu (HTTP {exc.code}) — sprawdź, czy konto usługi jest dodane do tej "
+                                       "usługi i czy w Google Cloud jest włączone odpowiednie API.") if exc.code in (401, 403)
+                                      else f"Google zwrócił błąd HTTP {exc.code}.") + (f" Komunikat Google: {detail}" if detail else "")
                 except Exception as exc:  # noqa: BLE001
                     ctx["g_error"] = f"Nie udało się pobrać danych: {str(exc)[:200]}"
         elif tab == "seo":

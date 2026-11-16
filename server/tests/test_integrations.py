@@ -88,6 +88,8 @@ class Google(Base):
         req = json.loads(body)
         if self.path.endswith(":runReport"):  # Google Analytics 4
             Google.ga.append((self.path, req))
+            if len(req.get("metrics", [])) > 10:  # jak prawdziwe API: najwyżej 10 wskaźników
+                return self.send({"error": {"code": 400, "message": "Requests are limited to 10 metrics."}}, 400)
             dims = [d["name"] for d in req.get("dimensions", [])]
             ranges = req["dateRanges"]
             if ranges[0].get("name"):  # raport z zakresem dat: wiersze dla każdego zakresu + wymiar „dateRange”
