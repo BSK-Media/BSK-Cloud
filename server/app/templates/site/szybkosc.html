@@ -114,7 +114,8 @@
 
 {% if psi.waterfall %}
 <section class="card">
-  <div class="card-head">{{ ui.icon("list") }}<h2>Kolejność wczytywania plików</h2><span class="spacer"></span><span class="small muted">pierwsze {{ psi.waterfall|length }} plików · najedź, by zobaczyć szczegóły</span></div>
+  <div class="card-head">{{ ui.icon("list") }}<h2>Kolejność wczytywania plików</h2><span class="spacer"></span><span class="small muted">pierwsze {{ psi.waterfall|length }} plików · najedź, by zobaczyć szczegóły</span>
+    <a class="button btn-sm" href="?tab=siec&s={{ strategy }}">Wszystkie zapytania (Network)</a></div>
   {{ rc.waterfall(psi.waterfall, psi.waterfall_end) }}
 </section>
 {% endif %}

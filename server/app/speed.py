@@ -181,6 +181,66 @@ def _waterfall(audits: dict) -> tuple[list[dict], float]:
     return rows[:60], max(r["end"] for r in rows)
 
 
+TYPE_PL = {"Document": "Dokument", "Script": "JS", "Stylesheet": "CSS", "Image": "Obraz", "Font": "Czcionka",
+           "Fetch": "Fetch/XHR", "XHR": "Fetch/XHR", "Media": "Media", "Manifest": "Manifest", "Other": "Inne",
+           "Ping": "Inne", "Preflight": "Inne", "TextTrack": "Inne", "WebSocket": "Socket"}
+
+
+def network(audits: dict, page_url: str = "") -> dict:
+    """Pełna lista zapytań jak w F12 → Network (z testu Chrome w PageSpeed) i podsumowanie."""
+    items = ((audits.get("network-requests") or {}).get("details") or {}).get("items") or []
+    host = urllib.parse.urlsplit(page_url).netloc.removeprefix("www.")
+    blocking = {str(i.get("url")) for i in ((audits.get("render-blocking-resources") or {}).get("details") or {}).get("items", [])
+                if isinstance(i, dict)}
+    rows = []
+    for it in items:
+        if not isinstance(it, dict) or not it.get("url"):
+            continue
+        start = it.get("networkRequestTime", it.get("rendererStartTime", it.get("startTime")))
+        end = it.get("networkEndTime", it.get("endTime"))
+        if start is None or end is None:
+            continue
+        url = str(it["url"])
+        p = urllib.parse.urlsplit(url)
+        name = (p.path.rsplit("/", 1)[-1] or p.path or p.netloc) + (("?" + p.query) if p.query else "")
+        rtype = str(it.get("resourceType", "Other"))
+        rows.append({
+            "url": url[:600], "name": name[:160] or url[:160], "domain": p.netloc,
+            "third": bool(host) and not p.netloc.removeprefix("www.").endswith(host),
+            "type": TYPE_PL.get(rtype, rtype), "rtype": rtype, "mime": str(it.get("mimeType", ""))[:60],
+            "status": int(_num(it.get("statusCode"))), "priority": str(it.get("priority", "")),
+            "protocol": str(it.get("protocol", "")), "start": _num(start), "end": _num(end),
+            "kb": round(_num(it.get("transferSize")) / 1024, 1), "res_kb": round(_num(it.get("resourceSize")) / 1024, 1),
+            "entity": str(it.get("entity") or "")[:80], "blocking": url in blocking})
+    if not rows:
+        return {"rows": [], "summary": {}, "domains": []}
+    t0 = min(r["start"] for r in rows)
+    for r in rows:
+        r["start"], r["end"] = round(r["start"] - t0), round(r["end"] - t0)
+        r["ms"] = r["end"] - r["start"]
+    rows.sort(key=lambda r: r["start"])
+    m = (((audits.get("metrics") or {}).get("details") or {}).get("items") or [{}])[0]
+    summary = {"requests": len(rows), "kb": round(sum(r["kb"] for r in rows)), "res_kb": round(sum(r["res_kb"] for r in rows)),
+               "finish": max(r["end"] for r in rows),
+               "dcl": round(_num(m.get("observedDomContentLoaded"))) if isinstance(m, dict) else 0,
+               "load": round(_num(m.get("observedLoad"))) if isinstance(m, dict) else 0,
+               "third_kb": round(sum(r["kb"] for r in rows if r["third"])), "third_n": sum(1 for r in rows if r["third"]),
+               "errors": sum(1 for r in rows if r["status"] >= 400)}
+    doms: dict[str, list] = {}
+    for r in rows:
+        d = doms.setdefault(r["domain"], [0, 0.0, 0, r["third"]])
+        d[0] += 1
+        d[1] += r["kb"]
+        d[2] = max(d[2], r["end"])
+    domains = sorted(({"domain": k, "n": v[0], "kb": round(v[1]), "end": v[2], "third": v[3]} for k, v in doms.items()),
+                     key=lambda x: -x["kb"])[:20]
+    long_tasks = sorted(({"url": short(str(i.get("url", ""))) or "(główny wątek)", "ms": round(_num(i.get("duration"))),
+                          "start": round(_num(i.get("startTime")))}
+                         for i in ((audits.get("long-tasks") or {}).get("details") or {}).get("items", []) if isinstance(i, dict)),
+                        key=lambda x: -x["ms"])[:15]
+    return {"rows": rows[:500], "summary": summary, "domains": domains, "long_tasks": long_tasks}
+
+
 def parse(data: dict, page_url: str = "") -> dict:
     """Pełny wynik PageSpeed (JSON z API) -> słownik do zapisu i panelu."""
     from .gsc import script_details
@@ -238,6 +298,7 @@ def parse(data: dict, page_url: str = "") -> dict:
         "opportunities": _findings(lh, "performance"), "seo_findings": _findings(lh, "seo"),
         "a11y_findings": _findings(lh, "accessibility"), "bp_findings": _findings(lh, "best-practices"),
         "scripts": scripts, "waterfall": wf, "waterfall_end": wf_end, "filmstrip": thumbs,
+        "network": network(audits, page_url or str(data.get("id", ""))),
         "final_screenshot": final if final.startswith("data:image/") else "",
         "weight_kb": weight, "requests": reqs, "by_type": by_type,
         "lh_version": str(lh.get("lighthouseVersion", "")), "fetched": str(lh.get("fetchTime", "")),
@@ -262,11 +323,14 @@ def store(db: Database, site_id: int, strategy: str, full: dict) -> None:
            _metric(full, "largest-contentful-paint"), _metric(full, "total-blocking-time"),
            _metric(full, "first-contentful-paint"), _metric(full, "speed-index"),
            _metric(full, "cumulative-layout-shift"), json.dumps(full, ensure_ascii=False))
-    # starsze testy: zostają liczby do wykresu, bez obrazów (miejsce w bazie)
-    old = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
-    for r in db.all("SELECT id, data FROM psi_runs WHERE site_id = ? AND ts < ? AND data LIKE '%data:image%'", site_id, old):
+    # starsze testy: zostają liczby do wykresu, bez obrazów i listy zapytań (miejsce w bazie)
+    old = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    for r in db.all("SELECT id, data FROM psi_runs WHERE site_id = ? AND ts < ? AND data NOT LIKE '%\"trimmed\": true%'",
+                    site_id, old):
         d = json.loads(r["data"])
-        d["filmstrip"], d["final_screenshot"] = [], ""
+        d["filmstrip"], d["final_screenshot"], d["trimmed"] = [], "", True
+        if isinstance(d.get("network"), dict):
+            d["network"]["rows"] = []
         db.run("UPDATE psi_runs SET data = ? WHERE id = ?", json.dumps(d, ensure_ascii=False), r["id"])
     cutoff = (datetime.now(timezone.utc) - timedelta(days=400)).isoformat()
     db.run("DELETE FROM psi_runs WHERE site_id = ? AND ts < ?", site_id, cutoff)

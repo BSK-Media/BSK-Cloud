@@ -174,7 +174,12 @@ PSI_AUDITS = {
         {"url": "https://www.googletagmanager.com/gtm.js?id=GTM-X", "total": 640, "scripting": 600, "scriptParseCompile": 30},
         {"url": "Unattributable", "total": 0}]}},
     "network-requests": {"details": {"items": [
-        {"url": "https://klient.pl/", "resourceType": "Document", "transferSize": 40000, "networkRequestTime": 1000, "networkEndTime": 1600},
+        {"url": "https://klient.pl/", "resourceType": "Document", "transferSize": 40000, "networkRequestTime": 1000, "networkEndTime": 1600,
+         "statusCode": 200, "priority": "VeryHigh", "resourceSize": 160000},
+        {"url": "https://www.googletagmanager.com/gtm.js?id=GTM-X", "resourceType": "Script", "transferSize": 120000,
+         "networkRequestTime": 1800, "networkEndTime": 3300, "statusCode": 200, "priority": "Low", "entity": "Google Tag Manager"},
+        {"url": "https://klient.pl/brak.png", "resourceType": "Image", "transferSize": 500, "networkRequestTime": 2000,
+         "networkEndTime": 2100, "statusCode": 404},
         {"url": "https://klient.pl/wp-content/plugins/slider/slider.min.js", "resourceType": "Script", "transferSize": 420000,
          "networkRequestTime": 1700, "networkEndTime": 2900},
         {"url": "https://klient.pl/style.css", "resourceType": "Stylesheet", "transferSize": 900000, "networkRequestTime": 1650, "networkEndTime": 2400}]}},
@@ -183,6 +188,8 @@ PSI_AUDITS = {
     "third-party-summary": {"details": {"items": [
         {"entity": {"text": "Google Tag Manager", "type": "link"}, "transferSize": 120000, "blockingTime": 310, "mainThreadTime": 700},
         {"entity": "Facebook", "transferSize": 80000, "blockingTime": 0, "mainThreadTime": 150}]}},
+    "metrics": {"details": {"items": [{"observedDomContentLoaded": 3620, "observedLoad": 5620}]}},
+    "long-tasks": {"details": {"items": [{"url": "https://klient.pl/wp-content/plugins/slider/slider.min.js", "duration": 620, "startTime": 2950}]}},
     "mainthread-work-breakdown": {"details": {"items": [{"group": "scriptEvaluation", "groupLabel": "Wykonanie skryptów", "duration": 2400}]}},
 }
 
@@ -307,14 +314,25 @@ def test_search_console_and_pagespeed():
         assert opp["title"] == "Wyeliminuj zasoby blokujące renderowanie" and opp["save_ms"] == 820
         assert "Więcej informacji" not in opp["desc"] and opp["rows"][0] == {"label": "klient.pl/style.css", "ms": 820, "kb": 88}
         assert full["waterfall"][0] == {"url": "klient.pl/", "type": "Document", "start": 0, "end": 600, "kb": 39}
+        net = full["network"]
+        assert net["summary"]["requests"] == 5 and net["summary"]["dcl"] == 3620 and net["summary"]["load"] == 5620
+        assert net["summary"]["errors"] == 1 and net["summary"]["third_n"] == 1
+        gtm = next(r for r in net["rows"] if "gtm.js" in r["url"])
+        assert gtm["third"] and gtm["type"] == "JS" and gtm["ms"] == 1500 and gtm["start"] == 800 and gtm["name"] == "gtm.js?id=GTM-X"
+        assert next(r for r in net["rows"] if r["name"] == "style.css")["blocking"]
+        assert net["long_tasks"][0]["ms"] == 620 and net["domains"][0]["domain"] == "klient.pl"
+        from app import sitereport
+        assert [r["name"] for r in sitereport.filter_network(net["rows"], third=True)] == ["gtm.js?id=GTM-X"]
+        assert sitereport.filter_network(net["rows"], sort="czas")[0]["name"] == "gtm.js?id=GTM-X"
+        assert [r["name"] for r in sitereport.filter_network(net["rows"], q="brak")] == ["brak.png"]
         assert len(full["filmstrip"]) == 2 and full["by_type"][0] == ["Skrypt", 22, 1465]
         detail = " ".join(i["text"] for i in speed.issues(full))
         assert "Baner główny" in detail and "Opóźnienie startu pobierania 2900 ms" in detail and "Google Tag Manager 310 ms" in detail
         assert "style.css (820 ms)" in detail
         sc = p["scripts"]
         assert sc["bootup"][0]["url"] == "klient.pl/wp-content/plugins/slider/slider.min.js" and sc["bootup"][0]["total"] == 1820
-        assert sc["heavy"] == [{"url": "klient.pl/wp-content/plugins/slider/slider.min.js",
-                                "full": "https://klient.pl/wp-content/plugins/slider/slider.min.js", "kb": 410, "unused_kb": 293}]
+        assert sc["heavy"][0] == {"url": "klient.pl/wp-content/plugins/slider/slider.min.js",
+                                  "full": "https://klient.pl/wp-content/plugins/slider/slider.min.js", "kb": 410, "unused_kb": 293}
         assert sc["third_party"][0] == {"entity": "Google Tag Manager", "kb": 117, "blocking": 310, "main": 700}
         assert sc["render_blocking"][0]["ms"] == 820 and sc["main_thread"][0]["group"] == "Wykonanie skryptów"
         texts = " ".join(i["text"] for i in p["issues"])
@@ -405,6 +423,12 @@ def test_panel_settings_integrations_network_report(tmp_path, monkeypatch):
             assert phrase in sp, phrase
         assert "Wyniki Google PageSpeed (komputer)" in c.get(f"/admin/agent/sites/{site['id']}?tab=szybkosc&s=desktop").text
         assert db.one("SELECT COUNT(*) AS n FROM psi_runs")["n"] == 2
+        nw = c.get(f"/admin/agent/sites/{site['id']}?tab=siec").text
+        for phrase in ("DOMContentLoaded", "gtm.js?id=GTM-X", "blokuje wyświetlenie", "Długie zadania", "googletagmanager.com", "404"):
+            assert phrase in nw, phrase
+        js_only = c.get(f"/admin/agent/sites/{site['id']}?tab=siec&typ=JS&sort=czas").text
+        assert "gtm.js" in js_only and "brak.png" not in js_only
+        assert "gtm.js" in c.get(f"/admin/agent/sites/{site['id']}?tab=siec&zew=1").text
         bl = c.get(f"/admin/agent/sites/{site['id']}?tab=bledy").text
         assert "Szybkość (Google)" in bl and "do zyskania 0,8 s" in bl and "Zasoby blokują pierwsze wyrenderowanie" in bl
         assert "Testuj teraz" in sp and c.post(f"/admin/agent/sites/{site['id']}/szybkosc", data={"csrf": tok}).status_code == 200

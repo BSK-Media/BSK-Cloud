@@ -1,0 +1,72 @@
+{% import "_ui.html" as ui with context %}
+<div class="row mb">
+  <a class="button btn-sm {{ 'primary' if strategy == 'mobile' else 'ghost' }}" href="?tab=siec&s=mobile">Telefon</a>
+  <a class="button btn-sm {{ 'primary' if strategy == 'desktop' else 'ghost' }}" href="?tab=siec&s=desktop">Komputer</a>
+  <span class="spacer"></span>
+  {% if psi %}<span class="small muted">test Chrome w Google PageSpeed · {{ psi.ts|dt }}</span>{% endif %}
+  <form method="post" action="/admin/agent/sites/{{ site.id }}/szybkosc" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}">
+    <button class="btn-sm primary">{{ ui.icon("refresh") }}Testuj teraz</button></form>
+</div>
+{% if not net or not net.rows %}
+<section class="card">{{ ui.empty(("Brak listy zapytań — kliknij „Testuj teraz” (1–2 minuty). Starsze testy nie mają szczegółów sieci." if psi_ok else "Dodaj klucz PageSpeed w Ustawieniach agenta."), "network") }}</section>
+{% else %}
+{% set sm = net.summary %}
+<section class="card">
+  <div class="net-summary">
+    <div><span>Zapytania</span><b>{{ sm.requests }}</b></div>
+    <div><span>Przesłano</span><b>{{ rc.fmt(sm.kb) }} KB</b></div>
+    <div><span>Zasoby (po rozpakowaniu)</span><b>{{ rc.fmt(sm.res_kb) }} KB</b></div>
+    <div><span>DOMContentLoaded</span><b class="t-blue">{{ rc.fmt(sm.dcl / 1000, 's') if sm.dcl else '—' }}</b></div>
+    <div><span>Load</span><b class="t-red">{{ rc.fmt(sm.load / 1000, 's') if sm.load else '—' }}</b></div>
+    <div><span>Koniec (Finish)</span><b>{{ rc.fmt(sm.finish / 1000, 's') }}</b></div>
+    <div><span>Zewnętrzne</span><b>{{ sm.third_n }} · {{ rc.fmt(sm.third_kb) }} KB</b></div>
+    <div><span>Błędy (4xx/5xx)</span><b class="{{ 't-red' if sm.errors }}">{{ sm.errors }}</b></div>
+  </div>
+  <p class="hint">{{ 'Telefon (średni smartfon, wolniejsze 4G)' if strategy == 'mobile' else 'Komputer (szybkie łącze)' }} — dane z prawdziwej przeglądarki Chrome uruchomionej przez Google, jak w F12 → Network. Czasy liczone od rozpoczęcia wczytywania strony.</p>
+</section>
+
+<form method="get" class="card net-filters">
+  <input type="hidden" name="tab" value="siec"><input type="hidden" name="s" value="{{ strategy }}">
+  <input name="q" value="{{ nf.q }}" placeholder="Filtruj po adresie, np. elementor, google, .woff2">
+  <div class="chips">
+    <a class="chip-link {{ 'on' if not nf.typ }}" href="?tab=siec&s={{ strategy }}&sort={{ nf.sort }}{{ '&zew=1' if nf.zew }}">Wszystko</a>
+    {% for t in sr.NET_TYPES %}<a class="chip-link {{ 'on' if nf.typ == t }}" href="?tab=siec&s={{ strategy }}&typ={{ t|urlencode }}&sort={{ nf.sort }}{{ '&zew=1' if nf.zew }}">{{ t }}</a>{% endfor %}
+  </div>
+  <select name="sort" data-autosubmit>{% for k, l in sr.NET_SORT %}<option value="{{ k }}" {{ 'selected' if nf.sort == k }}>Sortuj: {{ l }}</option>{% endfor %}</select>
+  <label class="check"><input type="checkbox" name="zew" value="1" {{ 'checked' if nf.zew }} data-autosubmit> tylko zewnętrzne</label>
+  <input type="hidden" name="typ" value="{{ nf.typ }}">
+  <button class="btn-sm">Filtruj</button>
+</form>
+
+<section class="card">
+  <div class="card-head"><h2>Zapytania</h2><span class="spacer"></span><span class="small muted">{{ net_rows|length }} z {{ sm.requests }}</span></div>
+  <div class="table-wrap"><table class="list compact net-table">
+    <thead><tr><th>Nazwa</th><th>Status</th><th>Typ</th><th>Priorytet</th><th class="num">Rozmiar</th><th class="num">Czas</th><th>Oś czasu (0 – {{ rc.fmt(sm.finish / 1000, 's') }})</th></tr></thead>
+    <tbody>
+    {% for r in net_rows %}<tr class="{{ 'err' if r.status >= 400 }}">
+      <td class="net-name" title="{{ r.url }}"><span class="code-cell">{{ r.name|truncate(60, true, '…') }}</span>
+        <div class="small muted">{{ r.domain }}{% if r.third %} · <span class="tag">zewnętrzne{{ ': ' ~ r.entity if r.entity }}</span>{% endif %}{% if r.blocking %} · <span class="tag danger">blokuje wyświetlenie</span>{% endif %}</div></td>
+      <td class="num small {{ 't-red' if r.status >= 400 }}">{{ r.status or '—' }}</td>
+      <td class="small">{{ r.type }}</td>
+      <td class="small muted">{{ r.priority }}</td>
+      <td class="num small"><b>{{ r.kb }} KB</b>{% if r.res_kb and r.res_kb != r.kb %}<div class="muted">{{ r.res_kb }} KB</div>{% endif %}</td>
+      <td class="num"><b class="{{ 'danger' if r.ms >= 1000 else ('warning' if r.ms >= 400 else '') }}">{{ r.ms }} ms</b></td>
+      <td>{{ rc.wf_bar(r.start, r.end, sm.finish, r.rtype) }}</td>
+    </tr>{% else %}<tr><td colspan="7" class="muted">Brak zapytań dla tego filtra.</td></tr>{% endfor %}
+    </tbody></table></div>
+</section>
+
+<div class="grid g-2">
+  <section class="card"><div class="card-head"><h2>Domeny</h2><span class="spacer"></span><span class="small muted">skąd strona pobiera pliki</span></div>
+    {% set mx = net.domains[0].kb if net.domains else 1 %}
+    <div class="table-wrap"><table class="list compact"><thead><tr><th>Domena</th><th></th><th class="num">Zapytań</th><th class="num">KB</th><th class="num">Koniec</th></tr></thead><tbody>
+    {% for d in net.domains %}<tr><td class="small code-cell">{{ d.domain }}{% if d.third %} <span class="tag">zewn.</span>{% endif %}</td><td>{{ rc.bar(d.kb, mx, rc.ORANGE if d.third else rc.BLUE, 70) }}</td>
+      <td class="num">{{ d.n }}</td><td class="num"><b>{{ d.kb }}</b></td><td class="num small">{{ rc.fmt(d.end / 1000, 's') }}</td></tr>{% endfor %}
+    </tbody></table></div></section>
+  <section class="card"><div class="card-head"><h2>Długie zadania (Performance)</h2><span class="spacer"></span><span class="small muted">blokują główny wątek &gt; 50 ms</span></div>
+    {% if net.long_tasks %}<div class="table-wrap"><table class="list compact"><thead><tr><th>Skrypt</th><th class="num">Start</th><th class="num">Trwa</th></tr></thead><tbody>
+    {% for t in net.long_tasks %}<tr><td class="small code-cell">{{ t.url }}</td><td class="num small">{{ rc.fmt(t.start / 1000, 's') }}</td>
+      <td class="num"><b class="{{ 'danger' if t.ms >= 250 else 'warning' }}">{{ t.ms }} ms</b></td></tr>{% endfor %}
+    </tbody></table></div>{% else %}<p class="muted small">Brak długich zadań w tym teście.</p>{% endif %}</section>
+</div>
+{% endif %}

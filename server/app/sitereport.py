@@ -8,7 +8,7 @@ from datetime import date, timedelta
 
 
 
-TABS = [("przeglad", "Przegląd", "bot"), ("bledy", "Błędy i zalecenia", "list"), ("szybkosc", "Szybkość", "clock"),
+TABS = [("przeglad", "Przegląd", "bot"), ("bledy", "Błędy i zalecenia", "list"), ("szybkosc", "Szybkość", "clock"), ("siec", "Sieć (Network)", "network"),
         ("analityka", "Analityka", "chart"), ("google", "Wyniki w Google", "search"), ("seo", "SEO i udostępnianie", "link"),
         ("technologia", "Technologia", "cpu"), ("integracje", "Integracje", "key")]
 CLIENT_ONLY = {"analityka", "google", "integracje"}
@@ -206,3 +206,17 @@ DEVICES_PL = {"mobile": "telefon", "desktop": "komputer", "tablet": "tablet", "M
 
 def pl_name(name: str) -> str:
     return CHANNELS_PL.get(name) or DEVICES_PL.get(name) or name
+
+
+NET_TYPES = ["Dokument", "JS", "CSS", "Obraz", "Czcionka", "Fetch/XHR", "Media", "Inne"]
+NET_SORT = [("start", "kolejność"), ("czas", "najdłużej"), ("rozmiar", "największe")]
+
+
+def filter_network(rows: list[dict], typ: str = "", q: str = "", sort: str = "start", third: bool = False) -> list[dict]:
+    out = [r for r in rows if (not typ or r["type"] == typ or (typ == "Inne" and r["type"] not in NET_TYPES[:-1]))
+           and (not q or q.lower() in r["url"].lower()) and (not third or r["third"])]
+    if sort == "czas":
+        out.sort(key=lambda r: -r["ms"])
+    elif sort == "rozmiar":
+        out.sort(key=lambda r: -r["kb"])
+    return out

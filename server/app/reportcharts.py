@@ -178,3 +178,13 @@ def bar(value: float, top: float, color: str = BLUE, width: int = 120) -> Markup
     w = 0 if not top else max(2, width * value / top)
     return Markup(f'<svg width="{width}" height="8" class="mini-bar" aria-hidden="true"><rect width="{width}" height="8" rx="4" '
                   f'fill="#eef1f6"/><rect width="{w:.1f}" height="8" rx="4" fill="{color}"/></svg>')
+
+
+def wf_bar(start: float, end: float, total: float, rtype: str = "", width: int = 220) -> Markup:
+    """Pasek osi czasu w wierszu tabeli Network."""
+    total = total or 1
+    x = width * start / total
+    w = max(2.0, width * (end - start) / total)
+    color = TYPE_COLORS.get(rtype, "#9aa3b2")
+    return Markup(f'<svg width="{width}" height="10" class="wf-row" aria-hidden="true"><rect width="{width}" height="10" fill="#f3f5f8" rx="2"/>'
+                  f'<rect x="{x:.1f}" width="{w:.1f}" height="10" rx="2" fill="{color}"/></svg>')
