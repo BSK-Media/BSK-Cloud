@@ -299,6 +299,7 @@ class _Collect(HTMLParser):
         self.scripts = 0
         self.styles = 0
         self.img_src: list[str] = []
+        self.script_src: list[str] = []
 
     def handle_starttag(self, tag, attrs):
         a = {k.lower(): (v or "") for k, v in attrs}
@@ -329,6 +330,7 @@ class _Collect(HTMLParser):
                 self.styles += 1
         elif tag == "script" and a.get("src"):
             self.scripts += 1
+            self.script_src.append(a["src"])
 
     def handle_endtag(self, tag):
         if tag == "title":
@@ -393,6 +395,12 @@ def audit_site(url: str, max_links: int = 15) -> dict:
     facts.update({"title": doc.title.strip()[:200], "description": doc.meta.get("description", "")[:300],
                   "h1": [h.strip()[:120] for h in doc.h1][:5], "images": doc.images, "scripts": doc.scripts,
                   "styles": doc.styles, "links": len(doc.links)})
+    # podgląd przy udostępnianiu (Open Graph / Twitter) i wynik w Google
+    facts["og"] = {k: doc.meta.get(k, "")[:400] for k in ("og:title", "og:description", "og:image", "og:site_name",
+                                                         "og:url", "og:type", "twitter:card", "twitter:image")}
+    facts["first_image"] = next((urllib.parse.urljoin(page.final_url, src) for src in doc.img_src
+                                 if not src.startswith("data:")), "")
+    facts["script_srcs"] = [urllib.parse.urljoin(page.final_url, src)[:400] for src in doc.script_src[:40]]
     if doc.scripts > 30:
         add("warn", f"Dużo plików JavaScript ({doc.scripts}) — spowalniają ładowanie.", "Wydajność")
     if doc.styles > 12:
@@ -533,6 +541,23 @@ def audit_and_store(db: Database, site, ai_cfg: ai.Config | None, progress=_noop
     reachable = 0 < result["facts"].get("code", 0) < 400
     rv: dict = {}
     if reachable:
+        facts = result["facts"]
+        review.og_image(site["id"], facts, lambda lvl, text, area: result["issues"].append(
+            {"level": lvl, "text": text, "area": area}))
+        psi_fn = review.CONFIG.get("pagespeed")
+        psi = None
+        if psi_fn:
+            progress(f"Audyt {name}: test PageSpeed — wydajność i skrypty")
+            psi = psi_fn(facts.get("final_url") or site["url"])
+        if psi and not psi.get("error"):
+            facts["psi"] = psi
+            result["issues"] += [{**i, "area": "Wydajność"} for i in psi.get("issues", [])]
+        else:
+            progress(f"Audyt {name}: rozmiary skryptów")
+            facts["scripts_static"] = review.script_sizes(facts.get("script_srcs", []), facts.get("final_url") or site["url"])
+            if psi and psi.get("error"):
+                facts["psi_error"] = psi["error"]
+        result.update(_finish(facts, result["issues"]))
         progress(f"Audyt {name}: zrzuty ekranu (komputer i telefon)")
         shots = review.take_screenshots(site["id"], result["facts"].get("final_url") or site["url"])
         result["facts"]["shots"] = sorted(shots)

@@ -168,7 +168,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             notify.send(settings, settings.notify_email, subject, lines, link, "Otwórz agenta")
 
     integ = integrations.Integrations(db, box, ai_cfg, notify_alert=agent_alert,
-                                      psi_url=os.environ.get("BSK_PSI_URL", gsc.PSI_URL))
+                                      psi_url=os.environ.get("BSK_PSI_URL", gsc.PSI_URL),
+                                      token_url=os.environ.get("BSK_GOOGLE_TOKEN_URL", gsc.TOKEN_URL),
+                                      ga_url=os.environ.get("BSK_GA_URL", gsc.GA_URL))
+    review.CONFIG["pagespeed"] = integ.pagespeed  # pełna ocena: skrypty i wydajność z PageSpeed (gdy jest klucz)
     site_agent = monitor.Agent(
         db, ai_cfg,
         notify_alert=agent_alert,
@@ -1598,7 +1601,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.run("DELETE FROM site_checks WHERE site_id = ?", site_id)
         db.run("DELETE FROM site_audits WHERE site_id = ?", site_id)
         db.run("DELETE FROM sites WHERE id = ?", site_id)
-        for kind in review.SHOTS:
+        for kind in [*review.SHOTS, "og"]:
             if (shot := review.shot_path(site_id, kind)) and shot.exists():
                 shot.unlink()
         db.log(admin["id"], "site_deleted", site["url"])
@@ -1654,7 +1657,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return RedirectResponse("/admin/agent/settings", 303)
 
     @app.post("/admin/agent/sites/{site_id}/integrations")
-    def agent_site_integrations(request: Request, site_id: int, gsc_property: str = Form(""), wp_user: str = Form(""),
+    def agent_site_integrations(request: Request, site_id: int, gsc_property: str = Form(""), ga_property: str = Form(""),
+                                wp_user: str = Form(""),
                                 wp_pass: str = Form(""), wc_key: str = Form(""), wc_secret: str = Form(""),
                                 contact_email: str = Form(""), action: str = Form("save"), csrf: str = Form("")):
         check_csrf(request, csrf)
@@ -1672,8 +1676,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if contact_email and not monitor._EMAIL_RE.fullmatch(contact_email):
             flash(request, "Nieprawidłowy adres e-mail.", "error")
             return RedirectResponse(f"/admin/agent/sites/{site_id}#integracje", 303)
-        db.run("UPDATE sites SET gsc_property = ?, wp_user = ?, contact_email = ? WHERE id = ?",
-               gsc_property.strip()[:200], wp_user.strip()[:120], contact_email, site_id)
+        ga_id = "".join(ch for ch in ga_property if ch.isdigit())[:20]
+        db.run("UPDATE sites SET gsc_property = ?, ga_property = ?, wp_user = ?, contact_email = ? WHERE id = ?",
+               gsc_property.strip()[:200], ga_id, wp_user.strip()[:120], contact_email, site_id)
         for col, val in (("wp_pass", wp_pass), ("wc_key", wc_key), ("wc_secret", wc_secret)):
             if val.strip():  # puste pole = bez zmian (klucz zostaje)
                 db.run(f"UPDATE sites SET {col} = ? WHERE id = ?", box.seal(val.strip().replace(" ", "") if col == "wp_pass" else val.strip()), site_id)
@@ -1732,6 +1737,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                            "rv": json.loads(audit["review"]) if audit["review"] else None} if audit else None,
                       areas=review.AREAS, verdicts=review.VERDICTS,
                       shots=[k for k in review.SHOTS if (p := review.shot_path(site_id, k)) and p.exists()],
+                      og_img=bool((p := review.shot_path(site_id, "og")) and p.exists()),
                       history=history, week=week, recent=list(reversed(recent)), site_ssl_days=_ssl_days(site["ssl_expires"]),
                       draft=draft)
 
@@ -1742,6 +1748,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not path or not path.exists():
             raise HTTPException(404)
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, no-cache"})
+
+    @app.get("/admin/agent/sites/{site_id}/og-obraz")
+    def agent_site_og_image(request: Request, site_id: int):
+        """Obrazek podglądu przy udostępnianiu (og:image) pobrany przy audycie — przez portal (CSP)."""
+        require_user(request, "admin")
+        path = review.shot_path(site_id, "og")
+        if not path or not path.exists():
+            raise HTTPException(404)
+        kind = review.image_type(path.read_bytes()[:16]) or "application/octet-stream"
+        return FileResponse(path, media_type=kind, headers={"Cache-Control": "private, no-cache",
+                                                             "X-Content-Type-Options": "nosniff"})
 
     @app.post("/admin/agent/model")
     def agent_pull_model(request: Request, csrf: str = Form("")):

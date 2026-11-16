@@ -192,7 +192,8 @@ def temp_color(value: float | None) -> str:
     return "critical" if value >= 85 else "warning" if value >= 70 else "good"
 
 
-def line_chart(series: list[tuple[str, list, str]], title: str, unit: str = "%", top: float | None = None) -> Markup:
+def line_chart(series: list[tuple[str, list, str]], title: str, unit: str = "%", top: float | None = None,
+               start: str = "10 min temu", end: str = "teraz") -> Markup:
     """Wykres z ostatnich 10 minut (próbka co 5 s): oś Y z podziałką, kilka serii, legenda przy >= 2 seriach."""
     W, H, L, R, T, B = 720, 200, 44, 8, 10, 22
     pw, ph = W - L - R, H - T - B
@@ -225,8 +226,8 @@ def line_chart(series: list[tuple[str, list, str]], title: str, unit: str = "%",
         line = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
         parts.append(f'<polygon points="{pts[0][0]:.1f},{T + ph} {line} {pts[-1][0]:.1f},{T + ph}" fill="{color}" fill-opacity=".08"/>')
         parts.append(f'<polyline points="{line}" fill="none" stroke="{color}" stroke-width="2" stroke-linejoin="round"/>')
-    parts.append(f'<text x="{L}" y="{H - 5}" class="tick">10 min temu</text>'
-                 f'<text x="{W - R}" y="{H - 5}" text-anchor="end" class="tick">teraz</text></svg>')
+    parts.append(f'<text x="{L}" y="{H - 5}" class="tick">{escape(start)}</text>'
+                 f'<text x="{W - R}" y="{H - 5}" text-anchor="end" class="tick">{escape(end)}</text></svg>')
     legend = ""
     if len(series) > 1:
         legend = '<div class="legend">' + "".join(
