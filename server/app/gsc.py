@@ -224,6 +224,7 @@ GA_DAILY = ["sessions", "activeUsers", "screenPageViews", "keyEvents"]
 def _ga_run(token: str, url: str, ranges: list[tuple], dims: list[str], metrics: list[str], limit: int = 0,
             order: str = "") -> dict[str, list]:
     """Zapytanie runReport; wynik: {"0": [(wymiary, metryki)], "1": [...]} dla każdego zakresu dat."""
+    assert len(metrics) <= 10 and len(dims) <= 9, "limit GA4 Data API"
     body: dict = {"dateRanges": [{"startDate": a.isoformat(), "endDate": b.isoformat(), "name": str(i)}
                                  for i, (a, b) in enumerate(ranges)],
                   "metrics": [{"name": m} for m in metrics]}
@@ -254,7 +255,11 @@ def ga_report(sa: dict, prop: str, cur: tuple, cmp: tuple | None, token_url: str
     token = access_token(sa, token_url)
     url = f"{base}/properties/{''.join(ch for ch in prop if ch.isdigit())}:runReport"
     ranges = [cur] + ([cmp] if cmp else [])
-    tot = _ga_run(token, url, ranges, [], GA_TOTALS)
+    # GA4 Data API: najwyżej 10 wskaźników w jednym zapytaniu — sumy w dwóch częściach
+    part1, part2 = GA_TOTALS[:6], GA_TOTALS[6:]
+    t1, t2 = _ga_run(token, url, ranges, [], part1), _ga_run(token, url, ranges, [], part2)
+    tot = {k: [([], (t1.get(k) or [([], [0.0] * len(part1))])[0][1] + (t2.get(k) or [([], [0.0] * len(part2))])[0][1])]
+           for k in {"0", "1"} & (set(t1) | set(t2))}
 
     def totals(key):
         vals = tot.get(key) or [([], [0.0] * len(GA_TOTALS))]
@@ -287,6 +292,15 @@ def ga_report(sa: dict, prop: str, cur: tuple, cmp: tuple | None, token_url: str
         "new_returning": top("newVsReturning", ["activeUsers", "sessions"], 3, "activeUsers"),
     }
     return out
+
+
+def google_error(exc) -> str:
+    """Komunikat Google z treści błędu HTTP (np. „Field x is not a valid metric”)."""
+    try:
+        body = json.loads(exc.read().decode("utf-8", errors="replace"))
+        return str((body.get("error") or {}).get("message", ""))[:300]
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def gsc_report(sa: dict, prop: str, cur: tuple, cmp: tuple | None, token_url: str = TOKEN_URL, base: str = GSC_URL) -> dict:
