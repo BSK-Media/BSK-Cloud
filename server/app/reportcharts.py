@@ -168,9 +168,9 @@ def score_ring(score: int | None, label: str, size: int = 92) -> Markup:
         f'<div class="score-ring"><svg viewBox="0 0 {size} {size}" width="{size}" height="{size}" role="img" '
         f'aria-label="{escape(label)}: {score if score is not None else "brak"}">'
         f'<circle cx="{c}" cy="{c}" r="{r:.1f}" fill="{color}" fill-opacity=".08" stroke="{color}" stroke-opacity=".18" stroke-width="6"/>'
-        f'<circle cx="{c}" cy="{c}" r="{r:.1f}" fill="none" stroke="{color}" stroke-width="6" stroke-linecap="round" '
-        f'stroke-dasharray="{circ * frac:.2f} {circ:.2f}" transform="rotate(-90 {c} {c})"/>'
-        f'<text x="{c}" y="{c + 8}" text-anchor="middle" class="ring-num" fill="{color}">{score if score is not None else "—"}</text>'
+        + (f'<circle cx="{c}" cy="{c}" r="{r:.1f}" fill="none" stroke="{color}" stroke-width="6" stroke-linecap="round" '
+           f'stroke-dasharray="{circ * frac:.2f} {circ:.2f}" transform="rotate(-90 {c} {c})"/>' if frac > 0 else "")
+        + f'<text x="{c}" y="{c + 8}" text-anchor="middle" class="ring-num" fill="{color}">{score if score is not None else "—"}</text>'
         f'</svg><div class="ring-label">{escape(label)}</div></div>')
 
 

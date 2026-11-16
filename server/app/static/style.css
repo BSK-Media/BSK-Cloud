@@ -852,3 +852,4 @@ b.good { color: #0a7a0a; }
 .snippet-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .snippet pre.code-snippet { max-height: 420px; overflow: auto; }
 .code-list { columns: 2; margin: 6px 0 0; } .code-list li { break-inside: avoid; }
+details.owners > summary { list-style: none; cursor: pointer; margin: 0; } details.owners > summary::-webkit-details-marker { display: none; }

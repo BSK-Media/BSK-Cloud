@@ -56,6 +56,9 @@
         <a href="/admin/log" class="{{ 'active' if nav == 'log' }}">{{ ui.icon("list") }}Dziennik zdarzeń</a>
         <a href="/account" class="{{ 'active' if nav == 'account' }}">{{ ui.icon("user") }}Moje konto</a>
       {% elif user.role == 'staff' %}
+        {% set in_sites = nav == 'staff-sites' or (nav or '').startswith('site-') %}
+        {% if my_sites %}<a href="/strony" class="{{ 'active' if nav == 'staff-sites' else ('open' if in_sites) }}">{{ ui.icon("chart") }}Strony klientów</a>
+        <div class="subnav">{% for st in my_sites %}<a href="/admin/agent/sites/{{ st.id }}" class="{{ 'active' if nav == 'site-' ~ st.id }}">{{ ui.icon("link") }}{{ (st.name or st.url.split('//')[-1].rstrip('/'))|truncate(24, true, '…') }}{% if st.status == 'down' %}<span class="badge">!</span>{% endif %}</a>{% endfor %}</div>{% endif %}
         <a href="/team" class="{{ 'active' if nav == 'team' }}">{{ ui.icon("folder") }}Wspólne pliki<span class="badge" data-unread-badge {{ 'hidden' if not unread_total }}>{{ unread_total }}</span></a>
         <a href="/search" class="{{ 'active' if nav == 'search' }}">{{ ui.icon("search") }}Szukaj</a>
         <a href="/account" class="{{ 'active' if nav == 'account' }}">{{ ui.icon("user") }}Moje konto</a>
@@ -95,6 +98,7 @@
     <a href="/team" class="{{ 'active' if nav == 'team' }}">{{ ui.icon("folder") }}<span>Wspólne</span></a>
     <a href="/search" class="{{ 'active' if nav == 'search' }}">{{ ui.icon("search") }}<span>Szukaj</span></a>
   {% elif user.role == 'staff' %}
+    {% if my_sites %}<a href="/strony" class="{{ 'active' if nav == 'staff-sites' or (nav or '').startswith('site-') }}">{{ ui.icon("chart") }}<span>Strony</span></a>{% endif %}
     <a href="/team" class="{{ 'active' if nav == 'team' }}">{{ ui.icon("folder") }}<span>Wspólne</span><b class="badge" data-unread-badge {{ 'hidden' if not unread_total }}>{{ unread_total }}</b></a>
     <a href="/search" class="{{ 'active' if nav == 'search' }}">{{ ui.icon("search") }}<span>Szukaj</span></a>
     <a href="/account" class="{{ 'active' if nav == 'account' }}">{{ ui.icon("user") }}<span>Konto</span></a>

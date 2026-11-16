@@ -5,6 +5,20 @@
   {{ ui.kpi("Średni czas odpowiedzi", ((week.ms|round|int) ~ " ms") if week.ms else "—", "ostatnie 7 dni", "clock") }}
   {{ ui.kpi("Certyfikat SSL", (site_ssl_days ~ " dni") if site_ssl_days is not none else "—", "do wygaśnięcia", "lock") }}
 </div>
+{% if is_admin and site.kind == 'client' %}
+<details class="card owners" {{ 'open' if not staff_ids }}>
+  <summary class="card-head">{{ ui.icon("users") }}<h2>Opiekunowie strony</h2><span class="spacer"></span>
+    <span class="small muted">{% if staff_ids %}{{ staff_all|selectattr('id', 'in', staff_ids)|map(attribute='display_name')|join(', ') }}{% else %}nie udostępniono{% endif %}</span></summary>
+  <form method="post" action="/admin/agent/sites/{{ site.id }}/opiekunowie" class="stack mt">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <p class="small muted">Wybrany pracownik zobaczy tę stronę u siebie w menu „Strony klientów” — cały raport ze wszystkimi zakładkami,
+      może uruchomić audyt, test szybkości i podsumowanie AI. Kluczy dostępowych (WordPress, WooCommerce) nie zobaczy i nie zmieni.</p>
+    {% if staff_all %}<div class="cat-grid">{% for u in staff_all %}<label class="check"><input type="checkbox" name="user_id" value="{{ u.id }}" {{ 'checked' if u.id in staff_ids }}> {{ u.display_name or u.username }}</label>{% endfor %}</div>
+    <div class="row"><button class="primary">Zapisz opiekunów</button></div>
+    {% else %}<p class="small">Najpierw dodaj konta pracowników w <a href="/admin/team">Zespół</a>.</p>{% endif %}
+  </form>
+</details>
+{% endif %}
 {% if psi_m %}
 <section class="card">
   <div class="card-head">{{ ui.icon("clock") }}<h2>Szybkość w skrócie (telefon)</h2><span class="spacer"></span>
@@ -80,8 +94,8 @@
 {% if draft %}
 <section class="card">
   <div class="card-head">{{ ui.icon("message") }}<h2>Gotowy e-mail</h2><span class="spacer"></span>
-    {% if draft.to_email %}<a class="button btn-sm primary" href="{{ mailto(draft) }}">Otwórz w poczcie</a>{% endif %}
-    <a class="button btn-sm" href="/admin/agent/maile#mail-{{ draft.id }}">Edytuj</a></div>
+    {% if is_admin %}{% if draft.to_email %}<a class="button btn-sm primary" href="{{ mailto(draft) }}">Otwórz w poczcie</a>{% endif %}
+    <a class="button btn-sm" href="/admin/agent/maile#mail-{{ draft.id }}">Edytuj</a>{% endif %}</div>
   <p class="small"><b>Do:</b> {{ draft.to_email or '(brak adresu)' }}{% if draft.email_source %} <span class="muted">— {{ draft.email_source }}</span>{% endif %}<br><b>Temat:</b> {{ draft.subject }}</p>
   <div class="ai-text">{{ draft.body }}</div>
 </section>
