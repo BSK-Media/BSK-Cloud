@@ -561,18 +561,31 @@ def audit_and_store(db: Database, site, ai_cfg: ai.Config | None, progress=_noop
         progress(f"Audyt {name}: zrzuty ekranu (komputer i telefon)")
         shots = review.take_screenshots(site["id"], result["facts"].get("final_url") or site["url"])
         result["facts"]["shots"] = sorted(shots)
+    else:
+        shots = {}
+    # 1. wynik techniczny od razu w panelu (SEO, szybkość, technologia) — z oceną wyliczoną bez AI
+    pre = review.heuristic(result, site) if reachable else {}
+    if pre and ai_cfg:
+        pre["ai_pending"] = True
+    aid = db.run("INSERT INTO site_audits (site_id, ts, score, report, ai_text, review) VALUES (?, ?, ?, ?, ?, ?)",
+                 site["id"], now_iso(), result["score"], json.dumps(result, ensure_ascii=False), "",
+                 json.dumps(pre, ensure_ascii=False) if pre else "")
+    if reachable and ai_cfg:
+        # 2. model AI: ocena wyglądu i pełna rekomendacja (na procesorze NAS nawet kilkadziesiąt minut)
         visual = None
-        if ai_cfg and shots:
+        if shots:
             progress(f"Audyt {name}: model AI ocenia wygląd strony")
             visual = review.vision_review(ai_cfg, site["url"], shots)
         result["facts"]["visual"] = bool(visual)
         rv = review.build_review(ai_cfg, site, result, visual, progress)
-        result["review"] = rv
+    else:
+        rv = pre
+    result["review"] = rv
     ai_text = review.as_text(rv) if rv.get("by_ai") else ""
-    aid = db.run("INSERT INTO site_audits (site_id, ts, score, report, ai_text, review) VALUES (?, ?, ?, ?, ?, ?)",
-                 site["id"], now_iso(), result["score"], json.dumps({k: v for k, v in result.items() if k != "review"},
-                                                                    ensure_ascii=False),
-                 ai_text, json.dumps(rv, ensure_ascii=False) if rv else "")
+    if rv is not pre:
+        db.run("UPDATE site_audits SET report = ?, ai_text = ?, review = ? WHERE id = ?",
+               json.dumps({k: v for k, v in result.items() if k != "review"}, ensure_ascii=False), ai_text,
+               json.dumps(rv, ensure_ascii=False) if rv else "", aid)
     verdict = review.VERDICTS.get(rv.get("werdykt"), "")
     event(db, "audit", f"Audyt {name}: {result['score']}/100 ({result['errors']} błędów, {result['warns']} uwag)"
           + (f", werdykt: {verdict}" if verdict else "") + (", ocena AI gotowa" if ai_text else ""), site["id"])

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import logging
@@ -141,6 +142,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     speed.init(db)
     box = SecretBox(settings.secret_key)
     ai_cfg = ai.Config(url=settings.ai_url, model=monitor.state_get(db, "ai_model") or settings.ai_model)
+    app_started = now_iso()  # zadania AI w tle sprzed tej chwili zostały przerwane restartem
     # zrzuty ekranu stron do oceny wyglądu (kontener „zrzuty”, profil „ai”); obrazy obok bazy, na SSD
     review.CONFIG.update(screenshot_url=os.environ.get("BSK_SCREENSHOT_URL", "").rstrip("/"),
                          dir=settings.db_path.parent / "zrzuty-stron")
@@ -1638,7 +1640,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def agent_audit_now(request: Request, site_id: int, csrf: str = Form("")):
         check_csrf(request, csrf)
         user, site = site_access(request, site_id)
-        in_background("audyt", monitor.audit_and_store, db, site, ai_cfg, site_agent.progress, integ.score_lead)
+        urgent = dataclasses.replace(ai_cfg, urgent=True, label=f"audyt {site['name'] or site['url']} (zlecony z panelu)")
+        in_background("audyt", monitor.audit_and_store, db, site, urgent, site_agent.progress, integ.score_lead)
         flash(request, "Audyt ruszył w tle. Wynik pojawi się za kilka minut (zalecenia AI mogą potrwać dłużej).")
         return RedirectResponse(f"/admin/agent/sites/{site_id}", 303)
 
@@ -1782,6 +1785,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ctx["plan"] = optimize.build_plan(audit_d["data"]["facts"] if audit_d else {}, psi_m, site["url"]) if (psi_m or audit_d) else None
             raw = monitor.state_get(db, f"opt_ai_{site_id}")
             ctx["opt_ai"] = json.loads(raw) if raw else None
+            if ctx["opt_ai"] and ctx["opt_ai"].get("status") == "pracuje" and ctx["opt_ai"].get("ts", "") < app_started:
+                ctx["opt_ai"]["status"] = "przerwane"  # portal uruchomiono ponownie w trakcie pisania
+            ctx["ai_queue"] = ai.queue_state()
         elif tab == "siec":
             ctx["psi"] = sitereport.latest_psi(db, site_id, strategy)
             q = request.query_params
@@ -1874,7 +1880,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         def run():
             site_agent.progress(f"{site['name'] or site['url']}: model AI pisze plan optymalizacji")
             try:
-                text = ai.generate(ai_cfg, optimize.ai_prompt(site["url"], psi_m, plan)) or ""
+                urgent = dataclasses.replace(ai_cfg, urgent=True, label=f"plan optymalizacji {site['name'] or site['url']}")
+                text = ai.generate(urgent, optimize.ai_prompt(site["url"], psi_m, plan)) or ""
             finally:
                 site_agent._set("work", None)
             monitor.state_set(db, f"opt_ai_{site_id}", json.dumps(
