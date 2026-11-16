@@ -30,6 +30,11 @@ log = logging.getLogger("bskcloud.monitor")
 CHECK_EVERY_S = 15 * 60
 AUDIT_EVERY_DAYS = 7
 UA = "Mozilla/5.0 (compatible; BSK-Monitor/1.0; +https://cloud.bskmedia.pl)"
+# niektóre serwery i zapory (Cloudflare, Wordfence) odrzucają roboty — ponowna próba jako zwykła przeglądarka
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/131.0 Safari/537.36")
+RETRY_DELAYS = (15, 45)  # zanim agent uzna stronę za niedziałającą: dwie kolejne próby po 15 s i 45 s
+INTERNET_PROBES = (("1.1.1.1", 443), ("8.8.8.8", 53), ("9.9.9.9", 443))
 MAX_HTML = 5 * 1024 * 1024
 
 SCHEMA = """
@@ -149,9 +154,9 @@ class Page:
             return self.body.decode("utf-8", errors="replace")
 
 
-def fetch(url: str, limit: int = MAX_HTML, timeout: float = 20, method: str = "GET") -> Page:
+def fetch(url: str, limit: int = MAX_HTML, timeout: float = 20, method: str = "GET", ua: str = UA) -> Page:
     req = urllib.request.Request(url, method=method, headers={
-        "User-Agent": UA, "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "User-Agent": ua, "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
         "Accept-Encoding": "identity", "Accept-Language": "pl,en;q=0.8"})
     start = time.monotonic()
     try:
@@ -196,17 +201,47 @@ def ssl_expiry(url: str, timeout: float = 10) -> datetime | None:
 
 # ------------------------------------------------------------------ monitoring (co 15 minut)
 
-def check_site(db: Database, site, notify=None) -> dict:
-    """Sprawdza stronę, zapisuje wynik, przy zmianie stanu (awaria / powrót) wysyła alert."""
-    ok, code, ms, error = False, None, None, ""
+def internet_ok() -> bool:
+    """Czy NAS ma w ogóle internet — przy awarii łącza biura strony klientów nie są „nie działa”."""
+    for host, port in INTERNET_PROBES:
+        try:
+            with socket.create_connection((host, port), timeout=5):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _probe(url: str, ua: str) -> tuple[bool, int | None, int | None, str]:
+    """Jedna próba: (działa, kod HTTP, ms, opis błędu)."""
     try:
-        page = fetch(site["url"], limit=65536, timeout=30)
-        code, ms = page.code, page.ttfb_ms
-        ok = 200 <= page.code < 400
-        if not ok:
-            error = f"HTTP {page.code}"
+        page = fetch(url, limit=65536, timeout=30, ua=ua)
     except (OSError, urllib.error.URLError, ValueError) as exc:
-        error = _err(exc)
+        return False, None, None, _err(exc)
+    if 200 <= page.code < 400 or page.code == 401:  # 401 = strona chroniona hasłem, serwer działa
+        return True, page.code, page.ttfb_ms, ""
+    if "cf-mitigated" in page.headers or (page.headers.get("server", "").lower() == "cloudflare"
+                                          and page.code in (403, 429, 503)):
+        return True, page.code, page.ttfb_ms, ""  # zabezpieczenie przed robotami — dla ludzi strona działa
+    return False, page.code, page.ttfb_ms, f"HTTP {page.code}"
+
+
+def check_site(db: Database, site, notify=None, retry_delays=None) -> dict:
+    """Sprawdza stronę, zapisuje wynik, przy zmianie stanu (awaria / powrót) wysyła alert.
+
+    Awaria jest potwierdzana: po nieudanej próbie agent czeka i próbuje jeszcze dwa razy (jako zwykła przeglądarka),
+    a przed alarmem sprawdza, czy to nie NAS stracił internet. Chwilowe „czkawki” serwerów nie wywołują alarmów."""
+    delays = RETRY_DELAYS if retry_delays is None else retry_delays
+    ok, code, ms, error = _probe(site["url"], UA)
+    for delay in delays:
+        if ok:
+            break
+        time.sleep(delay)
+        ok, code, ms, error = _probe(site["url"], BROWSER_UA)
+    if not ok and not internet_ok():
+        # problem po stronie NAS / łącza biura — nie zmieniaj stanu strony i nie alarmuj
+        db.run("UPDATE sites SET last_check = ?, last_error = ? WHERE id = ?", now_iso(), "brak internetu na NAS", site["id"])
+        return {"ok": None, "code": code, "ms": ms, "error": "brak internetu na NAS", "ssl_expires": None}
     expires = ssl_expiry(site["url"]) if ok else None
     now = now_iso()
     db.run("INSERT INTO site_checks (site_id, ts, ok, code, ms, error) VALUES (?, ?, ?, ?, ?, ?)",
@@ -219,15 +254,17 @@ def check_site(db: Database, site, notify=None) -> dict:
     if not site["status"] and not ok:
         changed = True  # pierwsze sprawdzenie i od razu awaria
     name = site["name"] or site["url"]
+    notify = notify if site["kind"] == "client" else None  # e-maile o awariach tylko dla stron klientów
     if changed:
         if ok:
             event(db, "up", f"{name} znów działa (HTTP {code}, {ms} ms).", site["id"])
             if notify:
                 notify(f"Strona działa: {name}", f"{site['url']} znów odpowiada (HTTP {code}, {ms} ms).")
         else:
-            event(db, "down", f"{name} nie działa: {error}.", site["id"])
+            event(db, "down", f"{name} nie działa: {error} (potwierdzone {1 + len(delays)} próbami).", site["id"])
             if notify:
                 notify(f"AWARIA strony: {name}", f"{site['url']} nie odpowiada poprawnie: {error}.\n\n"
+                       f"Potwierdzone {1 + len(delays)} próbami w odstępie ok. minuty, internet na NAS działa.\n"
                        "Agent sprawdza stronę co 15 minut i da znać, gdy wróci.")
     return {"ok": ok, "code": code, "ms": ms, "error": error, "ssl_expires": expires}
 
@@ -835,7 +872,7 @@ class Agent:
     def overview(self) -> dict:
         """Zadania agenta i ich stan — karta „Co robi agent” w panelu."""
         db = self.db
-        sites = db.one("SELECT COUNT(*) AS n, SUM(status = 'down') AS down, SUM(kind = 'lead') AS leads"
+        sites = db.one("SELECT COUNT(*) AS n, SUM(status = 'down' AND kind = 'client') AS down, SUM(kind = 'lead') AS leads"
                        " FROM sites WHERE active = 1")
         old = (datetime.now(timezone.utc) - timedelta(days=AUDIT_EVERY_DAYS)).isoformat()
         queue = db.one("SELECT COUNT(*) AS n FROM sites s WHERE s.active = 1 AND NOT EXISTS (SELECT 1 FROM site_audits a"

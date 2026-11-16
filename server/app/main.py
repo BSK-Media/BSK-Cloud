@@ -1373,7 +1373,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def agent_render(request: Request, template: str, nav: str, **ctx):
         """Wspólne dane podzakładek agenta (liczniki w menu)."""
         counts = db.one("SELECT (SELECT COUNT(*) FROM mail_drafts WHERE status = 'new') AS mails,"
-                        " (SELECT COUNT(*) FROM sites WHERE active = 1 AND status = 'down') AS down,"
+                        " (SELECT COUNT(*) FROM sites WHERE active = 1 AND kind = 'client' AND status = 'down') AS down,"
                         " (SELECT COUNT(*) FROM net_devices WHERE status = 'down') AS net_down")
         return render(request, template, nav=nav, agent_counts=dict(counts), mailto=_mailto, ssl_days=_ssl_days,
                       summary_hour=settings.agent_hour, **ctx)
