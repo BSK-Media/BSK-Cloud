@@ -20,6 +20,7 @@ CONTACT = """<html><body>Napisz: <a href="mailto:biuro@sklep.test">biuro@sklep.t
 
 class Site(BaseHTTPRequestHandler):
     down = False
+    fail_next = 0
 
     def log_message(self, *a):
         pass
@@ -28,6 +29,11 @@ class Site(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self):
+        if Site.fail_next > 0 and self.path == "/":  # chwilowa „czkawka” serwera
+            Site.fail_next -= 1
+            self.send_response(502)
+            self.end_headers()
+            return
         if Site.down:
             self.send_response(503)
             self.end_headers()
@@ -126,6 +132,8 @@ def env(tmp_path, monkeypatch):
     site, site_url = serve(Site)
     llm, llm_url = serve(Ollama)
     Site.down = False
+    Site.fail_next = 0
+    monkeypatch.setattr(monitor, "RETRY_DELAYS", (0, 0))
     Ollama.prompts.clear()
     Ollama.bodies.clear()
     Shots.calls.clear()
@@ -167,12 +175,31 @@ def test_agent_flow(env, monkeypatch):
     assert site["kind"] == "lead" and site["url"] == url + "/"
     # monitoring: działa -> awaria (alert) -> powrót (alert)
     alerts = []
-    monitor.check_site(db, db.one("SELECT * FROM sites"), lambda s, b: alerts.append(s))
+    monkeypatch.setattr(monitor, "RETRY_DELAYS", (0, 0))
+    monkeypatch.setattr(monitor, "internet_ok", lambda: True)
+
+    def check():
+        return monitor.check_site(db, db.one("SELECT * FROM sites"), lambda s, b: alerts.append(s))
+    check()
     Site.down = True
-    monitor.check_site(db, db.one("SELECT * FROM sites"), lambda s, b: alerts.append(s))
+    check()
+    assert alerts == [] and db.one("SELECT status FROM sites")["status"] == "down"  # strona firmy: bez e-maili
     Site.down = False
-    monitor.check_site(db, db.one("SELECT * FROM sites"), lambda s, b: alerts.append(s))
+    check()
+    db.run("UPDATE sites SET kind = 'client'")
+    Site.fail_next = 2  # dwie nieudane próby, trzecia udana — to nie awaria
+    assert check()["ok"] and Site.fail_next == 0 and db.one("SELECT status FROM sites")["status"] == "up"
+    Site.down = True
+    monkeypatch.setattr(monitor, "internet_ok", lambda: False)  # NAS bez internetu — stan bez zmian, bez alarmu
+    assert check()["ok"] is None and db.one("SELECT status FROM sites")["status"] == "up" and alerts == []
+    monkeypatch.setattr(monitor, "internet_ok", lambda: True)
+    check()
+    assert "potwierdzone 3 próbami" in db.one("SELECT text FROM agent_events WHERE kind = 'down' ORDER BY id DESC")["text"]
+    assert "1 nie działa" in c.get("/admin/agent").text
+    Site.down = False
+    check()
     assert alerts == ["AWARIA strony: Sklep ACME", "Strona działa: Sklep ACME"]
+    db.run("UPDATE sites SET kind = 'lead'")
     # audyt + zalecenia AI + gotowy e-mail z adresem znalezionym na stronie
     cfg = ai.Config(url=app.state.settings.ai_url, model="qwen2.5:14b")
     shots_srv, shots_url = serve(Shots)

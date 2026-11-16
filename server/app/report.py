@@ -20,6 +20,8 @@ def collect(db: Database) -> dict:
     sites = db.all("SELECT * FROM sites WHERE active = 1 ORDER BY name, url")
     problems: list[dict] = []
     for s in sites:
+        if s["kind"] != "client":
+            continue  # strony znalezionych firm to nie nasze awarie
         name = s["name"] or s["url"]
         if s["status"] == "down":
             problems.append({"level": "error", "site": name, "text": f"Strona nie działa: {s['last_error'] or 'brak odpowiedzi'}."})
