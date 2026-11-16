@@ -342,6 +342,10 @@ Code Snippets (preload LCP, defer skryptów, asynchroniczny CSS, opóźniony Tag
 WooCommerce, czcionki), `.htaccess` (pamięć podręczna, kompresja) i HTML; całość do pobrania jako jeden plik PHP,
 plus podsumowanie lokalnego modelu AI (diagnoza, kolejność prac z czasem, cel).
 
+**Opiekunowie stron**: na stronie klienta (zakładka Przegląd → „Opiekunowie strony”) administrator udostępnia raport
+wybranym pracownikom. Pracownik widzi w menu „Strony klientów” swoje strony jako podzakładki i cały raport (wszystkie
+zakładki, audyt, test szybkości, plan optymalizacji, podsumowanie AI) — bez kluczy dostępowych i bez innych stron.
+
 Panel agenta ma w menu bocznym podzakładki: *Przegląd* (co robi teraz, model, podsumowanie),
 *Gotowe e-maile*, *Strony klientów*, *Nowe firmy*, *Sieć biurowa*, *Dziennik* i *Ustawienia i klucze*.
 

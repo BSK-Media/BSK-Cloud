@@ -18,6 +18,12 @@ INTEG_EVERY_H = 24
 NET_EVERY_S = 5 * 60
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS site_staff (           -- opiekunowie stron klientów (pracownicy z dostępem do raportu)
+    site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (site_id, user_id)
+);
 CREATE TABLE IF NOT EXISTS net_devices (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,

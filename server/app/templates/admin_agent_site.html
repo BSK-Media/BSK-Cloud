@@ -3,8 +3,8 @@
 {% block heading %}{{ site.name or site.url }}{% endblock %}
 {% block subtitle %}<div class="subtitle"><a href="{{ site.url }}" target="_blank" rel="noopener">{{ site.url }}</a>
   · {% if site.status == 'up' %}<span class="tag ok">● działa</span>{% elif site.status == 'down' %}<span class="tag danger">● nie działa</span>{% else %}czeka na sprawdzenie{% endif %}
-  · sprawdzono {{ site.last_check|ago }}</div>{% endblock %}
-{% block actions %}<a class="button" href="{{ '/admin/agent/firmy' if site.kind == 'lead' else '/admin/agent/strony' }}">{{ ui.icon("back") }}{{ 'Nowe firmy' if site.kind == 'lead' else 'Strony klientów' }}</a>
+  · sprawdzono {{ site.last_check|ago }}{% if owners %} · opiekun: {{ owners|map(attribute='display_name')|join(', ') }}{% endif %}</div>{% endblock %}
+{% block actions %}<a class="button" href="{{ '/strony' if not is_admin else ('/admin/agent/firmy' if site.kind == 'lead' else '/admin/agent/strony') }}">{{ ui.icon("back") }}{{ 'Moje strony' if not is_admin else ('Nowe firmy' if site.kind == 'lead' else 'Strony klientów') }}</a>
 <form method="post" action="/admin/agent/sites/{{ site.id }}/audit" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}">
   <button class="primary">{{ ui.icon("refresh") }}Audytuj teraz</button></form>{% endblock %}
 {% block content %}

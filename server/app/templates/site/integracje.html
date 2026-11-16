@@ -43,6 +43,7 @@
       <div><dt>Dostępność</dt><dd>{{ it.psi.accessibility }}/100</dd></div><div><dt>LCP / CLS</dt><dd>{{ it.psi.lcp }} / {{ it.psi.cls }}</dd></div>
     </dl></div>{% endif %}
   </div>
+{% if is_admin %}
   <form method="post" action="/admin/agent/sites/{{ site.id }}/integrations" class="form-grid mt">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label>Search Console — nazwa usługi <input name="gsc_property" value="{{ site.gsc_property }}" placeholder="sc-domain:klient.pl lub https://www.klient.pl/">
@@ -59,4 +60,5 @@
       {% if sv.wp_pass_masked or sv.wc_key_masked %}<button name="action" value="clear" class="ghost danger">Usuń dane WordPress/WooCommerce</button>{% endif %}
       <a class="small" href="/admin/agent/settings">Jak zdobyć klucze?</a></div>
   </form>
+{% else %}<p class="hint mt">Dane dostępowe i ustawienia integracji zmienia administrator.</p>{% endif %}
 </section>

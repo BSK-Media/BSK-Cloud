@@ -308,6 +308,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ctx.setdefault("unread_total", unread_for(ctx["user"]))
             if ctx["user"]["role"] == "admin":
                 ctx.setdefault("team_new", team_unread(ctx["user"]))
+            elif ctx["user"]["role"] == "staff":
+                ctx.setdefault("my_sites", db.all(
+                    "SELECT s.id, s.name, s.url, s.status FROM site_staff ss JOIN sites s ON s.id = ss.site_id"
+                    " WHERE ss.user_id = ? AND s.active = 1 ORDER BY s.name, s.url", ctx["user"]["id"]))
         ctx["csrf"] = csrf_token(request)
         ctx["flashes"] = request.session.pop("flash", [])
         ctx["max_upload_mb"] = settings.max_upload_mb
@@ -1361,6 +1365,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "Nie ma takiej strony.")
         return site
 
+    def site_access(request: Request, site_id: int):
+        """Raport strony: administrator albo pracownik, który jest jej opiekunem. Zwraca (użytkownik, strona)."""
+        user = require_user(request)
+        site = site_or_404(site_id)
+        if user["role"] == "admin":
+            return user, site
+        if user["role"] == "staff" and db.one("SELECT 1 FROM site_staff WHERE site_id = ? AND user_id = ?", site_id, user["id"]):
+            return user, site
+        raise HTTPException(404, "Nie ma takiej strony.")
+
+    def staff_sites(user_id: int):
+        return db.all("SELECT s.id, s.name, s.url, s.status FROM site_staff ss JOIN sites s ON s.id = ss.site_id"
+                      " WHERE ss.user_id = ? AND s.active = 1 ORDER BY s.name, s.url", user_id)
+
     def in_background(name: str, fn, *args) -> None:
         def run():
             try:
@@ -1619,8 +1637,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/admin/agent/sites/{site_id}/audit")
     def agent_audit_now(request: Request, site_id: int, csrf: str = Form("")):
         check_csrf(request, csrf)
-        require_user(request, "admin")
-        site = site_or_404(site_id)
+        user, site = site_access(request, site_id)
         in_background("audyt", monitor.audit_and_store, db, site, ai_cfg, site_agent.progress, integ.score_lead)
         flash(request, "Audyt ruszył w tle. Wynik pojawi się za kilka minut (zalecenia AI mogą potrwać dłużej).")
         return RedirectResponse(f"/admin/agent/sites/{site_id}", 303)
@@ -1670,8 +1687,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                 wp_pass: str = Form(""), wc_key: str = Form(""), wc_secret: str = Form(""),
                                 contact_email: str = Form(""), action: str = Form("save"), csrf: str = Form("")):
         check_csrf(request, csrf)
-        admin = require_user(request, "admin")
-        site = site_or_404(site_id)
+        admin, site = site_access(request, site_id)
+        if action != "run" and admin["role"] != "admin":
+            raise HTTPException(403, "Dane dostępowe zmienia administrator.")
         if action == "run":
             in_background("integracje", integ.run_site, db.one("SELECT * FROM sites WHERE id = ?", site_id), site_agent.progress)
             flash(request, "Sprawdzam WordPress, Google i PageSpeed w tle — wynik za kilka minut.")
@@ -1732,8 +1750,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/admin/agent/sites/{site_id}", response_class=HTMLResponse)
     def agent_site(request: Request, site_id: int, tab: str = "przeglad", zakres: str = "28", od: str = "", do: str = "",
                    por: str = "poprzedni", s: str = "mobile", wlasny: str = ""):
-        require_user(request, "admin")
-        site = site_or_404(site_id)
+        user, site = site_access(request, site_id)
         tabs = sitereport.tabs_for(site["kind"])
         tab = tab if tab in {t[0] for t in tabs} else "przeglad"
         audit = db.one("SELECT * FROM site_audits WHERE site_id = ? ORDER BY ts DESC LIMIT 1", site_id)
@@ -1796,16 +1813,55 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     ctx["g_error"] = f"Nie udało się pobrać danych: {str(exc)[:200]}"
         elif tab == "seo":
             ctx["og_img"] = bool((p := review.shot_path(site_id, "og")) and p.exists())
-        return agent_render(request, "admin_agent_site.html", "agent-leads" if site["kind"] == "lead" else "agent-sites",
+        is_admin = user["role"] == "admin"
+        if is_admin and tab == "przeglad":
+            ctx["staff_all"] = db.all("SELECT id, username, display_name FROM users WHERE role = 'staff' AND active = 1"
+                                      " ORDER BY display_name, username")
+            ctx["staff_ids"] = {r["user_id"] for r in db.all("SELECT user_id FROM site_staff WHERE site_id = ?", site_id)}
+        ctx["owners"] = db.all("SELECT u.display_name, u.username FROM site_staff ss JOIN users u ON u.id = ss.user_id"
+                               " WHERE ss.site_id = ? ORDER BY u.display_name", site_id)
+        nav = ("agent-leads" if site["kind"] == "lead" else "agent-sites") if is_admin else f"site-{site_id}"
+        return agent_render(request, "admin_agent_site.html", nav, is_admin=is_admin,
                             site=site, sv=sv, google_ok=bool(integ.google_account()), psi_ok=bool(integ.psi_key()),
                             audit=audit_d, areas=review.AREAS, verdicts=review.VERDICTS, rc=reportcharts,
                             sr=sitereport, site_ssl_days=_ssl_days(site["ssl_expires"]), **ctx)
 
+    @app.post("/admin/agent/sites/{site_id}/opiekunowie")
+    def agent_site_owners(request: Request, site_id: int, user_id: list[int] = Form([]), csrf: str = Form("")):
+        """Administrator udostępnia raport strony wybranym pracownikom (opiekunom)."""
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        site = site_or_404(site_id)
+        valid = {r["id"] for r in db.all("SELECT id FROM users WHERE role = 'staff' AND active = 1")}
+        chosen = [u for u in dict.fromkeys(user_id) if u in valid]
+        db.run("DELETE FROM site_staff WHERE site_id = ?", site_id)
+        for uid in chosen:
+            db.run("INSERT INTO site_staff (site_id, user_id, created_at) VALUES (?, ?, ?)", site_id, uid, now_iso())
+        names = [r["display_name"] or r["username"] for r in db.all(
+            f"SELECT display_name, username FROM users WHERE id IN ({','.join('?' * len(chosen))})", *chosen)] if chosen else []
+        db.log(admin["id"], "site_owners", f"{site['url']}: {', '.join(names) or 'brak'}")
+        flash(request, f"Opiekunowie strony: {', '.join(names)}." if names else "Strona nie jest udostępniona żadnemu pracownikowi.")
+        return RedirectResponse(f"/admin/agent/sites/{site_id}", 303)
+
+    @app.get("/strony", response_class=HTMLResponse)
+    def staff_sites_page(request: Request):
+        """Pracownik: strony klientów, których jest opiekunem."""
+        user = require_user(request)
+        if user["role"] == "admin":
+            return RedirectResponse("/admin/agent/strony", 303)
+        if user["role"] != "staff":
+            raise HTTPException(403, "Brak dostępu.")
+        rows = db.all("SELECT s.*, (SELECT score FROM site_audits a WHERE a.site_id = s.id ORDER BY a.ts DESC LIMIT 1) AS score,"
+                      " (SELECT ts FROM site_audits a WHERE a.site_id = s.id ORDER BY a.ts DESC LIMIT 1) AS audit_ts,"
+                      " (SELECT performance FROM psi_runs p WHERE p.site_id = s.id AND p.strategy = 'mobile' ORDER BY p.ts DESC LIMIT 1) AS perf"
+                      " FROM site_staff ss JOIN sites s ON s.id = ss.site_id WHERE ss.user_id = ? AND s.active = 1"
+                      " ORDER BY s.name, s.url", user["id"])
+        return render(request, "staff_sites.html", nav="staff-sites", sites=rows)
+
     @app.post("/admin/agent/sites/{site_id}/optymalizacja/ai")
     def agent_site_opt_ai(request: Request, site_id: int, csrf: str = Form("")):
         check_csrf(request, csrf)
-        require_user(request, "admin")
-        site = site_or_404(site_id)
+        user, site = site_access(request, site_id)
         psi_m = sitereport.latest_psi(db, site_id, "mobile")
         if not psi_m:
             flash(request, "Najpierw wykonaj test szybkości (zakładka Szybkość → Testuj teraz).", "error")
@@ -1829,8 +1885,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/admin/agent/sites/{site_id}/optymalizacja.php")
     def agent_site_opt_php(request: Request, site_id: int):
-        require_user(request, "admin")
-        site = site_or_404(site_id)
+        user, site = site_access(request, site_id)
         psi_m = sitereport.latest_psi(db, site_id, "mobile")
         audit = db.one("SELECT report FROM site_audits WHERE site_id = ? ORDER BY ts DESC LIMIT 1", site_id)
         plan = optimize.build_plan(json.loads(audit["report"])["facts"] if audit else {}, psi_m, site["url"])
@@ -1841,8 +1896,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/admin/agent/sites/{site_id}/szybkosc")
     def agent_site_speed_now(request: Request, site_id: int, csrf: str = Form("")):
         check_csrf(request, csrf)
-        require_user(request, "admin")
-        site = site_or_404(site_id)
+        user, site = site_access(request, site_id)
         if not integ.psi_key():
             flash(request, "Najpierw wpisz klucz PageSpeed w Ustawieniach agenta.", "error")
         else:
@@ -1857,7 +1911,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/admin/agent/sites/{site_id}/zrzut/{kind}.jpg")
     def agent_site_shot(request: Request, site_id: int, kind: str):
-        require_user(request, "admin")
+        site_access(request, site_id)
         path = review.shot_path(site_id, kind) if kind in review.SHOTS else None
         if not path or not path.exists():
             raise HTTPException(404)
@@ -1866,7 +1920,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/admin/agent/sites/{site_id}/og-obraz")
     def agent_site_og_image(request: Request, site_id: int):
         """Obrazek podglądu przy udostępnianiu (og:image) pobrany przy audycie — przez portal (CSP)."""
-        require_user(request, "admin")
+        site_access(request, site_id)
         path = review.shot_path(site_id, "og")
         if not path or not path.exists():
             raise HTTPException(404)

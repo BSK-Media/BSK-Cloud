@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Strony klientów — {{ site_name }}{% endblock %}
+{% block heading %}Strony klientów{% endblock %}
+{% block subtitle %}<div class="subtitle">Strony, których jesteś opiekunem — pełne raporty: błędy, szybkość, analityka, plan optymalizacji.</div>{% endblock %}
+{% block content %}
+<section class="card">
+  {% if sites %}
+  <div class="table-wrap"><table class="list">
+    <thead><tr><th>Strona</th><th>Stan</th><th>Audyt</th><th>Wydajność (telefon)</th><th></th></tr></thead>
+    <tbody>{% for s in sites %}<tr>
+      <td><a href="/admin/agent/sites/{{ s.id }}"><b>{{ s.name or s.url }}</b></a><div class="small muted">{{ s.url }}</div></td>
+      <td>{% if s.status == 'up' %}<span class="tag ok">● działa</span>{% elif s.status == 'down' %}<span class="tag danger">● nie działa</span>{% else %}<span class="tag off">czeka</span>{% endif %}</td>
+      <td>{% if s.score is not none %}<b class="score {{ 'good' if s.score >= 80 else ('warning' if s.score >= 50 else 'critical') }}">{{ s.score }}</b><span class="small muted">/100 · {{ s.audit_ts|ago }}</span>{% else %}<span class="small muted">w kolejce</span>{% endif %}</td>
+      <td>{% if s.perf is not none %}<b class="score {{ 'good' if s.perf >= 90 else ('warning' if s.perf >= 50 else 'critical') }}">{{ s.perf }}</b><span class="small muted">/100</span>{% else %}—{% endif %}</td>
+      <td class="actions"><a class="button btn-sm" href="/admin/agent/sites/{{ s.id }}?tab=optymalizacja">Plan optymalizacji</a></td>
+    </tr>{% endfor %}</tbody></table></div>
+  {% else %}{{ ui.empty("Administrator nie udostępnił Ci jeszcze żadnej strony klienta.", "chart") }}{% endif %}
+</section>
+{% endblock %}

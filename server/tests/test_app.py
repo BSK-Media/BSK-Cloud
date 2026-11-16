@@ -1417,3 +1417,48 @@ def test_old_database_gets_new_roles(tmp_path):
     with pytest.raises(sqlite3.IntegrityError):
         db.run("INSERT INTO users (username, password_hash, role, created_at) VALUES ('zly', 'h', 'hacker', 'x')")
     Database(path)  # drugie otwarcie: bez ponownej przebudowy
+
+
+def test_site_report_shared_with_staff(app, admin):
+    """Admin udostępnia raport strony klienta pracownikowi (opiekunowi): pracownik widzi go u siebie, inne strony nie."""
+    db = app.state.db
+    from app.db import now_iso
+    pw = add_staff(admin, "olaf", "Olaf Tomaszek")
+    julek_pw = add_staff(admin, "julek", "Julek Maliński")
+    olaf_id = db.one("SELECT id FROM users WHERE username = 'olaf'")["id"]
+    julek_id = db.one("SELECT id FROM users WHERE username = 'julek'")["id"]
+    s1 = db.run("INSERT INTO sites (url, name, kind, created_at, wp_pass) VALUES ('https://amazfitpolska.pl/', 'Amazfit', 'client', ?, 'enc1:x')", now_iso())
+    s2 = db.run("INSERT INTO sites (url, name, kind, created_at) VALUES ('https://inny.pl/', 'Inny klient', 'client', ?)", now_iso())
+    olaf = staff_client(app, "olaf", pw)
+    assert olaf.get(f"/admin/agent/sites/{s1}").status_code == 404  # jeszcze nie udostępniona
+    page = admin.get(f"/admin/agent/sites/{s1}").text
+    assert "Opiekunowie strony" in page and "Olaf Tomaszek" in page
+    tok = csrf_of(admin, f"/admin/agent/sites/{s1}")
+    r = admin.post(f"/admin/agent/sites/{s1}/opiekunowie", data={"user_id": [olaf_id, julek_id, 999], "csrf": tok})
+    assert "Opiekunowie strony: Olaf Tomaszek, Julek Maliński" in r.text or "Opiekunowie strony: Julek Maliński, Olaf Tomaszek" in r.text
+    admin.post(f"/admin/agent/sites/{s1}/opiekunowie", data={"user_id": [olaf_id], "csrf": tok})
+    assert [r["user_id"] for r in db.all("SELECT user_id FROM site_staff WHERE site_id = ?", s1)] == [olaf_id]
+    # pracownik: menu „Strony klientów” ze stroną-córką, pełny raport ze wszystkimi zakładkami
+    team = olaf.get("/team").text
+    assert 'href="/strony"' in team and f'href="/admin/agent/sites/{s1}"' in team and "Amazfit" in team and "Inny klient" not in team
+    lst = olaf.get("/strony").text
+    assert "Amazfit" in lst and "Inny klient" not in lst and "Plan optymalizacji" in lst
+    rep = olaf.get(f"/admin/agent/sites/{s1}").text
+    for tab in ("Przegląd", "Błędy i zalecenia", "Szybkość", "Sieć (Network)", "Plan optymalizacji", "Analityka",
+                "Wyniki w Google", "SEO i udostępnianie", "Technologia", "Integracje"):
+        assert f"<span>{tab}</span>" in rep, tab
+    assert "opiekun: Olaf Tomaszek" in rep and "Opiekunowie strony" not in rep and "Moje strony" in rep
+    for tab in ("bledy", "szybkosc", "siec", "optymalizacja", "seo", "technologia", "analityka", "google"):
+        assert olaf.get(f"/admin/agent/sites/{s1}?tab={tab}").status_code == 200, tab
+    integ_tab = olaf.get(f"/admin/agent/sites/{s1}?tab=integracje").text
+    assert 'name="wp_pass"' not in integ_tab and "zmienia administrator" in integ_tab
+    otok = csrf_of(olaf, f"/admin/agent/sites/{s1}")
+    assert olaf.post(f"/admin/agent/sites/{s1}/integrations", data={"action": "save", "wp_user": "x", "csrf": otok}).status_code == 403
+    assert olaf.post(f"/admin/agent/sites/{s1}/szybkosc", data={"csrf": otok}).status_code == 200  # test szybkości wolno
+    # cudza strona i panel administratora — bez dostępu
+    assert olaf.get(f"/admin/agent/sites/{s2}").status_code == 404
+    assert olaf.get(f"/admin/agent/sites/{s2}/optymalizacja.php").status_code == 404
+    assert olaf.post(f"/admin/agent/sites/{s1}/opiekunowie", data={"user_id": [olaf_id], "csrf": otok}).status_code == 403
+    assert olaf.get("/admin/agent/strony").status_code == 403
+    julek = staff_client(app, "julek", julek_pw)  # już nie jest opiekunem
+    assert julek.get(f"/admin/agent/sites/{s1}").status_code == 404 and "Amazfit" not in julek.get("/team").text
