@@ -16,7 +16,7 @@
       <td>{{ ag.status_tag(s) }}{% if s.status == 'down' and s.last_error %}<div class="small muted">{{ s.last_error }}</div>{% endif %}</td>
       <td class="hide-sm num">{{ (s.last_ms ~ ' ms') if s.last_ms is not none else '—' }}</td>
       <td class="hide-sm">{% if days is none %}—{% elif days < 14 %}<span class="tag danger">{{ days }} dni</span>{% elif days < 30 %}<span class="tag warn">{{ days }} dni</span>{% else %}<span class="small muted">{{ days }} dni</span>{% endif %}</td>
-      <td>{{ ag.audit_score(s) }}</td>
+      <td>{{ ag.audit_score(s) }}<div>{{ ag.verdict_tag(s) }}</div></td>
       <td class="hide-sm small">{% if it.wp %}<span class="tag">WP</span>{% endif %}{% if it.wp and it.wp.orders %}<span class="tag">Woo</span>{% endif %}{% if it.gsc and not it.gsc.error %}<span class="tag">Google</span>{% endif %}
         {% set errs = (it.issues or [])|selectattr('level', 'equalto', 'error')|list %}{% if errs %}<span class="tag danger">{{ errs|length }} błędów</span>{% elif not (it.wp or it.gsc) %}<span class="muted">—</span>{% endif %}</td>
       <td class="actions">{{ ag.delete_site(s) }}</td>

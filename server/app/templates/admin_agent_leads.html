@@ -45,7 +45,8 @@
       <td><a href="/admin/agent/sites/{{ s.id }}"><b>{{ s.name or s.url }}</b></a>
         <div class="small muted">{{ s.url }}{% if s.source %} · {{ s.source }}{% endif %}</div>
         {% if s.lead_reason %}<div class="small">{{ s.lead_reason }}</div>{% endif %}</td>
-      <td>{% if s.lead_score is not none %}<b class="score {{ 'good' if s.lead_score >= 70 else ('warning' if s.lead_score >= 40 else '') }}">{{ s.lead_score }}</b><span class="small muted">/100</span>{% else %}<span class="small muted">w kolejce</span>{% endif %}</td>
+      <td>{% if s.lead_score is not none %}<b class="score {{ 'good' if s.lead_score >= 70 else ('warning' if s.lead_score >= 40 else '') }}">{{ s.lead_score }}</b><span class="small muted">/100</span>{% else %}<span class="small muted">w kolejce</span>{% endif %}
+        <div>{{ ag.verdict_tag(s) }}</div></td>
       <td class="hide-sm">{{ ag.audit_score(s) }}</td>
       <td class="hide-sm small">{{ s.contact_email or '—' }}{% if s.phone %}<div class="muted">{{ s.phone }}</div>{% endif %}</td>
       <td>{% if s.draft_status == 'new' %}<a class="tag" href="/admin/agent/maile">gotowy</a>{% elif s.draft_status == 'sent' %}<span class="tag ok">wysłany</span>{% elif s.draft_status == 'dismissed' %}<span class="tag off">odrzucony</span>{% else %}<span class="small muted">—</span>{% endif %}</td>

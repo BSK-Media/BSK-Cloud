@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from fastapi.testclient import TestClient
 
-from app import ai, monitor
+from app import ai, monitor, review
 from app.config import Settings
 from app.main import create_app
 
@@ -67,7 +67,20 @@ class Ollama(BaseHTTPRequestHandler):
             self.end_headers()
             return
         Ollama.prompts.append(body["prompt"])
-        if "Dziennik:" in body["prompt"]:
+        if "Pierwszy obraz" in body["prompt"]:  # ocena wyglądu ze zrzutów
+            text = json.dumps({"wyglad": 3, "nowoczesnosc": 2, "telefon": 4, "marka": 3, "szacowany_rok": "ok. 2012",
+                               "przestarzala": True, "rebranding": True, "mocne_strony": ["czytelne menu"],
+                               "slabe_strony": ["stare zdjęcia"], "opis": "Strona wygląda na sprzed dekady."})
+        elif '"werdykt"' in body["prompt"]:  # pełna ocena i rekomendacja
+            text = "<think>analiza</think>" + json.dumps({
+                "oceny": {"seo": 4, "wyglad": 2, "nowy_obszar": 9}, "werdykt": "przebudowa",
+                "werdykt_uzasadnienie": "Wygląd i kod sprzed lat.", "szacowany_wiek": "ok. 2012",
+                "rebranding": True, "uslugi": [{"usluga": "Nowa strona internetowa", "priorytet": "wysoki",
+                                                "dlaczego": "Strona jest przestarzała."}],
+                "podsumowanie": "Firma potrzebuje nowej strony.", "argumenty": ["Brak opisu strony w Google."],
+                "szybkie_poprawki": ["Dodaj opis strony.", "Zostaw jeden nagłówek H1."], "potencjal": 88,
+                "potencjal_uzasadnienie": "Duża potrzeba zmian, jest e-mail."})
+        elif "Dziennik:" in body["prompt"]:
             text = "Dziś wszystko działa, jedna strona do poprawy."
         elif "e-mail" in body["prompt"]:
             text = "<think>planuję</think>Temat: Kilka poprawek na stronie\n\nDzień dobry,\n\nproponujemy poprawki.\n\nZespół BSK Media"
@@ -79,6 +92,24 @@ class Ollama(BaseHTTPRequestHandler):
         data = json.dumps(obj).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+class Shots(BaseHTTPRequestHandler):
+    """Udaje kontener „zrzuty” (Gotenberg): zwraca mały obraz JPEG."""
+    calls: list = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers["Content-Length"])).decode()
+        Shots.calls.append((self.path, body))
+        data = b"\xff\xd8\xff\xe0fake-jpeg"
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -96,6 +127,8 @@ def env(tmp_path, monkeypatch):
     llm, llm_url = serve(Ollama)
     Site.down = False
     Ollama.prompts.clear()
+    Ollama.bodies.clear()
+    Shots.calls.clear()
     monkeypatch.setenv("BSK_AGENT_SCHEDULER", "0")
     app = create_app(Settings(data_dir=tmp_path, secret_key="x" * 40, cookie_secure=False, admin_username="admin",
                               admin_password="AdminHaslo123", ai_url=llm_url, smtp_host="smtp.test",
@@ -142,9 +175,30 @@ def test_agent_flow(env, monkeypatch):
     assert alerts == ["AWARIA strony: Sklep ACME", "Strona działa: Sklep ACME"]
     # audyt + zalecenia AI + gotowy e-mail z adresem znalezionym na stronie
     cfg = ai.Config(url=app.state.settings.ai_url, model="qwen2.5:14b")
-    monitor.audit_and_store(db, db.one("SELECT * FROM sites"), cfg)
+    shots_srv, shots_url = serve(Shots)
+    review.CONFIG["screenshot_url"] = shots_url
+    try:
+        monitor.audit_and_store(db, db.one("SELECT * FROM sites"), cfg)
+    finally:
+        review.CONFIG["screenshot_url"] = ""
+        shots_srv.shutdown()
     audit = db.one("SELECT * FROM site_audits")
-    assert "Dodaj opis strony" in audit["ai_text"]
+    assert "Dodaj opis strony" in audit["ai_text"] and "Przebudowa strony" in audit["ai_text"]
+    # pełna ocena: zrzuty (komputer + telefon), wygląd oceniony na obrazach, werdykt i usługi
+    assert len(Shots.calls) == 2 and Shots.calls[0][0] == "/forms/chromium/screenshot/url" and 'name="clip"' in Shots.calls[0][1]
+    vision = next(b for b in Ollama.bodies if "Pierwszy obraz" in b["prompt"])
+    assert len(vision["images"]) == 2
+    rv = json.loads(audit["review"])
+    assert rv["werdykt"] == "przebudowa" and rv["by_ai"] and rv["oceny"]["seo"] == 4 and "nowy_obszar" not in rv["oceny"]
+    assert rv["oceny"]["konwersja"] <= 10 and rv["wyglad_ai"]["szacowany_rok"] == "ok. 2012"
+    assert rv["potencjal"] == 88
+    assert not any("Oceń potencjał" in p for p in Ollama.prompts)  # ocena potencjału bez osobnego zapytania
+    site_page = c.get(f"/admin/agent/sites/{site['id']}").text
+    assert "Ocena i rekomendacja" in site_page and "Nowa strona internetowa" in site_page and "Wygląd strony" in site_page
+    assert "Strona wygląda na sprzed dekady." in site_page and "Sprawdzone podstrony" in site_page
+    assert c.get(f"/admin/agent/sites/{site['id']}/zrzut/telefon.jpg").content.startswith(b"\xff\xd8")
+    assert c.get(f"/admin/agent/sites/{site['id']}/zrzut/..%2Fx.jpg").status_code == 404
+    assert "Przebudowa strony" in c.get("/admin/agent/firmy").text
     d = db.one("SELECT * FROM mail_drafts")
     assert d["to_email"] == "biuro@sklep.test" and "/kontakt" in d["email_source"]
     assert d["subject"] == "Kilka poprawek na stronie" and "<think>" not in d["body"] and d["by_ai"] == 1
@@ -323,14 +377,64 @@ def test_live_status_card(env):
     agent = monitor.Agent(db, ai.Config(url=llm, model="qwen2.5:72b"), lambda *a: None, lambda *a: None, summary_hour=25)
     orig = monitor.ai.generate
 
-    def slow_generate(cfg, prompt, system=""):
+    def slow_generate(cfg, prompt, system="", images=None):
         seen.append(agent.overview()["now"][0]["text"])
-        return orig(cfg, prompt, system)
+        return orig(cfg, prompt, system, images)
     monitor.ai.generate = slow_generate
     try:
         agent.tick_work()
     finally:
         monitor.ai.generate = orig
-    assert any("model AI pisze zalecenia" in t for t in seen) and any("model AI pisze e-mail" in t for t in seen)
+    assert any("przygotowuje pełną ocenę" in t for t in seen) and any("model AI pisze e-mail" in t for t in seen)
     assert agent.overview()["now"] == []
     assert "Co robi agent" in c.get("/admin/agent").text
+
+
+OLD_SITE = """<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html><head><title>Firma</title><meta name="viewport" content="width=1024">
+<script src="/js/jquery-1.8.3.min.js"></script><script>_gaq.push(['_setAccount', 'UA-123456-1']);</script></head>
+<body><table><tr><td><font color=red>Witamy</font></td></tr></table><table></table><table></table>
+<center>Zapraszamy</center><p>© 2014 Firma</p></body></html>"""
+
+MODERN_SITE = """<!doctype html><html lang="pl"><head><title>Gabinet</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" href="/f.ico">
+<link rel="apple-touch-icon" href="/a.png"><script async src="https://www.googletagmanager.com/gtag/js?id=G-ABC1234"></script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"Dentist"}</script></head>
+<body><header><nav><a href="/kontakt">Kontakt</a></nav></header><main><h2>Usługi</h2>
+<p>""" + "słowo " * 300 + """</p><a href="tel:+48123">Zadzwoń</a><a href="https://facebook.com/x">FB</a>
+<form><input type="email"><textarea></textarea></form><a href="/polityka-prywatnosci">Polityka prywatności</a></main>
+<footer>© 2020–""" + str(__import__("datetime").date.today().year) + """</footer></body></html>"""
+
+
+def _scan(html, url="https://firma.test/"):
+    issues, facts = [], {}
+    review.tech_scan(html, {"X-Powered-By": "PHP/7.2.1"}, url, lambda lvl, text, area: issues.append(
+        {"level": lvl, "text": text, "area": area}), facts)
+    return issues, facts
+
+
+def test_review_detects_outdated_site():
+    issues, facts = _scan(OLD_SITE)
+    text = " ".join(i["text"] for i in issues)
+    t = facts["tech"]
+    assert t["jquery"] == "1.8.3" and t["copyright_year"] == 2014 and not t["html5"]
+    for phrase in ("HTML 4", "<font>", "tabelach", "jQuery 1.8.3", "rok 2014", "stałą szerokością",
+                   "Universal Analytics", "PHP 7.2", "telefonu (tel:)", "Mało tekstu"):
+        assert phrase in text, phrase
+    rv = review.heuristic({"issues": issues, "facts": facts, "score": 20})
+    assert rv["werdykt"] == "przebudowa" and rv["uslugi"][0]["usluga"] == "Nowa strona internetowa"
+    assert rv["oceny"]["wyglad"] <= 4 and not rv["by_ai"]
+    assert "Przebudowa strony" in review.as_text(rv)
+
+
+def test_review_modern_site_is_clean():
+    issues, facts = _scan(MODERN_SITE)
+    areas = {i["area"] for i in issues}
+    assert "Nowoczesność" not in areas and "Konwersja" not in areas and "Analityka" not in areas, issues
+    t = facts["tech"]
+    assert t["analytics"] == ["Google Analytics 4"] and t["schema"] == ["Dentist"] and t["social"] == ["Facebook"]
+    assert t["phone_link"] and t["form"] and t["words"] >= 300
+    # model AI z błędną odpowiedzią -> zostaje ocena automatyczna
+    base = review.heuristic({"issues": issues, "facts": facts, "score": 90})
+    assert review._clean({"werdykt": "coś innego", "oceny": {"seo": 99}}, base)["oceny"]["seo"] == 10
+    assert review._clean({"werdykt": "coś innego"}, base)["werdykt"] == base["werdykt"]

@@ -6,6 +6,7 @@ Brak Ollamy albo modelu = agent działa dalej, tylko bez tekstów pisanych przez
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import threading
@@ -61,10 +62,12 @@ def status(cfg: Config) -> dict:
     return {"online": True, "models": models, "ready": wanted in models or cfg.model in models}
 
 
-def generate(cfg: Config, prompt: str, system: str = "") -> str | None:
-    """Odpowiedź modelu (tekst) albo None, gdy model niedostępny."""
+def generate(cfg: Config, prompt: str, system: str = "", images: list[bytes] | None = None) -> str | None:
+    """Odpowiedź modelu (tekst) albo None, gdy model niedostępny (albo nie rozpoznaje obrazów)."""
     body = {"model": cfg.model, "prompt": prompt, "stream": False,
             "options": {"temperature": 0.3, "num_ctx": cfg.num_ctx}}
+    if images:
+        body["images"] = [base64.b64encode(i).decode() for i in images]
     if system:
         body["system"] = system
     think = _think_setting(cfg.model)

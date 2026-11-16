@@ -14,6 +14,64 @@
   {{ ui.kpi("Średni czas odpowiedzi", ((week.ms|round|int) ~ " ms") if week.ms else "—", "ostatnie 7 dni", "clock") }}
   {{ ui.kpi("Certyfikat SSL", (site_ssl_days ~ " dni") if site_ssl_days is not none else "—", "do wygaśnięcia", "lock") }}
 </div>
+{% set rv = audit.rv if audit else None %}
+{% if rv %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("bot") }}<h2>Ocena i rekomendacja</h2><span class="spacer"></span>
+    <span class="small muted">{{ 'lokalny model AI' if rv.by_ai else 'wyliczone automatycznie — model AI był niedostępny' }} · {{ audit.ts|ago }}</span></div>
+  <div class="verdict v-{{ rv.werdykt }}">
+    <div class="small muted">Werdykt dla BSK Media</div>
+    <div class="verdict-name">{{ verdicts[rv.werdykt] }}</div>
+    {% if rv.werdykt_uzasadnienie %}<p>{{ rv.werdykt_uzasadnienie }}</p>{% endif %}
+    <div class="row">
+      {% if rv.szacowany_wiek %}<span class="tag">{{ ui.icon("clock") }}{{ rv.szacowany_wiek }}</span>{% endif %}
+      {% if rv.rebranding %}<span class="tag warn">potrzebny rebranding</span>{% endif %}
+      {% if site.kind == 'lead' %}<span class="tag">potencjał sprzedażowy {{ rv.potencjal }}/100</span>{% endif %}
+    </div>
+  </div>
+  {% if rv.podsumowanie %}<p class="mt">{{ rv.podsumowanie }}</p>{% endif %}
+  {% if rv.rebranding and rv.rebranding_uzasadnienie %}<p class="small"><b>Rebranding:</b> {{ rv.rebranding_uzasadnienie }}</p>{% endif %}
+  <div class="areas mt">{% for k, label in areas %}{% set v = rv.oceny[k] %}
+    <div class="area"><span class="small">{{ label }}</span><div class="bar"><i class="w{{ v }} {{ 'good' if v >= 8 else ('warning' if v >= 5 else 'critical') }}"></i></div><b class="small">{{ v }}/10</b></div>{% endfor %}
+  </div>
+</section>
+{% if rv.uslugi %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("chart") }}<h2>Co zaproponować</h2></div>
+  <div class="table-wrap"><table class="list compact"><tbody>
+    {% for u in rv.uslugi %}<tr><td class="nowrap"><b>{{ u.usluga }}</b></td>
+      <td class="nowrap"><span class="tag {{ 'danger' if u.priorytet == 'wysoki' else ('warn' if u.priorytet.startswith('śr') else '') }}">{{ u.priorytet }}</span></td>
+      <td class="small">{{ u.dlaczego }}</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endif %}
+{% if rv.argumenty or rv.szybkie_poprawki %}
+<div class="grid g-2 mb">
+  {% if rv.argumenty %}<section class="card"><div class="card-head">{{ ui.icon("message") }}<h2>Argumenty do rozmowy</h2></div>
+    <ul class="small">{% for a in rv.argumenty %}<li>{{ a }}</li>{% endfor %}</ul></section>{% endif %}
+  {% if rv.szybkie_poprawki %}<section class="card"><div class="card-head">{{ ui.icon("list") }}<h2>Szybkie poprawki</h2></div>
+    <ul class="small">{% for a in rv.szybkie_poprawki %}<li>{{ a }}</li>{% endfor %}</ul></section>{% endif %}
+</div>
+{% endif %}
+{% endif %}
+{% if shots or (rv and rv.wyglad_ai) %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("img") }}<h2>Wygląd strony</h2><span class="spacer"></span><span class="small muted">zrzuty z ostatniego audytu</span></div>
+  {% if shots %}<div class="shots">{% for k in shots %}<figure class="shot shot-{{ k }}"><a href="/admin/agent/sites/{{ site.id }}/zrzut/{{ k }}.jpg" target="_blank">
+    <img src="/admin/agent/sites/{{ site.id }}/zrzut/{{ k }}.jpg" alt="Zrzut strony — {{ k }}" loading="lazy"></a><figcaption class="small muted">{{ k }}</figcaption></figure>{% endfor %}</div>{% endif %}
+  {% set va = rv.wyglad_ai if rv else None %}
+  {% if va %}
+  {% if va.opis %}<p class="mt">{{ va.opis }}</p>{% endif %}
+  <div class="grid g-2">
+    {% if va.mocne_strony %}<div><h3 class="small">Mocne strony</h3><ul class="small">{% for x in va.mocne_strony %}<li>{{ x }}</li>{% endfor %}</ul></div>{% endif %}
+    {% if va.slabe_strony %}<div><h3 class="small">Słabe strony</h3><ul class="small">{% for x in va.slabe_strony %}<li>{{ x }}</li>{% endfor %}</ul></div>{% endif %}
+  </div>
+  {% elif shots %}<p class="hint mt">Model AI nie ocenił wyglądu — wybrany model nie rozpoznaje obrazów albo był niedostępny.</p>{% endif %}
+</section>
+{% endif %}
+{% if not audit %}
+<section class="card">{{ ui.empty("Agent jeszcze nie ocenił tej strony — strony czekają w kolejce (najpierw te bez żadnej oceny). Kliknij „Audytuj teraz”, żeby zacząć od razu: pełna ocena z AI na procesorze NAS może potrwać nawet godzinę.", "bot") }}</section>
+{% endif %}
 {% if recent|length > 1 %}
 <section class="card">
   <div class="card-head"><h2>Czas odpowiedzi — ostatnie sprawdzenia</h2></div>
@@ -86,19 +144,21 @@
 {% endif %}
 {% if audit %}
 {% set d = audit.data %}
-{% if audit.ai_text %}
+{% if audit.ai_text and not audit.rv %}
 <section class="card">
   <div class="card-head">{{ ui.icon("bot") }}<h2>Zalecenia AI</h2><span class="spacer"></span><span class="small muted">lokalny model na NAS</span></div>
   <div class="ai-text">{{ audit.ai_text }}</div>
 </section>
 {% endif %}
 <section class="card">
-  <div class="card-head">{{ ui.icon("list") }}<h2>Wyniki audytu</h2><span class="spacer"></span><span class="small muted">{{ audit.ts|dt }}</span></div>
+  <div class="card-head">{{ ui.icon("list") }}<h2>Audyt techniczny</h2><span class="spacer"></span><span class="small muted">{{ audit.ts|dt }}</span></div>
   {% if d.issues %}
   <div class="table-wrap"><table class="list compact"><tbody>
-    {% for i in d.issues|sort(attribute='level') %}<tr>
+    {% for area, items in d.issues|groupby('area') %}
+    <tr class="group"><td colspan="2"><b>{{ area }}</b> <span class="small muted">{{ items|length }}</span></td></tr>
+    {% for i in items|sort(attribute='level') %}<tr>
       <td class="nowrap"><span class="tag {{ 'danger' if i.level == 'error' else 'warn' }}">{{ 'błąd' if i.level == 'error' else 'uwaga' }}</span></td>
-      <td class="small muted nowrap">{{ i.area }}</td><td class="small">{{ i.text }}</td></tr>{% endfor %}
+      <td class="small">{{ i.text }}</td></tr>{% endfor %}{% endfor %}
   </tbody></table></div>
   {% else %}<p><span class="tag ok">● bez uwag</span> Audyt nie znalazł problemów.</p>{% endif %}
   {% set f = d.facts %}
@@ -108,7 +168,23 @@
     {% if f.ttfb_ms is defined %}<div><dt>Odpowiedź serwera</dt><dd>{{ f.ttfb_ms }} ms</dd></div>{% endif %}
     {% if f.html_kb is defined %}<div><dt>Rozmiar HTML</dt><dd>{{ f.html_kb }} KB · kompresja: {{ f.compression or '—' }}</dd></div>{% endif %}
     {% if f.images is defined %}<div><dt>Obrazy / skrypty / style</dt><dd>{{ f.images }} / {{ f.scripts }} / {{ f.styles }}</dd></div>{% endif %}
+    {% set t = f.tech or {} %}
+    {% if t.cms %}<div><dt>System strony</dt><dd>{{ t.cms }}{% if t.page_builder %} + {{ t.page_builder }}{% endif %}{% if t.wp_version %} {{ t.wp_version }}{% endif %}</dd></div>{% endif %}
+    {% if t.jquery or t.bootstrap %}<div><dt>Biblioteki</dt><dd>{% if t.jquery %}jQuery {{ t.jquery }}{% endif %}{% if t.jquery and t.bootstrap %}, {% endif %}{% if t.bootstrap %}Bootstrap {{ t.bootstrap }}{% endif %}</dd></div>{% endif %}
+    {% if t.copyright_year %}<div><dt>Rok w stopce</dt><dd>{{ t.copyright_year }}</dd></div>{% endif %}
+    {% if t.words is defined %}<div><dt>Tekst na stronie głównej</dt><dd>{{ t.words }} słów, {{ t.h2 }} śródtytułów</dd></div>{% endif %}
+    {% if t.analytics is defined %}<div><dt>Analityka</dt><dd>{{ t.analytics|join(", ") or "brak" }}</dd></div>{% endif %}
+    {% if t.schema is defined %}<div><dt>Dane strukturalne</dt><dd>{{ t.schema|join(", ") or "brak" }}</dd></div>{% endif %}
+    {% if t.social is defined %}<div><dt>Media społecznościowe</dt><dd>{{ t.social|join(", ") or "brak" }}</dd></div>{% endif %}
+    {% if t.phone_link is defined %}<div><dt>Kontakt</dt><dd>{{ 'telefon klikalny' if t.phone_link else 'telefon nieklikalny' }} · {{ 'formularz' if t.form else 'bez formularza' }}</dd></div>{% endif %}
   </dl>
+  {% if f.pages %}
+  <h3 class="mt small">Sprawdzone podstrony ({{ f.pages|length }}{% if f.pages_found and f.pages_found > f.pages|length %} z {{ f.pages_found }}{% endif %})</h3>
+  <div class="table-wrap"><table class="list compact"><thead><tr><th>Adres</th><th>Tytuł</th><th>Opis</th><th>H1</th><th>Słowa</th></tr></thead><tbody>
+    {% for p in f.pages %}<tr><td class="small">{{ p.path }}</td><td class="small">{{ p.title or '—' }}</td>
+      <td>{{ '✓' if p.description else '—' }}</td><td>{{ p.h1 }}</td><td class="num">{{ p.words }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% endif %}
 </section>
 {% endif %}
 {% if history|length > 1 %}

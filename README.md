@@ -310,6 +310,15 @@ Co robi:
 - **codziennie o 7:00** (`BSK_AGENT_HOUR`) wysyła podsumowanie: co zrobił, co nie działa, wyniki audytów,
   zalecenia i gotowe e-maile.
 
+**Pełna ocena strony** (każda strona raz w tygodniu, nowe firmy od razu po znalezieniu): SEO, szybkość,
+technologia (CMS lub kreator, wiek jQuery i Bootstrapa, stary HTML, Flash, rok w stopce, PHP, nagłówki
+bezpieczeństwa), analityka, dane strukturalne, kontakt i sprzedaż (telefon, formularz, wezwania do działania,
+media społecznościowe, RODO), treść, do 8 podstron oraz **wygląd na zrzutach ekranu** (komputer i telefon)
+oceniany przez model AI rozpoznający obrazy. Wynik: oceny 0–10 w 8 obszarach, **werdykt** (przebudowa strony /
+odświeżenie wyglądu / optymalizacja / drobne poprawki), szacowany wiek strony, potrzeba rebrandingu, usługi do
+zaproponowania z priorytetem, argumenty do rozmowy i szybkie poprawki. Zrzuty robi kontener `zrzuty`
+(Chromium, Gotenberg) z profilu `ai`.
+
 Panel agenta ma w menu bocznym podzakładki: *Przegląd* (co robi teraz, model, podsumowanie),
 *Gotowe e-maile*, *Strony klientów*, *Nowe firmy*, *Sieć biurowa*, *Dziennik* i *Ustawienia i klucze*.
 

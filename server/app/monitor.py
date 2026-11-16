@@ -22,7 +22,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 
-from . import ai
+from . import ai, review
 from .db import Database, now_iso
 
 log = logging.getLogger("bskcloud.monitor")
@@ -99,6 +99,9 @@ def init(db: Database) -> None:
         db.run("ALTER TABLE sites ADD COLUMN source TEXT NOT NULL DEFAULT ''")
     if "phone" not in cols:
         db.run("ALTER TABLE sites ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
+    if "review" not in {r["name"] for r in db.all("PRAGMA table_info(site_audits)")}:
+        # pełna ocena: oceny obszarów, werdykt (przebudowa / odświeżenie …), usługi, ocena wyglądu
+        db.run("ALTER TABLE site_audits ADD COLUMN review TEXT NOT NULL DEFAULT ''")
 
 
 def normalize_url(raw: str) -> str:
@@ -388,6 +391,8 @@ def audit_site(url: str, max_links: int = 15) -> dict:
     if "noindex" in doc.meta.get("robots", "").lower():
         add("error", "Strona ma meta robots „noindex” — Google jej nie zaindeksuje.", "SEO")
     _robots_and_sitemap(page.final_url, add, facts)
+    review.tech_scan(page.text, page.headers, page.final_url, add, facts)
+    review.crawl_pages(page.final_url, doc.links, add, facts)
     broken = _broken_links(page.final_url, doc.links, max_links)
     if broken:
         add("error", f"Uszkodzone linki ({len(broken)}): " + ", ".join(broken[:5]), "SEO")
@@ -474,46 +479,42 @@ def _heavy_images(url: str, srcs: list[str]) -> list[str]:
     return heavy
 
 
-AUDIT_PROMPT = """Jesteś doświadczonym specjalistą SEO i wydajności stron w polskiej agencji marketingowej BSK Media.
-Poniżej wynik automatycznego audytu strony klienta {url} (wynik {score}/100).
-
-Problemy:
-{issues}
-
-Fakty: tytuł „{title}”, opis „{description}”, czas odpowiedzi serwera {ttfb} ms, HTML {html_kb} KB.
-
-Napisz po polsku 3–5 najważniejszych, konkretnych zaleceń dla zespołu (od najpilniejszego), każde w jednym
-lub dwóch zdaniach, jako listę zaczynającą się od „- ”. Gdzie to ma sens, zaproponuj lepszy tytuł lub opis.
-Nie wymyślaj problemów, których nie ma na liście. Bez wstępu i zakończenia."""
-
-
 def _noop(_text: str) -> None:
     pass
 
 
 def audit_and_store(db: Database, site, ai_cfg: ai.Config | None, progress=_noop, lead_scorer=None) -> int:
-    """Audyt + zalecenia AI (gdy model jest dostępny). Zwraca id audytu."""
+    """Pełna ocena strony: audyt techniczny i podstron, zrzuty ekranu, ocena wyglądu przez AI, werdykt i
+    rekomendacja usług, potem ocena potencjału (firmy) i gotowy e-mail. Zwraca id audytu."""
     name = site["name"] or site["url"]
-    progress(f"Audyt {name}: sprawdzam SEO, szybkość i linki")
+    progress(f"Audyt {name}: SEO, szybkość, technologia, podstrony")
     try:
         result = audit_site(site["url"])
     except (OSError, urllib.error.URLError, ValueError) as exc:
         result = _finish({"url": site["url"]}, [{"level": "error", "text": f"Nie udało się pobrać strony: {_err(exc)}.",
                                                  "area": "Dostępność"}])
-    ai_text = ""
-    if ai_cfg and result["issues"]:
-        f = result["facts"]
-        prompt = AUDIT_PROMPT.format(
-            url=site["url"], score=result["score"], title=f.get("title", ""), description=f.get("description", ""),
-            ttfb=f.get("ttfb_ms", "?"), html_kb=f.get("html_kb", "?"),
-            issues="\n".join(f"- [{i['area']}] {i['text']}" for i in result["issues"]))
-        progress(f"Audyt {name}: model AI pisze zalecenia")
-        ai_text = ai.generate(ai_cfg, prompt) or ""
-    aid = db.run("INSERT INTO site_audits (site_id, ts, score, report, ai_text) VALUES (?, ?, ?, ?, ?)",
-                 site["id"], now_iso(), result["score"], json.dumps(result, ensure_ascii=False), ai_text)
+    reachable = 0 < result["facts"].get("code", 0) < 400
+    rv: dict = {}
+    if reachable:
+        progress(f"Audyt {name}: zrzuty ekranu (komputer i telefon)")
+        shots = review.take_screenshots(site["id"], result["facts"].get("final_url") or site["url"])
+        result["facts"]["shots"] = sorted(shots)
+        visual = None
+        if ai_cfg and shots:
+            progress(f"Audyt {name}: model AI ocenia wygląd strony")
+            visual = review.vision_review(ai_cfg, site["url"], shots)
+        result["facts"]["visual"] = bool(visual)
+        rv = review.build_review(ai_cfg, site, result, visual, progress)
+        result["review"] = rv
+    ai_text = review.as_text(rv) if rv.get("by_ai") else ""
+    aid = db.run("INSERT INTO site_audits (site_id, ts, score, report, ai_text, review) VALUES (?, ?, ?, ?, ?, ?)",
+                 site["id"], now_iso(), result["score"], json.dumps({k: v for k, v in result.items() if k != "review"},
+                                                                    ensure_ascii=False),
+                 ai_text, json.dumps(rv, ensure_ascii=False) if rv else "")
+    verdict = review.VERDICTS.get(rv.get("werdykt"), "")
     event(db, "audit", f"Audyt {name}: {result['score']}/100 ({result['errors']} błędów, {result['warns']} uwag)"
-          + (", zalecenia AI gotowe" if ai_text else ""), site["id"])
-    if result["facts"].get("code", 0) and result["facts"].get("code", 0) < 400:
+          + (f", werdykt: {verdict}" if verdict else "") + (", ocena AI gotowa" if ai_text else ""), site["id"])
+    if reachable:
         if lead_scorer and site["kind"] == "lead":
             lead_scorer(site, result, progress)
         make_draft(db, site, result, ai_text, ai_cfg, progress)
@@ -581,11 +582,12 @@ którego stronę {url} prowadzimy. Wynik naszego cotygodniowego audytu: {score}/
 Wykryte problemy:
 {issues}
 
-Zalecenia specjalisty:
+Ocena i rekomendacja naszego zespołu:
 {advice}
 
 E-mail ma: krótko i życzliwie opisać stan strony, wymienić 2–4 najważniejsze sprawy prostym językiem (bez żargonu),
-zaproponować, że BSK Media je poprawi, i zaprosić do kontaktu. Ton: profesjonalny, ciepły, na „Pan/Pani”
+zaproponować, że BSK Media je poprawi (a jeśli rekomendacja to przebudowa lub odświeżenie wyglądu — delikatnie
+zaproponować także to), i zaprosić do kontaktu. Ton: profesjonalny, ciepły, na „Pan/Pani”
 bez imienia (formuła „Dzień dobry,”). Podpis: „Zespół BSK Media”. Długość do 180 słów.
 Pierwsza linia odpowiedzi to temat w formacie „Temat: …”, potem pusta linia i treść.""",
     "lead": """Jesteś specjalistą ds. nowych klientów w agencji marketingowej BSK Media (strony WWW, SEO, marketing).
@@ -594,8 +596,12 @@ Przeanalizowaliśmy publiczną stronę firmy {url}. Wynik audytu: {score}/100.
 Wykryte problemy:
 {issues}
 
+Nasza wewnętrzna ocena (nie cytuj jej dosłownie, nie podawaj ocen liczbowych):
+{advice}
+
 Napisz po polsku krótki, uprzejmy pierwszy e-mail do tej firmy: przedstaw BSK Media jednym zdaniem, podaj 2–3
-konkretne obserwacje z audytu (bez straszenia i bez przesady), zaproponuj bezpłatną rozmowę lub raport.
+konkretne obserwacje z audytu (bez straszenia i bez przesady) i zaproponuj to, co ocena wskazuje jako najważniejsze
+(np. nową stronę, odświeżenie wyglądu albo poprawę widoczności w Google), z bezpłatną rozmową lub raportem.
 Zapytaj, czy możemy przesłać szczegóły — bez nachalnej sprzedaży. Formuła „Dzień dobry,”, podpis
 „Zespół BSK Media”. Do 150 słów. Pierwsza linia odpowiedzi to temat w formacie „Temat: …”,
 potem pusta linia i treść.""",
@@ -643,7 +649,7 @@ def make_draft(db: Database, site, result: dict, ai_text: str, ai_cfg: ai.Config
     subject, body, by_ai = "", "", 0
     if ai_cfg:
         prompt = DRAFT_PROMPTS["lead" if site["kind"] == "lead" else "client"].format(
-            url=site["url"], score=result["score"], advice=ai_text or "(brak)",
+            url=site["url"], score=result["score"], advice=ai_text or (review.as_text(result["review"]) if result.get("review") else "(brak)"),
             issues="\n".join(f"- {i['text']}" for i in result["issues"][:10]))
         progress(f"{site['name'] or site['url']}: model AI pisze e-mail")
         text = ai.generate(ai_cfg, prompt)
@@ -789,7 +795,8 @@ class Agent:
                 old = (datetime.now(timezone.utc) - timedelta(days=AUDIT_EVERY_DAYS)).isoformat()
                 site = self.db.one(
                     "SELECT s.* FROM sites s WHERE s.active = 1 AND NOT EXISTS (SELECT 1 FROM site_audits a"
-                    " WHERE a.site_id = s.id AND a.ts > ?) ORDER BY s.kind = 'lead', s.id LIMIT 1", old)
+                    " WHERE a.site_id = s.id AND a.ts > ?) ORDER BY EXISTS (SELECT 1 FROM site_audits b WHERE b.site_id = s.id),"
+                    " s.kind = 'lead', s.id LIMIT 1", old)
                 if site:
                     audit_and_store(self.db, site, self.ai_cfg, self.progress,
                                     self.integrations.score_lead if self.integrations else None)

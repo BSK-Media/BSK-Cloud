@@ -26,7 +26,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import agents, ai, backup, charts, chunks, gsc, integrations, leads, monitor, office, report, security, storage, sysinfo, thumbs, transfers
+from . import agents, ai, backup, charts, chunks, gsc, integrations, leads, monitor, office, report, review, security, storage, sysinfo, thumbs, transfers
 from .secretbox import SecretBox, mask
 from .config import Settings
 from .db import Database, iso_in, now_iso
@@ -139,6 +139,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     integrations.init(db)
     box = SecretBox(settings.secret_key)
     ai_cfg = ai.Config(url=settings.ai_url, model=monitor.state_get(db, "ai_model") or settings.ai_model)
+    # zrzuty ekranu stron do oceny wyglądu (kontener „zrzuty”, profil „ai”); obrazy obok bazy, na SSD
+    review.CONFIG.update(screenshot_url=os.environ.get("BSK_SCREENSHOT_URL", "").rstrip("/"),
+                         dir=settings.db_path.parent / "zrzuty-stron")
     overpass_url = os.environ.get("BSK_OVERPASS_URL", leads.OVERPASS_URL)
 
     def add_lead_site(firm: dict, source: str) -> int:
@@ -1365,6 +1368,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ("agent-settings", "/admin/agent/settings", "Ustawienia i klucze", "key"),
     ]
     templates.env.globals["AGENT_PAGES"] = AGENT_PAGES
+    templates.env.globals["VERDICTS"] = review.VERDICTS
 
     def agent_render(request: Request, template: str, nav: str, **ctx):
         """Wspólne dane podzakładek agenta (liczniki w menu)."""
@@ -1380,6 +1384,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "SELECT s.*, u.company, u.display_name AS client_name, u.username AS client_login,"
             " (SELECT score FROM site_audits a WHERE a.site_id = s.id ORDER BY a.ts DESC LIMIT 1) AS score,"
             " (SELECT ts FROM site_audits a WHERE a.site_id = s.id ORDER BY a.ts DESC LIMIT 1) AS audit_ts,"
+            " (SELECT CASE WHEN a.review != '' THEN json_extract(a.review, '$.werdykt') END FROM site_audits a"
+            "  WHERE a.site_id = s.id ORDER BY a.ts DESC LIMIT 1) AS verdict,"
             " (SELECT status FROM mail_drafts d WHERE d.site_id = s.id ORDER BY d.ts DESC LIMIT 1) AS draft_status"
             f" FROM sites s LEFT JOIN users u ON u.id = s.client_id WHERE s.kind = ? ORDER BY {order}", kind)
 
@@ -1592,6 +1598,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.run("DELETE FROM site_checks WHERE site_id = ?", site_id)
         db.run("DELETE FROM site_audits WHERE site_id = ?", site_id)
         db.run("DELETE FROM sites WHERE id = ?", site_id)
+        for kind in review.SHOTS:
+            if (shot := review.shot_path(site_id, kind)) and shot.exists():
+                shot.unlink()
         db.log(admin["id"], "site_deleted", site["url"])
         flash(request, f"Usunięto {site['url']} z monitoringu.")
         return RedirectResponse("/admin/agent/firmy" if site["kind"] == "lead" else "/admin/agent/strony", 303)
@@ -1719,9 +1728,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return agent_render(request, "admin_agent_site.html", "agent-leads" if site["kind"] == "lead" else "agent-sites",
                       site=site, sv=integrations.site_view(site, box),
                       google_ok=bool(integ.google_account()), psi_ok=bool(integ.psi_key()),
-                      audit=dict(audit) | {"data": json.loads(audit["report"])} if audit else None,
+                      audit=dict(audit) | {"data": json.loads(audit["report"]),
+                                           "rv": json.loads(audit["review"]) if audit["review"] else None} if audit else None,
+                      areas=review.AREAS, verdicts=review.VERDICTS,
+                      shots=[k for k in review.SHOTS if (p := review.shot_path(site_id, k)) and p.exists()],
                       history=history, week=week, recent=list(reversed(recent)), site_ssl_days=_ssl_days(site["ssl_expires"]),
                       draft=draft)
+
+    @app.get("/admin/agent/sites/{site_id}/zrzut/{kind}.jpg")
+    def agent_site_shot(request: Request, site_id: int, kind: str):
+        require_user(request, "admin")
+        path = review.shot_path(site_id, kind) if kind in review.SHOTS else None
+        if not path or not path.exists():
+            raise HTTPException(404)
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, no-cache"})
 
     @app.post("/admin/agent/model")
     def agent_pull_model(request: Request, csrf: str = Form("")):

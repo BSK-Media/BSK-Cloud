@@ -53,3 +53,7 @@
 {% macro event_tag(kind) -%}
 <span class="tag {{ 'danger' if kind in ['down', 'net-down', 'problem'] else ('ok' if kind in ['up', 'net-up'] else '') }}">{{ {'down': 'awaria', 'up': 'działa', 'audit': 'audyt', 'site': 'strona', 'mail': 'e-mail', 'lead': 'nowa firma', 'problem': 'problem', 'integ': 'integracje', 'net-down': 'sieć', 'net-up': 'sieć', 'net-restart': 'restart', 'net-port': 'porty'}.get(kind, kind) }}</span>
 {%- endmacro %}
+
+{% macro verdict_tag(s) -%}
+{% if s.verdict %}<span class="tag vt-{{ s.verdict }}">{{ VERDICTS.get(s.verdict, s.verdict) }}</span>{% endif %}
+{%- endmacro %}

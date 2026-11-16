@@ -15,6 +15,7 @@ services:
       BSK_DATA_DIR: /data
       BSK_DB_DIR: /baza
       BSK_BACKUP_DIR: /kopia
+      BSK_SCREENSHOT_URL: ${BSK_SCREENSHOT_URL:-http://zrzuty:3000}
     volumes:
       # Pliki klientów, kopie pracowników, linki — duży dysk (HDD)
       - ${BSK_DATA_FOLDER:-/volume2/bsk-dane}:/data
@@ -111,6 +112,14 @@ services:
     volumes:
       # modele (kilka–kilkanaście GB) — szybki dysk SSD
       - ${BSK_AI_FOLDER:-/volume1/bsk-cloud/ollama}:/root/.ollama
+
+  # Zrzuty ekranu stron (przeglądarka Chromium w kontenerze) — agent ocenia na nich wygląd stron.
+  zrzuty:
+    image: gotenberg/gotenberg:8
+    container_name: bsk-zrzuty
+    profiles: [ai]
+    restart: unless-stopped
+    command: ["gotenberg", "--api-timeout=120s", "--libreoffice-auto-start=false"]
 
   # Alternatywa dla przekierowania portów (np. gdy operator daje CGNAT / brak publicznego IP).
   cloudflared:
