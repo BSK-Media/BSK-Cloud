@@ -27,7 +27,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import agents, ai, backup, charts, chunks, gsc, integrations, leads, monitor, office, report, reportcharts, review, security, sitereport, speed, storage, sysinfo, thumbs, transfers
+from . import agents, ai, backup, charts, chunks, gsc, integrations, leads, monitor, office, optimize, report, reportcharts, review, security, sitereport, speed, storage, sysinfo, thumbs, transfers
 from .secretbox import SecretBox, mask
 from .config import Settings
 from .db import Database, iso_in, now_iso
@@ -1759,6 +1759,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ctx["psi"] = sitereport.latest_psi(db, site_id, strategy)
             ctx["psi_hist"] = sitereport.psi_history(db, site_id, strategy)
             ctx["psi_other"] = sitereport.latest_psi(db, site_id, "mobile" if strategy == "desktop" else "desktop")
+        elif tab == "optymalizacja":
+            psi_m = sitereport.latest_psi(db, site_id, "mobile")
+            ctx["psi"] = psi_m
+            ctx["plan"] = optimize.build_plan(audit_d["data"]["facts"] if audit_d else {}, psi_m, site["url"]) if (psi_m or audit_d) else None
+            raw = monitor.state_get(db, f"opt_ai_{site_id}")
+            ctx["opt_ai"] = json.loads(raw) if raw else None
         elif tab == "siec":
             ctx["psi"] = sitereport.latest_psi(db, site_id, strategy)
             q = request.query_params
@@ -1794,6 +1800,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             site=site, sv=sv, google_ok=bool(integ.google_account()), psi_ok=bool(integ.psi_key()),
                             audit=audit_d, areas=review.AREAS, verdicts=review.VERDICTS, rc=reportcharts,
                             sr=sitereport, site_ssl_days=_ssl_days(site["ssl_expires"]), **ctx)
+
+    @app.post("/admin/agent/sites/{site_id}/optymalizacja/ai")
+    def agent_site_opt_ai(request: Request, site_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        require_user(request, "admin")
+        site = site_or_404(site_id)
+        psi_m = sitereport.latest_psi(db, site_id, "mobile")
+        if not psi_m:
+            flash(request, "Najpierw wykonaj test szybkości (zakładka Szybkość → Testuj teraz).", "error")
+            return RedirectResponse(f"/admin/agent/sites/{site_id}?tab=optymalizacja", 303)
+        audit = db.one("SELECT report FROM site_audits WHERE site_id = ? ORDER BY ts DESC LIMIT 1", site_id)
+        facts = json.loads(audit["report"])["facts"] if audit else {}
+        plan = optimize.build_plan(facts, psi_m, site["url"])
+        monitor.state_set(db, f"opt_ai_{site_id}", json.dumps({"status": "pracuje", "ts": now_iso(), "psi_ts": psi_m["ts"]}))
+
+        def run():
+            site_agent.progress(f"{site['name'] or site['url']}: model AI pisze plan optymalizacji")
+            try:
+                text = ai.generate(ai_cfg, optimize.ai_prompt(site["url"], psi_m, plan)) or ""
+            finally:
+                site_agent._set("work", None)
+            monitor.state_set(db, f"opt_ai_{site_id}", json.dumps(
+                {"status": "gotowe" if text else "błąd", "text": text, "ts": now_iso(), "psi_ts": psi_m["ts"]}, ensure_ascii=False))
+        in_background("plan-ai", run)
+        flash(request, "Model AI pisze podsumowanie w tle — na procesorze NAS może to potrwać kilkanaście minut.")
+        return RedirectResponse(f"/admin/agent/sites/{site_id}?tab=optymalizacja", 303)
+
+    @app.get("/admin/agent/sites/{site_id}/optymalizacja.php")
+    def agent_site_opt_php(request: Request, site_id: int):
+        require_user(request, "admin")
+        site = site_or_404(site_id)
+        psi_m = sitereport.latest_psi(db, site_id, "mobile")
+        audit = db.one("SELECT report FROM site_audits WHERE site_id = ? ORDER BY ts DESC LIMIT 1", site_id)
+        plan = optimize.build_plan(json.loads(audit["report"])["facts"] if audit else {}, psi_m, site["url"])
+        host = urllib.parse.urlsplit(site["url"]).hostname or "strona"
+        return Response(plan["php_all"] or "<?php\n// Brak poprawek PHP dla tej strony.\n", media_type="text/plain; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="bsk-optymalizacja-{host}.php"'})
 
     @app.post("/admin/agent/sites/{site_id}/szybkosc")
     def agent_site_speed_now(request: Request, site_id: int, csrf: str = Form("")):

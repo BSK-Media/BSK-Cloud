@@ -839,3 +839,16 @@ b.good { color: #0a7a0a; }
 .wf-row { display: block; }
 .net-filters .chip-link { padding: 4px 10px; font-size: .82rem; border-radius: 99px; }
 .net-filters select { width: auto; flex: 0 0 auto; }
+
+/* plan optymalizacji */
+.plan-head { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
+.plan-head > div:last-child { flex: 1 1 400px; }
+.task { border-left: 4px solid var(--line); }
+.task-wysoki { border-left-color: var(--critical); } .task-średni { border-left-color: #e0a100; } .task-niski { border-left-color: #9aa3b2; }
+.task .card-head { flex-wrap: wrap; gap: 8px 10px; }
+.task-problem { margin: 0 0 8px; }
+.task-steps ol { margin: 6px 0 0; padding-left: 22px; } .task-steps li { margin: 4px 0; font-size: .9rem; }
+.snippet { margin-top: 14px; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: #fafbfd; }
+.snippet-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.snippet pre.code-snippet { max-height: 420px; overflow: auto; }
+.code-list { columns: 2; margin: 6px 0 0; } .code-list li { break-inside: avoid; }

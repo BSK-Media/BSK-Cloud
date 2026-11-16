@@ -429,6 +429,18 @@ def test_panel_settings_integrations_network_report(tmp_path, monkeypatch):
         js_only = c.get(f"/admin/agent/sites/{site['id']}?tab=siec&typ=JS&sort=czas").text
         assert "gtm.js" in js_only and "brak.png" not in js_only
         assert "gtm.js" in c.get(f"/admin/agent/sites/{site['id']}?tab=siec&zew=1").text
+        op = c.get(f"/admin/agent/sites/{site['id']}?tab=optymalizacja").text
+        assert "Plan optymalizacji" in op and "Przyspiesz pojawienie się głównej treści" in op and "Kopiuj" in op
+        assert "Problem:" in op and "Rozwiązanie:" in op and "Podsumowanie AI" in op
+        dl = c.get(f"/admin/agent/sites/{site['id']}/optymalizacja.php")
+        assert dl.status_code == 200 and dl.text.startswith("<?php") and "attachment" in dl.headers["content-disposition"]
+        monkeypatch.setattr(ai, "generate", lambda cfg, p, *a, **k: "Diagnoza: blokujące skrypty." if "Kolejność prac" in p else None)
+        c.post(f"/admin/agent/sites/{site['id']}/optymalizacja/ai", data={"csrf": tok})
+        for _ in range(50):
+            if "Diagnoza: blokujące skrypty." in c.get(f"/admin/agent/sites/{site['id']}?tab=optymalizacja").text:
+                break
+            __import__("time").sleep(0.1)
+        assert "Diagnoza: blokujące skrypty." in c.get(f"/admin/agent/sites/{site['id']}?tab=optymalizacja").text
         bl = c.get(f"/admin/agent/sites/{site['id']}?tab=bledy").text
         assert "Szybkość (Google)" in bl and "do zyskania 0,8 s" in bl and "Zasoby blokują pierwsze wyrenderowanie" in bl
         assert "Testuj teraz" in sp and c.post(f"/admin/agent/sites/{site['id']}/szybkosc", data={"csrf": tok}).status_code == 200
@@ -491,3 +503,54 @@ def test_panel_settings_integrations_network_report(tmp_path, monkeypatch):
         router.close()
         for srv in (wp, org, g):
             srv.shutdown()
+
+
+def test_optimization_plan_and_php_snippets(tmp_path):
+    """Plan optymalizacji z PageSpeed + Network: konkretne zadania i poprawny składniowo kod PHP."""
+    import shutil
+    import subprocess
+    from app import optimize, speed
+    aud = dict(PSI_AUDITS)
+    aud["network-requests"] = {"details": {"items": aud["network-requests"]["details"]["items"] + [
+        {"url": "https://fonts.googleapis.com/css?family=Poppins:400,600|Roboto:400", "resourceType": "Stylesheet",
+         "networkRequestTime": 1100, "networkEndTime": 1500, "statusCode": 200},
+        {"url": "https://fonts.googleapis.com/css2?family=Inter:wght@400", "resourceType": "Stylesheet",
+         "networkRequestTime": 1100, "networkEndTime": 1450, "statusCode": 200},
+        {"url": "https://klient.pl/wp-content/plugins/elementor/assets/css/frontend.min.css", "resourceType": "Stylesheet",
+         "networkRequestTime": 1200, "networkEndTime": 1700, "statusCode": 200},
+        {"url": "https://klient.pl/wp-content/plugins/woocommerce/assets/js/frontend/cart-fragments.min.js", "resourceType": "Script",
+         "networkRequestTime": 1200, "networkEndTime": 1900, "statusCode": 200},
+        {"url": "https://klient.pl/wp-content/uploads/2026/10/baner-duzy.jpg", "resourceType": "Image", "transferSize": 900000,
+         "networkRequestTime": 1300, "networkEndTime": 3900, "statusCode": 200},
+        {"url": "https://klient.pl/wp-includes/css/admin-bar.min.css", "resourceType": "Stylesheet",
+         "networkRequestTime": 1200, "networkEndTime": 1300, "statusCode": 200}]}}
+    for r in aud["network-requests"]["details"]["items"]:
+        if "gtm.js" in r["url"]:
+            r["url"] = "https://www.googletagmanager.com/gtm.js?id=GTM-AB12CD"
+    full = speed.parse({"lighthouseResult": {"categories": {"performance": {"score": 0.42, "auditRefs": [
+        {"id": "render-blocking-resources"}]}}, "audits": aud}}, "https://klient.pl/")
+    plan = optimize.build_plan({"tech": {"cms": "WordPress"}, "compression": "brak"}, full, "https://klient.pl/")
+    keys = [t["key"] for t in plan["tasks"]]
+    for k in ("lcp", "render-blocking", "third-party", "javascript", "fonts", "images", "cache", "errors", "admin-bar"):
+        assert k in keys, k
+    assert plan["env"] == {"wp": True, "elementor": True, "woo": True, "divi": False, "litespeed": False, "rocket": False}
+    assert [t["prio"] for t in plan["tasks"]] == sorted((t["prio"] for t in plan["tasks"]), key=optimize.PRIO.get)
+    t = {t["key"]: t for t in plan["tasks"]}
+    assert "Baner główny" in t["lcp"]["problem"] and "'https://klient.pl/baner.jpg'" in t["lcp"]["snippets"][0]["code"]
+    assert "GTM-AB12CD" in t["third-party"]["snippets"][0]["code"] and "Google Tag Manager" in t["third-party"]["steps"][0]
+    css_code = t["render-blocking"]["snippets"][-1]["code"]
+    assert "style.css" in t["render-blocking"]["problem"] and "array('style')" not in css_code  # ogólne nazwy pominięte
+    assert "/* np. 'swiper'" in css_code
+    assert "Poppins" in t["fonts"]["problem"] and "brak.png (404)" in t["errors"]["problem"]
+    assert "wc-cart-fragments" in plan["php_all"] and plan["php_all"].startswith("<?php")
+    assert "ExpiresByType" in t["cache"]["snippets"][0]["code"]
+    if shutil.which("php"):  # każdy fragment PHP i całość muszą przejść kontrolę składni
+        for i, sn in enumerate(s for task in plan["tasks"] for s in task["snippets"] if s["lang"] == "php"):
+            f = tmp_path / f"s{i}.php"
+            f.write_text("<?php\n" + sn["code"])
+            assert subprocess.run(["php", "-l", str(f)], capture_output=True).returncode == 0, sn["code"]
+        f = tmp_path / "all.php"
+        f.write_text(plan["php_all"])
+        assert subprocess.run(["php", "-l", str(f)], capture_output=True).returncode == 0
+    prompt = optimize.ai_prompt("https://klient.pl/", full, plan)
+    assert "Kolejność prac" in prompt and "Przyspiesz pojawienie się głównej treści" in prompt

@@ -8,7 +8,7 @@ from datetime import date, timedelta
 
 
 
-TABS = [("przeglad", "Przegląd", "bot"), ("bledy", "Błędy i zalecenia", "list"), ("szybkosc", "Szybkość", "clock"), ("siec", "Sieć (Network)", "network"),
+TABS = [("przeglad", "Przegląd", "bot"), ("bledy", "Błędy i zalecenia", "list"), ("szybkosc", "Szybkość", "clock"), ("siec", "Sieć (Network)", "network"), ("optymalizacja", "Plan optymalizacji", "shield"),
         ("analityka", "Analityka", "chart"), ("google", "Wyniki w Google", "search"), ("seo", "SEO i udostępnianie", "link"),
         ("technologia", "Technologia", "cpu"), ("integracje", "Integracje", "key")]
 CLIENT_ONLY = {"analityka", "google", "integracje"}

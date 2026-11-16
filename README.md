@@ -336,7 +336,11 @@ uwagi z audytu, integracji i Google PageSpeed z instrukcją naprawy i zyskiem cz
 wyniki, metryki z progami Google, dane prawdziwych użytkowników, element LCP i jego fazy, zalecenia Google,
 skrypty, usługi zewnętrzne, kolejność wczytywania plików, klatki wczytywania, historia), *Analityka* (GA4) i
 *Wyniki w Google* (Search Console) z wyborem okresu i porównaniem (poprzedni okres / rok wcześniej) i wykresami,
-*SEO i udostępnianie*, *Technologia* i *Integracje*.
+*SEO i udostępnianie*, *Technologia* i *Integracje*. Zakładka **Plan optymalizacji** łączy PageSpeed, Network i audyt
+w konkretne zadania (problem z plikami i czasami → kroki → spodziewany zysk) z gotowym kodem: PHP do wtyczki
+Code Snippets (preload LCP, defer skryptów, asynchroniczny CSS, opóźniony Tag Manager, porządki WordPress /
+WooCommerce, czcionki), `.htaccess` (pamięć podręczna, kompresja) i HTML; całość do pobrania jako jeden plik PHP,
+plus podsumowanie lokalnego modelu AI (diagnoza, kolejność prac z czasem, cel).
 
 Panel agenta ma w menu bocznym podzakładki: *Przegląd* (co robi teraz, model, podsumowanie),
 *Gotowe e-maile*, *Strony klientów*, *Nowe firmy*, *Sieć biurowa*, *Dziennik* i *Ustawienia i klucze*.

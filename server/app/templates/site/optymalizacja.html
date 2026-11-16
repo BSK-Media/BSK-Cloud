@@ -1,0 +1,50 @@
+{% import "_ui.html" as ui with context %}
+{% if not plan %}
+<section class="card">{{ ui.empty("Plan powstaje z testu szybkości i audytu. Kliknij „Testuj teraz” w zakładce Szybkość (1–2 minuty) albo „Audytuj teraz”.", "shield") }}</section>
+{% else %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("shield") }}<h2>Plan optymalizacji</h2><span class="spacer"></span>
+    {% if psi %}<span class="small muted">na podstawie testu {{ psi.ts|dt }} (telefon) i audytu</span>{% endif %}</div>
+  <div class="plan-head">
+    {% if psi %}<div class="rings">{{ rc.score_ring(psi.scores.performance, "Wydajność teraz") }}</div>{% endif %}
+    <div>
+      <p><b>{{ plan.tasks|length }} zadań</b> — {{ plan.tasks|selectattr('prio', 'equalto', 'wysoki')|list|length }} o wysokim priorytecie.
+        Wykryto: {{ ['WordPress' if plan.env.wp, 'Elementor' if plan.env.elementor, 'WooCommerce' if plan.env.woo]|select|join(', ') or 'stronę bez WordPressa' }}.</p>
+      <p class="small muted">Zalecana kolejność: od góry. Po każdej zmianie wyczyść pamięć podręczną (wtyczka cache / Cloudflare) i kliknij „Testuj teraz”, żeby zobaczyć efekt.</p>
+      {% if plan.php_all %}<div class="row"><a class="button btn-sm primary" href="/admin/agent/sites/{{ site.id }}/optymalizacja.php">{{ ui.icon("download") }}Pobierz wszystkie poprawki PHP (jeden plik)</a></div>{% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-head">{{ ui.icon("bot") }}<h2>Podsumowanie AI</h2><span class="spacer"></span>
+    <form method="post" action="/admin/agent/sites/{{ site.id }}/optymalizacja/ai" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="btn-sm {{ '' if opt_ai else 'primary' }}">{{ ui.icon("bot") }}{{ 'Napisz ponownie' if opt_ai else 'Przygotuj podsumowanie AI' }}</button></form></div>
+  {% if opt_ai and opt_ai.status == 'pracuje' %}<p class="small">Model AI pisze podsumowanie (od {{ opt_ai.ts|ago }}) — odśwież stronę za kilka minut.</p>
+  {% elif opt_ai and opt_ai.text %}<div class="ai-text">{{ opt_ai.text }}</div><p class="small muted mt">Napisane {{ opt_ai.ts|ago }} przez lokalny model na NAS{% if psi and opt_ai.psi_ts != psi.ts %} · <b>jest nowszy test — napisz ponownie</b>{% endif %}.</p>
+  {% elif opt_ai and opt_ai.status == 'błąd' %}<div class="flash warn">Model AI nie odpowiedział — sprawdź, czy jest pobrany (Agent AI → Przegląd).</div>
+  {% else %}<p class="small muted">Lokalny model przeanalizuje plan i wyniki: diagnoza, kolejność prac z czasem wykonania i realny cel.</p>{% endif %}
+</section>
+
+{% for t in plan.tasks %}
+<section class="card task task-{{ t.prio }}" id="z-{{ t.key }}">
+  <div class="card-head"><span class="tag {{ 'danger' if t.prio == 'wysoki' else ('warn' if t.prio == 'średni' else '') }}">priorytet {{ t.prio }}</span>
+    <h2>{{ loop.index }}. {{ t.title }}</h2><span class="spacer"></span>{% if t.gain %}<span class="tag ok">{{ t.gain }}</span>{% endif %}
+    <span class="small muted">{{ t.area }}</span></div>
+  <p class="task-problem"><b>Problem:</b> {{ t.problem }}</p>
+  {% if t.steps %}<div class="task-steps"><b>Rozwiązanie:</b><ol>{% for s in t.steps %}<li>{{ s }}</li>{% endfor %}</ol></div>{% endif %}
+  {% if t.files %}<details class="mt"><summary class="small">Pliki, których dotyczy ({{ t.files|length }})</summary>
+    <ul class="small code-list">{% for f in t.files %}<li class="code-cell">{{ f }}</li>{% endfor %}</ul></details>{% endif %}
+  {% for sn in t.snippets %}
+  <div class="snippet">
+    <div class="snippet-head"><b>{{ sn.title }}</b><span class="tag">{{ {'php': 'PHP — Code Snippets', 'apache': '.htaccess', 'html': 'HTML'}.get(sn.lang, sn.lang) }}</span>
+      <span class="spacer"></span><button type="button" class="btn-sm" data-copy-text="{{ sn.code }}">{{ ui.icon("copy") }}Kopiuj</button></div>
+    <pre class="code-snippet">{{ sn.code }}</pre>
+    <p class="hint">Gdzie: {{ sn.where }}</p>
+  </div>
+  {% endfor %}
+</section>
+{% endfor %}
+<p class="hint">Kod jest przygotowany zachowawczo i każdy fragment da się wyłączyć jednym kliknięciem w Code Snippets. Zawsze wprowadzaj zmiany
+  po kopii zapasowej i najpierw sprawdź stronę (menu, koszyk, formularze) w oknie incognito.</p>
+{% endif %}
