@@ -37,12 +37,52 @@ MODELS = [
 ]
 
 
+class _Gate:
+    """Jedno zapytanie do modelu naraz; zadania zlecone ręcznie z panelu („pilne”) wchodzą przed pracą w tle."""
+
+    def __init__(self):
+        self.cv = threading.Condition()
+        self.busy = ""
+        self.waiting_urgent = 0
+        self.waiting_bg = 0
+
+    def acquire(self, urgent: bool, label: str) -> None:
+        with self.cv:
+            if urgent:
+                self.waiting_urgent += 1
+            else:
+                self.waiting_bg += 1
+            try:
+                while self.busy or (not urgent and self.waiting_urgent):
+                    self.cv.wait()
+            finally:
+                if urgent:
+                    self.waiting_urgent -= 1
+                else:
+                    self.waiting_bg -= 1
+            self.busy = label or "praca agenta w tle (inne strony)"
+
+    def release(self) -> None:
+        with self.cv:
+            self.busy = ""
+            self.cv.notify_all()
+
+
+gate = _Gate()
+
+
+def queue_state() -> dict:
+    return {"busy": gate.busy, "urgent": gate.waiting_urgent, "background": gate.waiting_bg}
+
+
 @dataclass
 class Config:
     url: str = "http://ollama:11434"
     model: str = "qwen3.8:27b"
     timeout_s: int = 3 * 3600  # duży model na procesorze NAS: jedna odpowiedź może trwać kilkadziesiąt minut
     num_ctx: int = 16384  # miejsce na „myślenie” modelu i dłuższe strony
+    urgent: bool = False  # zlecone ręcznie z panelu — przed pracą agenta w tle
+    label: str = ""
 
 
 def _post(cfg: Config, path: str, body: dict, timeout: float):
@@ -73,6 +113,7 @@ def generate(cfg: Config, prompt: str, system: str = "", images: list[bytes] | N
     think = _think_setting(cfg.model)
     if think is not None:
         body["think"] = think  # model rozważa odpowiedź przed napisaniem (rozumowanie nie trafia do tekstu)
+    gate.acquire(cfg.urgent, cfg.label)
     try:
         try:
             with _post(cfg, "/api/generate", body, cfg.timeout_s) as r:
@@ -86,6 +127,8 @@ def generate(cfg: Config, prompt: str, system: str = "", images: list[bytes] | N
     except (OSError, urllib.error.URLError, ValueError) as exc:
         log.warning("Model AI niedostępny: %s", exc)
         return None
+    finally:
+        gate.release()
     return _strip_thinking(text).strip() or None
 
 

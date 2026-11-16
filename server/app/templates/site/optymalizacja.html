@@ -20,7 +20,9 @@
   <div class="card-head">{{ ui.icon("bot") }}<h2>Podsumowanie AI</h2><span class="spacer"></span>
     <form method="post" action="/admin/agent/sites/{{ site.id }}/optymalizacja/ai" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}">
       <button class="btn-sm {{ '' if opt_ai else 'primary' }}">{{ ui.icon("bot") }}{{ 'Napisz ponownie' if opt_ai else 'Przygotuj podsumowanie AI' }}</button></form></div>
-  {% if opt_ai and opt_ai.status == 'pracuje' %}<p class="small">Model AI pisze podsumowanie (od {{ opt_ai.ts|ago }}) — odśwież stronę za kilka minut.</p>
+  {% if opt_ai and opt_ai.status == 'pracuje' %}<p class="small">Zlecono {{ opt_ai.ts|ago }} — zadanie ma pierwszeństwo przed pracą agenta w tle.
+    {% if ai_queue.busy %}Model teraz: <b>{{ ai_queue.busy }}</b> (musi dokończyć bieżące zadanie).{% endif %} Na procesorze NAS odpowiedź trwa zwykle 10–40 minut — odśwież stronę później.</p>
+  {% elif opt_ai and opt_ai.status == 'przerwane' %}<div class="flash warn">Pisanie przerwał restart portalu (np. aktualizacja). Kliknij „Napisz ponownie”.</div>
   {% elif opt_ai and opt_ai.text %}<div class="ai-text">{{ opt_ai.text }}</div><p class="small muted mt">Napisane {{ opt_ai.ts|ago }} przez lokalny model na NAS{% if psi and opt_ai.psi_ts != psi.ts %} · <b>jest nowszy test — napisz ponownie</b>{% endif %}.</p>
   {% elif opt_ai and opt_ai.status == 'błąd' %}<div class="flash warn">Model AI nie odpowiedział — sprawdź, czy jest pobrany (Agent AI → Przegląd).</div>
   {% else %}<p class="small muted">Lokalny model przeanalizuje plan i wyniki: diagnoza, kolejność prac z czasem wykonania i realny cel.</p>{% endif %}

@@ -31,7 +31,7 @@
 {% if rv %}
 <section class="card">
   <div class="card-head">{{ ui.icon("bot") }}<h2>Ocena i rekomendacja</h2><span class="spacer"></span>
-    <span class="small muted">{{ 'lokalny model AI' if rv.by_ai else 'wyliczone automatycznie — model AI był niedostępny' }} · {{ audit.ts|ago }}</span></div>
+    <span class="small muted">{{ 'lokalny model AI' if rv.by_ai else ('wstępna ocena automatyczna — model AI przygotowuje pełną' if rv.ai_pending else 'wyliczone automatycznie — model AI był niedostępny') }} · {{ audit.ts|ago }}</span></div>
   <div class="verdict v-{{ rv.werdykt }}">
     <div class="small muted">Werdykt dla BSK Media</div>
     <div class="verdict-name">{{ verdicts[rv.werdykt] }}</div>

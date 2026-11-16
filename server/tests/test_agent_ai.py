@@ -496,3 +496,50 @@ def test_review_modern_site_is_clean():
     base = review.heuristic({"issues": issues, "facts": facts, "score": 90})
     assert review._clean({"werdykt": "coś innego", "oceny": {"seo": 99}}, base)["oceny"]["seo"] == 10
     assert review._clean({"werdykt": "coś innego"}, base)["werdykt"] == base["werdykt"]
+
+
+def test_ai_gate_urgent_first():
+    """Zadania zlecone z panelu czekają tylko na bieżące zapytanie, nie na całą kolejkę pracy w tle."""
+    import time as _t
+    gate = ai._Gate()
+    order = []
+    gate.acquire(False, "tło-1")  # model zajęty
+
+    def job(urgent, name):
+        gate.acquire(urgent, name)
+        order.append(name)
+        _t.sleep(0.02)
+        gate.release()
+    bg = [threading.Thread(target=job, args=(False, f"tło-{i}")) for i in (2, 3)]
+    for t in bg:
+        t.start()
+    _t.sleep(0.05)
+    urgent = threading.Thread(target=job, args=(True, "panel"))
+    urgent.start()
+    _t.sleep(0.05)
+    assert gate.waiting_urgent == 1 and gate.waiting_bg == 2 and gate.busy == "tło-1"
+    gate.release()
+    for t in bg + [urgent]:
+        t.join(2)
+    assert order[0] == "panel" and sorted(order[1:]) == ["tło-2", "tło-3"]
+    assert ai.queue_state()["busy"] == ""
+
+
+def test_audit_saved_before_ai(env, monkeypatch):
+    """Wynik techniczny (SEO, podgląd udostępniania, technologia) trafia do panelu przed pracą modelu AI."""
+    app, url, _ = env
+    db = app.state.db
+    db.run("INSERT INTO sites (url, name, kind, created_at) VALUES (?, 'Sklep', 'client', '2026-01-01')", url + "/")
+    seen = []
+    orig = ai.generate
+
+    def spy(cfg, prompt, *a, **k):
+        row = db.one("SELECT report, review FROM site_audits")
+        seen.append((json.loads(row["report"])["facts"].get("og") is not None, json.loads(row["review"]).get("ai_pending")) if row else None)
+        return orig(cfg, prompt, *a, **k)
+    monkeypatch.setattr(ai, "generate", spy)
+    cfg = ai.Config(url=app.state.settings.ai_url, model="qwen3:30b", urgent=True, label="test")
+    monitor.audit_and_store(db, db.one("SELECT * FROM sites"), cfg)
+    assert seen and seen[0] == (True, True)  # przy pierwszym zapytaniu do AI audyt już był zapisany
+    rows = db.all("SELECT review FROM site_audits")
+    assert len(rows) == 1 and json.loads(rows[0]["review"])["by_ai"] is True
