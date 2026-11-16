@@ -1,0 +1,129 @@
+{% import "_ui.html" as ui with context %}
+<div class="row mb">
+  <a class="button btn-sm {{ 'primary' if strategy == 'mobile' else 'ghost' }}" href="?tab=szybkosc&s=mobile">{{ ui.icon("laptop") }}Telefon</a>
+  <a class="button btn-sm {{ 'primary' if strategy == 'desktop' else 'ghost' }}" href="?tab=szybkosc&s=desktop">{{ ui.icon("laptop") }}Komputer</a>
+  <span class="spacer"></span>
+  {% if psi %}<span class="small muted">test {{ psi.ts|dt }}{% if psi.lh_version %} · Lighthouse {{ psi.lh_version }}{% endif %}</span>{% endif %}
+  <form method="post" action="/admin/agent/sites/{{ site.id }}/szybkosc" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}">
+    <button class="btn-sm primary">{{ ui.icon("refresh") }}Testuj teraz</button></form>
+</div>
+{% if not psi %}
+<section class="card">{{ ui.empty(("Brak testu szybkości dla tej wersji. Kliknij „Testuj teraz” — test na telefonie i komputerze trwa 1–2 minuty." if psi_ok else "Dodaj klucz PageSpeed w Ustawieniach agenta, żeby mierzyć szybkość."), "clock") }}</section>
+{% else %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("chart") }}<h2>Wyniki Google PageSpeed ({{ 'telefon' if strategy == 'mobile' else 'komputer' }})</h2>
+    {% if psi_other %}<span class="spacer"></span><span class="small muted">{{ 'komputer' if strategy == 'mobile' else 'telefon' }}: wydajność {{ psi_other.scores.performance }}/100</span>{% endif %}</div>
+  <div class="rings">{% for k, label in [("performance", "Wydajność"), ("accessibility", "Dostępność"), ("best-practices", "Dobre praktyki"), ("seo", "SEO")] %}{{ rc.score_ring(psi.scores[k], label) }}{% endfor %}</div>
+  <div class="metrics-grid mt">
+    {% for m in psi.metrics %}<div class="metric {{ m.rating }}">
+      <div class="metric-name">{{ m.name }}</div><div class="metric-val">{{ m.display }}</div>
+      <div class="metric-scale"><i></i><i></i><i></i></div>
+      <div class="metric-hint">{{ m.hint }} · dobrze &lt; {{ (m.good / 1000)|round(1)|string|replace('.', ',') ~ ' s' if m.unit == 'ms' else m.good }}</div></div>{% endfor %}
+  </div>
+  <p class="hint mt">Kolory jak w Google: zielony — dobrze, pomarańczowy — do poprawy, czerwony — słabo. Test w warunkach laboratoryjnych
+    ({{ 'średni telefon, wolniejszy internet 4G' if strategy == 'mobile' else 'komputer, szybkie łącze' }}).</p>
+</section>
+
+{% if psi.field %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("users") }}<h2>Prawdziwi użytkownicy (Chrome, ostatnie 28 dni)</h2><span class="spacer"></span><span class="small muted">dane dla: {{ psi.field_src }}</span></div>
+  <div class="metrics-grid">{% for f in psi.field %}<div class="metric {{ {'FAST': 'good', 'AVERAGE': 'warn', 'SLOW': 'poor'}.get(f.cat, '') }}">
+    <div class="metric-name">{{ f.name }}</div><div class="metric-val">{{ (f.value|round(2)) if f.unit == 'cls' else ((f.value / 1000)|round(1)|string|replace('.', ',') ~ ' s' if f.value >= 1000 else (f.value|int) ~ ' ms') }}</div>
+    <div class="metric-hint">{{ f.rating }} (75% wizyt)</div></div>{% endfor %}</div>
+  <p class="hint mt">To pomiary z przeglądarek odwiedzających — Google używa ich w rankingu (Core Web Vitals).</p>
+</section>
+{% endif %}
+
+{% if psi.filmstrip %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("img") }}<h2>Jak wczytuje się strona</h2></div>
+  <div class="filmstrip">{% for t in psi.filmstrip %}<figure><img src="{{ t.img }}" alt="Klatka {{ t.t }} ms"><figcaption>{{ (t.t / 1000)|round(1)|string|replace('.', ',') }} s</figcaption></figure>{% endfor %}</div>
+</section>
+{% endif %}
+
+{% set el = psi.lcp_element %}
+{% if el.snippet or el.phases %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("img") }}<h2>Element głównej treści (LCP)</h2></div>
+  {% if el.selector %}<p class="small"><b>{{ el.selector }}</b></p>{% endif %}
+  {% if el.snippet %}<pre class="code-snippet">{{ el.snippet }}</pre>{% endif %}
+  {% if el.phases %}{% set total = el.phases|sum(attribute='ms') %}
+  <div class="phases">{% for p in el.phases %}<div class="phase"><span>{{ p.phase }}</span>{{ rc.bar(p.ms, total, rc.PALETTE[loop.index0], 220) }}<b>{{ p.ms }} ms</b></div>{% endfor %}</div>
+  <p class="hint">Fazy: odpowiedź serwera → opóźnienie startu pobierania → pobieranie pliku → wyświetlenie. Największa faza wskazuje, co poprawiać.</p>{% endif %}
+</section>
+{% endif %}
+
+{% if psi.opportunities %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("list") }}<h2>Co spowalnia stronę — zalecenia Google</h2><span class="spacer"></span><span class="small muted">od największego zysku</span></div>
+  <div class="issues">{% for f in psi.opportunities %}
+    <details class="issue {{ f.level }}" {{ 'open' if loop.index <= 2 }}>
+      <summary><span class="tag {{ 'danger' if f.level == 'error' else 'warn' }}">{{ 'słabo' if f.level == 'error' else 'do poprawy' }}</span>
+        <span class="issue-text">{{ f.title }}{% if f.display %} <span class="muted">— {{ f.display }}</span>{% endif %}</span>
+        {% if f.save_ms >= 100 %}<span class="tag ok">−{{ (f.save_ms / 1000)|round(1)|string|replace('.', ',') }} s</span>{% endif %}
+        {% if f.save_kb >= 10 %}<span class="tag ok">−{{ f.save_kb }} KB</span>{% endif %}</summary>
+      <div class="issue-body">{% if f.desc %}<p>{{ f.desc }}</p>{% endif %}
+        {% if f.rows %}<div class="table-wrap"><table class="list compact"><tbody>{% for x in f.rows %}<tr><td class="small code-cell">{{ x.label }}</td>
+          <td class="num small">{{ (x.ms ~ ' ms') if x.ms }}</td><td class="num small">{{ (x.kb ~ ' KB') if x.kb }}</td></tr>{% endfor %}</tbody></table></div>{% endif %}</div>
+    </details>{% endfor %}</div>
+</section>
+{% endif %}
+
+{% set sc = psi.scripts %}
+<section class="card" id="skrypty">
+  <div class="card-head">{{ ui.icon("cpu") }}<h2>Skrypty — co obciąża stronę</h2><span class="spacer"></span>
+    <span class="small muted">waga strony {{ (psi.weight_kb / 1024)|round(1)|string|replace('.', ',') }} MB · {{ psi.requests }} plików</span></div>
+  <div class="grid g-2">
+    <div><h3 class="small">Najdłużej wykonujące się skrypty</h3>
+      {% if sc.bootup %}{% set mx = sc.bootup[0].total %}<div class="table-wrap"><table class="list compact"><thead><tr><th>Skrypt</th><th></th><th class="num">Razem</th><th class="num">Wykonanie</th><th class="num">Wczytanie</th></tr></thead><tbody>
+      {% for b in sc.bootup %}<tr><td class="small code-cell" title="{{ b.full }}">{% if b.inline %}<b>{{ b.url }}</b>{% else %}{{ b.url }}{% endif %}</td><td>{{ rc.bar(b.total, mx, '#d03b3b' if b.total >= 1000 else ('#e0a100' if b.total >= 300 else '#2a78d6'), 70) }}</td>
+        <td class="num"><b>{{ b.total }} ms</b></td><td class="num small">{{ b.scripting }} ms</td><td class="num small">{{ b.parse }} ms</td></tr>{% endfor %}
+      </tbody></table></div>{% else %}<p class="muted small">Brak danych.</p>{% endif %}</div>
+    <div><h3 class="small">Najcięższe skrypty</h3>
+      {% if sc.heavy %}{% set mx = sc.heavy[0].kb %}<div class="table-wrap"><table class="list compact"><thead><tr><th>Skrypt</th><th></th><th class="num">Rozmiar</th><th class="num">Nieużywane</th></tr></thead><tbody>
+      {% for h in sc.heavy %}<tr><td class="small code-cell" title="{{ h.full }}">{{ h.url }}</td><td>{{ rc.bar(h.kb, mx, '#7c4dce', 70) }}</td><td class="num"><b>{{ h.kb }} KB</b></td>
+        <td class="num small">{{ (h.unused_kb ~ ' KB') if h.unused_kb else '—' }}</td></tr>{% endfor %}
+      </tbody></table></div>{% else %}<p class="muted small">Brak danych.</p>{% endif %}</div>
+    <div><h3 class="small">Usługi zewnętrzne</h3>
+      {% if sc.third_party %}<div class="table-wrap"><table class="list compact"><thead><tr><th>Usługa</th><th class="num">Rozmiar</th><th class="num">Procesor</th><th class="num">Blokuje</th></tr></thead><tbody>
+      {% for t3 in sc.third_party %}<tr><td class="small">{{ t3.entity }}</td><td class="num small">{{ t3.kb }} KB</td><td class="num small">{{ t3.main }} ms</td>
+        <td class="num"><b class="{{ 'danger' if t3.blocking >= 250 else '' }}">{{ t3.blocking }} ms</b></td></tr>{% endfor %}
+      </tbody></table></div>{% else %}<p class="muted small">Brak usług zewnętrznych.</p>{% endif %}</div>
+    <div>
+      <h3 class="small">Pliki blokujące wyświetlenie</h3>
+      {% if sc.render_blocking %}<div class="table-wrap"><table class="list compact"><tbody>
+      {% for r in sc.render_blocking %}<tr><td class="small code-cell">{{ r.url }}</td><td class="num small">{{ r.kb }} KB</td><td class="num"><b>{{ r.ms }} ms</b></td></tr>{% endfor %}
+      </tbody></table></div>{% else %}<p class="muted small">Brak — dobrze.</p>{% endif %}
+      {% if sc.main_thread %}<h3 class="small mt">Na co procesor traci czas</h3>{% set mx = sc.main_thread[0].ms %}
+      <div class="phases">{% for m in sc.main_thread %}<div class="phase"><span>{{ m.group }}</span>{{ rc.bar(m.ms, mx, '#2a78d6', 160) }}<b>{{ m.ms }} ms</b></div>{% endfor %}</div>{% endif %}
+    </div>
+  </div>
+</section>
+
+{% if psi.by_type %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("download") }}<h2>Z czego składa się strona</h2></div>
+  <div class="grid g-2">
+    <div>{{ rc.donut(psi.by_type|map('type_kb')|list, 'Waga według typu plików') }}</div>
+    <div class="table-wrap"><table class="list compact"><thead><tr><th>Typ</th><th class="num">Plików</th><th class="num">Rozmiar</th></tr></thead><tbody>
+      {% for name, cnt, kb in psi.by_type %}<tr><td>{{ name }}</td><td class="num">{{ cnt }}</td><td class="num"><b>{{ kb }} KB</b></td></tr>{% endfor %}
+    </tbody></table></div>
+  </div>
+</section>
+{% endif %}
+
+{% if psi.waterfall %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("list") }}<h2>Kolejność wczytywania plików</h2><span class="spacer"></span><span class="small muted">pierwsze {{ psi.waterfall|length }} plików · najedź, by zobaczyć szczegóły</span></div>
+  {{ rc.waterfall(psi.waterfall, psi.waterfall_end) }}
+</section>
+{% endif %}
+
+{% if psi_hist|length > 1 %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("chart") }}<h2>Historia wyników</h2><span class="spacer"></span><span class="small muted">{{ psi_hist|length }} testów</span></div>
+  {{ rc.time_series(psi_hist|map(attribute='ts')|map('todate')|list, [("Wydajność", psi_hist|map(attribute='performance')|list, rc.BLUE, false)], "Wydajność w czasie", "") }}
+  {{ rc.time_series(psi_hist|map(attribute='ts')|map('todate')|list, [("LCP (s)", psi_hist|map(attribute='lcp_ms')|map('ms_to_s')|list, rc.ORANGE, false), ("Blokowanie (s)", psi_hist|map(attribute='tbt_ms')|map('ms_to_s')|list, rc.PURPLE, false)], "Główna treść i blokowanie w czasie", "s") }}
+</section>
+{% endif %}
+{% endif %}

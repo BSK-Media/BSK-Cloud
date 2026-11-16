@@ -1,0 +1,66 @@
+{% import "_ui.html" as ui with context %}{% import "site/_macros.html" as m with context %}
+{% include "site/_range.html" %}
+{% if not site.ga_property %}
+<section class="card">{{ ui.empty("Podłącz Google Analytics 4: zakładka Integracje → „Google Analytics 4 — identyfikator usługi” (instrukcja w Ustawieniach agenta).", "chart") }}</section>
+{% elif not google_ok %}<section class="card"><div class="flash warn">Najpierw wklej klucz konta Google w <a href="/admin/agent/settings">Ustawieniach agenta</a>.</div></section>
+{% elif g_error %}<section class="card"><div class="flash error">{{ g_error }}</div></section>
+{% elif ga %}
+{% set c, p = ga.cur, ga.cmp %}
+<section class="card">
+  <div class="stats">
+    {{ m.stat("Użytkownicy", c.activeUsers, p.activeUsers if p else none) }}
+    {{ m.stat("Nowi użytkownicy", c.newUsers, p.newUsers if p else none) }}
+    {{ m.stat("Sesje", c.sessions, p.sessions if p else none) }}
+    {{ m.stat("Wyświetlenia stron", c.screenPageViews, p.screenPageViews if p else none) }}
+    {{ m.stat("Kluczowe zdarzenia", c.keyEvents, p.keyEvents if p else none, hint="konwersje") }}
+    {{ m.stat("Współczynnik zaangażowania", c.engagementRate, p.engagementRate if p else none, "%") }}
+    {{ m.stat("Śr. czas sesji", c.averageSessionDuration, p.averageSessionDuration if p else none, "czas", hint="min:s") }}
+    {{ m.stat("Współczynnik odrzuceń", c.bounceRate, p.bounceRate if p else none, "%", invert=true) }}
+    {% if c.transactions or (p and p.transactions) %}{{ m.stat("Transakcje", c.transactions, p.transactions if p else none) }}
+    {{ m.stat("Przychód (zł)", c.purchaseRevenue, p.purchaseRevenue if p else none) }}{% endif %}
+  </div>
+</section>
+{% for idx, name, color in [(0, "Sesje", rc.BLUE), (1, "Użytkownicy", rc.GREEN), (3, "Kluczowe zdarzenia", rc.PURPLE)] %}
+{% set days, cur, cmp = sr.aligned(rng, ga.daily_cur, ga.daily_cmp, idx) %}
+<section class="card">
+  <div class="card-head"><h2>{{ name }} dziennie</h2><span class="spacer"></span><span class="small muted">suma: {{ rc.fmt(cur|sum) }}{% if rng.cmp %} · porównanie: {{ rc.fmt(cmp|sum) }}{% endif %}</span></div>
+  {{ rc.time_series(days, [(name ~ " — " ~ rng.label, cur, color, false)] + ([(name ~ " — " ~ rng.cmp_label, cmp, rc.GREY, true)] if rng.cmp else []), name) }}
+</section>
+{% endfor %}
+<div class="grid g-2">
+  <section class="card"><div class="card-head"><h2>Skąd przychodzą (kanały)</h2></div>
+    {% set mx = (ga.channels|map(attribute='v')|map('first')|max) if ga.channels else 1 %}
+    <div class="table-wrap"><table class="list compact"><thead><tr><th>Kanał</th><th></th><th class="num">Sesje</th><th class="num">Zmiana</th><th class="num">Konwersje</th><th class="num">Zaang.</th></tr></thead><tbody>
+    {% for r in ga.channels %}<tr><td>{{ sr.pl_name(r.name) }}</td><td>{{ rc.bar(r.v[0], mx, rc.BLUE, 80) }}</td><td class="num"><b>{{ rc.fmt(r.v[0]) }}</b></td>
+      <td class="num">{{ m.delta(r.v[0], r.c[0] if r.c else none) }}</td><td class="num">{{ rc.fmt(r.v[1]) }}</td><td class="num small">{{ rc.fmt(r.v[2] * 100, '%') }}</td></tr>{% endfor %}
+    </tbody></table></div></section>
+  <section class="card"><div class="card-head"><h2>Urządzenia i nowi / powracający</h2></div>
+    <div class="grid g-2">
+      <div>{{ rc.donut(ga.devices|map('ga_pair')|list, 'Urządzenia') }}</div>
+      <div>{{ rc.donut(ga.new_returning|map('ga_pair')|list, 'Nowi i powracający') }}</div>
+    </div></section>
+</div>
+<section class="card"><div class="card-head"><h2>Źródło / medium</h2></div>
+  <div class="table-wrap"><table class="list compact"><thead><tr><th>Źródło / medium</th><th class="num">Sesje</th><th class="num">Zmiana</th><th class="num">Konwersje</th><th class="num">Zaangażowanie</th></tr></thead><tbody>
+  {% for r in ga.sources %}<tr><td class="small">{{ r.name }}</td><td class="num"><b>{{ rc.fmt(r.v[0]) }}</b></td><td class="num">{{ m.delta(r.v[0], r.c[0] if r.c else none) }}</td>
+    <td class="num">{{ rc.fmt(r.v[1]) }}</td><td class="num small">{{ rc.fmt(r.v[2] * 100, '%') }}</td></tr>{% endfor %}
+  </tbody></table></div></section>
+<div class="grid g-2">
+  <section class="card"><div class="card-head"><h2>Strony wejścia</h2></div>
+    <div class="table-wrap"><table class="list compact"><thead><tr><th>Strona</th><th class="num">Sesje</th><th class="num">Zmiana</th><th class="num">Konw.</th><th class="num">Odrzuc.</th></tr></thead><tbody>
+    {% for r in ga.landing %}<tr><td class="small code-cell">{{ r.name }}</td><td class="num"><b>{{ rc.fmt(r.v[0]) }}</b></td><td class="num">{{ m.delta(r.v[0], r.c[0] if r.c else none) }}</td>
+      <td class="num">{{ rc.fmt(r.v[1]) }}</td><td class="num small">{{ rc.fmt(r.v[2] * 100, '%') }}</td></tr>{% endfor %}
+    </tbody></table></div></section>
+  <section class="card"><div class="card-head"><h2>Najczęściej oglądane strony</h2></div>
+    <div class="table-wrap"><table class="list compact"><thead><tr><th>Strona</th><th class="num">Wyświetl.</th><th class="num">Zmiana</th><th class="num">Użytk.</th><th class="num">Śr. czas</th></tr></thead><tbody>
+    {% for r in ga.pages %}<tr><td class="small code-cell">{{ r.name }}</td><td class="num"><b>{{ rc.fmt(r.v[0]) }}</b></td><td class="num">{{ m.delta(r.v[0], r.c[0] if r.c else none) }}</td>
+      <td class="num">{{ rc.fmt(r.v[1]) }}</td><td class="num small">{{ (r.v[2]|int // 60) }}:{{ '%02d'|format(r.v[2]|int % 60) }}</td></tr>{% endfor %}
+    </tbody></table></div></section>
+</div>
+<div class="grid g-3">
+  <section class="card"><div class="card-head"><h2>Kraje</h2></div><dl class="kv-rows small">{% for r in ga.countries %}<div><dt>{{ r.name }}</dt><dd>{{ rc.fmt(r.v[0]) }} {{ m.delta(r.v[0], r.c[0] if r.c else none) }}</dd></div>{% endfor %}</dl></section>
+  <section class="card"><div class="card-head"><h2>Miasta</h2></div><dl class="kv-rows small">{% for r in ga.cities %}<div><dt>{{ r.name }}</dt><dd>{{ rc.fmt(r.v[0]) }} {{ m.delta(r.v[0], r.c[0] if r.c else none) }}</dd></div>{% endfor %}</dl></section>
+  <section class="card"><div class="card-head"><h2>Zdarzenia</h2></div><dl class="kv-rows small">{% for r in ga.events %}<div><dt>{{ r.name }}{% if r.v[1] %} <span class="tag ok">kluczowe</span>{% endif %}</dt><dd>{{ rc.fmt(r.v[0]) }} {{ m.delta(r.v[0], r.c[0] if r.c else none) }}</dd></div>{% endfor %}</dl></section>
+</div>
+<p class="hint">Dane z Google Analytics 4 (odświeżane co 15 minut). Porównanie: {{ rng.cmp_label or 'wyłączone' }}.</p>
+{% endif %}

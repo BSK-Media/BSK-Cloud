@@ -1,0 +1,9 @@
+{% macro delta(cur, prev, invert=False, unit="%") -%}
+{% set ch = sr.change(cur, prev) %}{% if ch is not none %}{% set good = (ch < 0) if invert else (ch > 0) %}<span class="delta {{ 'up' if good else ('down' if ch != 0 else '') }}">{{ '▲' if ch > 0 else ('▼' if ch < 0 else '•') }} {{ (ch|abs)|round(1)|string|replace('.', ',') }}%</span>{% endif %}
+{%- endmacro %}
+
+{% macro stat(label, cur, prev=None, fmt="", invert=False, hint="") -%}
+<div class="stat"><div class="stat-label">{{ label }}</div>
+  <div class="stat-value">{{ rc.fmt(cur or 0, fmt) }}</div>
+  <div class="stat-cmp">{% if prev is not none %}{{ delta(cur, prev, invert) }}<span class="muted">vs {{ rc.fmt(prev or 0, fmt) }}</span>{% endif %}{% if hint %}<span class="muted">{{ hint }}</span>{% endif %}</div></div>
+{%- endmacro %}

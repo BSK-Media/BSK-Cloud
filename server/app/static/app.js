@@ -1013,3 +1013,6 @@ document.querySelectorAll("input[data-check-all]").forEach((all) => {
     side.scrollTop = active.offsetTop - side.clientHeight / 2;
   }
 })();
+
+// raport strony: zmiana okresu / porównania od razu odświeża dane
+document.querySelectorAll("select[data-autosubmit]").forEach((sel) => sel.addEventListener("change", () => sel.form.submit()));

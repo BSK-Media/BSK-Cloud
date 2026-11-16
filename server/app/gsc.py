@@ -156,49 +156,10 @@ def script_details(audits: dict) -> dict:
     return {"bootup": boot, "heavy": heavy, "third_party": third, "render_blocking": blocking, "main_thread": main}
 
 
-def pagespeed(url: str, key: str, base: str = PSI_URL) -> dict:
-    """Wynik Lighthouse (telefon) z PageSpeed Insights: wydajność, SEO, metryki i szczegóły skryptów."""
-    q = urllib.parse.urlencode([("url", url), ("strategy", "mobile"), ("key", key),
-                                ("category", "performance"), ("category", "seo"), ("category", "accessibility")])
-    with urllib.request.urlopen(f"{base}?{q}", timeout=180) as r:  # noqa: S310
-        data = json.loads(r.read())
-    lh = data.get("lighthouseResult", {})
-    cats = lh.get("categories", {})
-    audits = lh.get("audits", {})
-
-    def score(k):
-        s = (cats.get(k) or {}).get("score")
-        return round(s * 100) if isinstance(s, (int, float)) else None
-
-    def disp(k):
-        return (audits.get(k) or {}).get("displayValue", "")
-    out = {"performance": score("performance"), "seo": score("seo"), "accessibility": score("accessibility"),
-           "lcp": disp("largest-contentful-paint"), "cls": disp("cumulative-layout-shift"),
-           "fcp": disp("first-contentful-paint"), "tbt": disp("total-blocking-time"), "si": disp("speed-index"),
-           "tbt_ms": round(_num((audits.get("total-blocking-time") or {}).get("numericValue"))),
-           "weight_kb": round(_num((audits.get("total-byte-weight") or {}).get("numericValue")) / 1024),
-           "scripts": script_details(audits), "issues": []}
-    if out["performance"] is not None and out["performance"] < 50:
-        out["issues"].append({"level": "error", "text": f"PageSpeed (telefon): wydajność {out['performance']}/100, LCP {out['lcp']}."})
-    elif out["performance"] is not None and out["performance"] < 80:
-        out["issues"].append({"level": "warn", "text": f"PageSpeed (telefon): wydajność {out['performance']}/100, LCP {out['lcp']}."})
-    sc = out["scripts"]
-    if out["tbt_ms"] >= 600:
-        out["issues"].append({"level": "error" if out["tbt_ms"] >= 1200 else "warn",
-                              "text": f"Skrypty blokują stronę na telefonie przez {out['tbt']} (dobrze < 200 ms) — strona „zamarza” po wczytaniu."})
-    slow = [b for b in sc["bootup"] if b["total"] >= 500]
-    if slow:
-        out["issues"].append({"level": "warn", "text": "Najdłużej wykonujące się skrypty: " + ", ".join(
-            f"{b['url']} ({b['total'] / 1000:.1f} s)" for b in slow[:3]) + "."})
-    waste = sum(h["unused_kb"] for h in sc["heavy"])
-    if waste >= 150:
-        out["issues"].append({"level": "warn", "text": f"Ok. {waste} KB kodu JavaScript pobieranego, ale nieużywanego na stronie głównej."})
-    if sc["render_blocking"]:
-        total = sum(b["ms"] for b in sc["render_blocking"])
-        if total >= 300:
-            out["issues"].append({"level": "warn", "text": f"{len(sc['render_blocking'])} plików blokuje wyświetlenie strony "
-                                  f"(opóźnienie ok. {total / 1000:.1f} s)."})
-    return out
+def pagespeed(url: str, key: str, base: str = PSI_URL, strategy: str = "mobile") -> dict:
+    """Skrót wyniku PageSpeed (wydajność, metryki, skrypty, konkretne uwagi). Pełny wynik: speed.parse()."""
+    from . import speed
+    return speed.compact(speed.parse(speed.fetch(url, key, strategy, base), url))
 
 
 def analytics(sa: dict, prop: str, token_url: str = TOKEN_URL, base: str = GA_URL, days: int = 7) -> dict:
@@ -251,3 +212,105 @@ def analytics(sa: dict, prop: str, token_url: str = TOKEN_URL, base: str = GA_UR
     if cur["sessions"] == 0 and prev["sessions"] > 0:
         out["issues"].append({"level": "error", "text": "Google Analytics nie zbiera danych od tygodnia — sprawdź kod śledzenia na stronie."})
     return out
+
+
+# ------------------------------------------------------------------ raporty z zakresem dat (zakładki Analityka i Google)
+
+GA_TOTALS = ["activeUsers", "newUsers", "sessions", "engagedSessions", "screenPageViews", "keyEvents", "engagementRate",
+             "averageSessionDuration", "bounceRate", "transactions", "purchaseRevenue"]
+GA_DAILY = ["sessions", "activeUsers", "screenPageViews", "keyEvents"]
+
+
+def _ga_run(token: str, url: str, ranges: list[tuple], dims: list[str], metrics: list[str], limit: int = 0,
+            order: str = "") -> dict[str, list]:
+    """Zapytanie runReport; wynik: {"0": [(wymiary, metryki)], "1": [...]} dla każdego zakresu dat."""
+    body: dict = {"dateRanges": [{"startDate": a.isoformat(), "endDate": b.isoformat(), "name": str(i)}
+                                 for i, (a, b) in enumerate(ranges)],
+                  "metrics": [{"name": m} for m in metrics]}
+    if dims:
+        body["dimensions"] = [{"name": d} for d in dims]
+    if limit:
+        body["limit"] = limit * len(ranges)
+    if order:
+        body["orderBys"] = [{"metric": {"metricName": order}, "desc": True}]
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310
+        rows = json.loads(r.read()).get("rows", []) or []
+    out: dict[str, list] = {str(i): [] for i in range(len(ranges))}
+    for row in rows:
+        dv = [d.get("value", "") for d in row.get("dimensionValues", [])]
+        mv = [_num(m.get("value")) for m in row.get("metricValues", [])]
+        rng = "0"
+        if len(ranges) > 1 and len(dv) > len(dims):  # GA dopisuje wymiar „dateRange” przy kilku zakresach
+            rng = dv.pop(-1 if dv[-1] in out else 0)
+            rng = rng if rng in out else rng.replace("date_range_", "")
+        out.setdefault(rng, []).append((dv, mv))
+    return out
+
+
+def ga_report(sa: dict, prop: str, cur: tuple, cmp: tuple | None, token_url: str = TOKEN_URL, base: str = GA_URL) -> dict:
+    """Pełny raport GA4 dla zakresu dat i (opcjonalnie) okresu porównawczego."""
+    token = access_token(sa, token_url)
+    url = f"{base}/properties/{''.join(ch for ch in prop if ch.isdigit())}:runReport"
+    ranges = [cur] + ([cmp] if cmp else [])
+    tot = _ga_run(token, url, ranges, [], GA_TOTALS)
+
+    def totals(key):
+        vals = tot.get(key) or [([], [0.0] * len(GA_TOTALS))]
+        d = dict(zip(GA_TOTALS, vals[0][1] + [0.0] * len(GA_TOTALS)))
+        d["engagementRate"] *= 100
+        d["bounceRate"] *= 100
+        return d
+    daily = _ga_run(token, url, ranges, ["date"], GA_DAILY)
+
+    def series(key):
+        rows = sorted(daily.get(key, []), key=lambda r: r[0][0])
+        return {r[0][0]: r[1] for r in rows}
+
+    def top(dim: str, metrics: list[str], limit: int, order: str) -> list[dict]:
+        res = _ga_run(token, url, ranges, [dim], metrics, limit, order)
+        prev = {tuple(dv): mv for dv, mv in res.get("1", [])}
+        rows = sorted(res.get("0", []), key=lambda r: -r[1][0])[:limit]
+        return [{"name": dv[0][:140] or "(brak)", "v": mv, "c": prev.get(tuple(dv))} for dv, mv in rows]
+    out = {
+        "cur": totals("0"), "cmp": totals("1") if cmp else None,
+        "daily_cur": series("0"), "daily_cmp": series("1") if cmp else {},
+        "channels": top("sessionDefaultChannelGroup", ["sessions", "keyEvents", "engagementRate"], 10, "sessions"),
+        "sources": top("sessionSourceMedium", ["sessions", "keyEvents", "engagementRate"], 15, "sessions"),
+        "landing": top("landingPage", ["sessions", "keyEvents", "bounceRate"], 15, "sessions"),
+        "pages": top("pagePath", ["screenPageViews", "activeUsers", "averageSessionDuration"], 20, "screenPageViews"),
+        "devices": top("deviceCategory", ["sessions", "keyEvents"], 5, "sessions"),
+        "countries": top("country", ["activeUsers", "sessions"], 10, "activeUsers"),
+        "cities": top("city", ["activeUsers", "sessions"], 10, "activeUsers"),
+        "events": top("eventName", ["eventCount", "keyEvents"], 15, "eventCount"),
+        "new_returning": top("newVsReturning", ["activeUsers", "sessions"], 3, "activeUsers"),
+    }
+    return out
+
+
+def gsc_report(sa: dict, prop: str, cur: tuple, cmp: tuple | None, token_url: str = TOKEN_URL, base: str = GSC_URL) -> dict:
+    """Search Console dla zakresu dat: dzienny przebieg, frazy, strony, kraje, urządzenia (z porównaniem)."""
+    token = access_token(sa, token_url)
+
+    def q(rng, dims, limit):
+        return _query(token, prop, rng[0], rng[1], dims, limit, base=base)
+
+    def tot(rng):
+        r = (q(rng, None, 1) or [{}])[0]
+        return {"clicks": int(r.get("clicks", 0)), "impressions": int(r.get("impressions", 0)),
+                "ctr": round(float(r.get("ctr", 0)) * 100, 2), "position": round(float(r.get("position", 0)), 1)}
+
+    def daily(rng):
+        return {r["keys"][0].replace("-", ""): [r.get("clicks", 0), r.get("impressions", 0), r.get("position", 0)]
+                for r in q(rng, ["date"], 500)}
+
+    def top(dim, limit):
+        cur_rows = q(cur, [dim], limit)
+        prev = {r["keys"][0]: r for r in q(cmp, [dim], limit * 4)} if cmp else {}
+        return [{"name": r["keys"][0][:160], "clicks": int(r.get("clicks", 0)), "impressions": int(r.get("impressions", 0)),
+                 "ctr": round(float(r.get("ctr", 0)) * 100, 1), "position": round(float(r.get("position", 0)), 1),
+                 "c": prev.get(r["keys"][0])} for r in cur_rows]
+    return {"cur": tot(cur), "cmp": tot(cmp) if cmp else None, "daily_cur": daily(cur),
+            "daily_cmp": daily(cmp) if cmp else {}, "queries": top("query", 30), "pages": top("page", 20),
+            "countries": top("country", 10), "devices": top("device", 3)}

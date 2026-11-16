@@ -1,0 +1,102 @@
+{% import "_ui.html" as ui with context %}
+<div class="kpis">
+  {{ ui.kpi("Wynik audytu", (audit.score ~ "/100") if audit else "—", (audit.ts|ago) if audit else "audyt w kolejce", "chart") }}
+  {{ ui.kpi("Dostępność (7 dni)", ((week.ok * 100 / week.n)|round(1) ~ "%") if week.n else "—", (week.n ~ " sprawdzeń") if week.n else "", "shield") }}
+  {{ ui.kpi("Średni czas odpowiedzi", ((week.ms|round|int) ~ " ms") if week.ms else "—", "ostatnie 7 dni", "clock") }}
+  {{ ui.kpi("Certyfikat SSL", (site_ssl_days ~ " dni") if site_ssl_days is not none else "—", "do wygaśnięcia", "lock") }}
+</div>
+{% if psi_m %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("clock") }}<h2>Szybkość w skrócie (telefon)</h2><span class="spacer"></span>
+    <a class="button btn-sm" href="?tab=szybkosc">Szczegóły szybkości</a></div>
+  <div class="rings">{% for k, label in [("performance", "Wydajność"), ("accessibility", "Dostępność"), ("best-practices", "Dobre praktyki"), ("seo", "SEO")] %}{{ rc.score_ring(psi_m.scores[k], label) }}{% endfor %}
+    <div class="metric-mini">{% for m in psi_m.metrics[:4] %}<div class="mm {{ m.rating }}"><span>{{ m.name }}</span><b>{{ m.display }}</b></div>{% endfor %}</div></div>
+</section>
+{% endif %}
+{% set rv = audit.rv if audit else None %}
+{% if rv %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("bot") }}<h2>Ocena i rekomendacja</h2><span class="spacer"></span>
+    <span class="small muted">{{ 'lokalny model AI' if rv.by_ai else 'wyliczone automatycznie — model AI był niedostępny' }} · {{ audit.ts|ago }}</span></div>
+  <div class="verdict v-{{ rv.werdykt }}">
+    <div class="small muted">Werdykt dla BSK Media</div>
+    <div class="verdict-name">{{ verdicts[rv.werdykt] }}</div>
+    {% if rv.werdykt_uzasadnienie %}<p>{{ rv.werdykt_uzasadnienie }}</p>{% endif %}
+    <div class="row">
+      {% if rv.szacowany_wiek %}<span class="tag">{{ ui.icon("clock") }}{{ rv.szacowany_wiek }}</span>{% endif %}
+      {% if rv.rebranding %}<span class="tag warn">potrzebny rebranding</span>{% endif %}
+      {% if site.kind == 'lead' %}<span class="tag">potencjał sprzedażowy {{ rv.potencjal }}/100</span>{% endif %}
+    </div>
+  </div>
+  {% if rv.podsumowanie %}<p class="mt">{{ rv.podsumowanie }}</p>{% endif %}
+  {% if rv.rebranding and rv.rebranding_uzasadnienie %}<p class="small"><b>Rebranding:</b> {{ rv.rebranding_uzasadnienie }}</p>{% endif %}
+  <div class="areas mt">{% for k, label in areas %}{% set v = rv.oceny[k] %}
+    <div class="area"><span class="small">{{ label }}</span><div class="bar"><i class="w{{ v }} {{ 'good' if v >= 8 else ('warning' if v >= 5 else 'critical') }}"></i></div><b class="small">{{ v }}/10</b></div>{% endfor %}
+  </div>
+</section>
+{% if rv.uslugi %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("chart") }}<h2>Co zaproponować</h2></div>
+  <div class="table-wrap"><table class="list compact"><tbody>
+    {% for u in rv.uslugi %}<tr><td class="nowrap"><b>{{ u.usluga }}</b></td>
+      <td class="nowrap"><span class="tag {{ 'danger' if u.priorytet == 'wysoki' else ('warn' if u.priorytet.startswith('śr') else '') }}">{{ u.priorytet }}</span></td>
+      <td class="small">{{ u.dlaczego }}</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endif %}
+{% if rv.argumenty or rv.szybkie_poprawki %}
+<div class="grid g-2 mb">
+  {% if rv.argumenty %}<section class="card"><div class="card-head">{{ ui.icon("message") }}<h2>Argumenty do rozmowy</h2></div>
+    <ul class="small">{% for a in rv.argumenty %}<li>{{ a }}</li>{% endfor %}</ul></section>{% endif %}
+  {% if rv.szybkie_poprawki %}<section class="card"><div class="card-head">{{ ui.icon("list") }}<h2>Szybkie poprawki</h2></div>
+    <ul class="small">{% for a in rv.szybkie_poprawki %}<li>{{ a }}</li>{% endfor %}</ul></section>{% endif %}
+</div>
+{% endif %}
+{% endif %}
+{% if shots or (rv and rv.wyglad_ai) %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("img") }}<h2>Wygląd strony</h2><span class="spacer"></span><span class="small muted">zrzuty z ostatniego audytu</span></div>
+  {% if shots %}<div class="shots">{% for k in shots %}<figure class="shot shot-{{ k }}"><a href="/admin/agent/sites/{{ site.id }}/zrzut/{{ k }}.jpg" target="_blank">
+    <img src="/admin/agent/sites/{{ site.id }}/zrzut/{{ k }}.jpg" alt="Zrzut strony — {{ k }}" loading="lazy"></a><figcaption class="small muted">{{ k }}</figcaption></figure>{% endfor %}</div>{% endif %}
+  {% set va = rv.wyglad_ai if rv else None %}
+  {% if va %}
+  {% if va.opis %}<p class="mt">{{ va.opis }}</p>{% endif %}
+  <div class="grid g-2">
+    {% if va.mocne_strony %}<div><h3 class="small">Mocne strony</h3><ul class="small">{% for x in va.mocne_strony %}<li>{{ x }}</li>{% endfor %}</ul></div>{% endif %}
+    {% if va.slabe_strony %}<div><h3 class="small">Słabe strony</h3><ul class="small">{% for x in va.slabe_strony %}<li>{{ x }}</li>{% endfor %}</ul></div>{% endif %}
+  </div>
+  {% elif shots %}<p class="hint mt">Model AI nie ocenił wyglądu — wybrany model nie rozpoznaje obrazów albo był niedostępny.</p>{% endif %}
+</section>
+{% endif %}
+{% if not audit %}
+<section class="card">{{ ui.empty("Agent jeszcze nie ocenił tej strony — strony czekają w kolejce (najpierw te bez żadnej oceny). Kliknij „Audytuj teraz”, żeby zacząć od razu: pełna ocena z AI na procesorze NAS może potrwać nawet godzinę.", "bot") }}</section>
+{% endif %}
+{% if recent|length > 1 %}
+<section class="card">
+  <div class="card-head"><h2>Czas odpowiedzi — ostatnie sprawdzenia</h2></div>
+  {{ charts.line_chart([("Czas odpowiedzi", recent|map(attribute='ms')|list, "#2a78d6")], "Czas odpowiedzi strony", "ms", start=(recent[0].ts|ago), end="teraz") }}
+</section>
+{% endif %}
+{% if draft %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("message") }}<h2>Gotowy e-mail</h2><span class="spacer"></span>
+    {% if draft.to_email %}<a class="button btn-sm primary" href="{{ mailto(draft) }}">Otwórz w poczcie</a>{% endif %}
+    <a class="button btn-sm" href="/admin/agent/maile#mail-{{ draft.id }}">Edytuj</a></div>
+  <p class="small"><b>Do:</b> {{ draft.to_email or '(brak adresu)' }}{% if draft.email_source %} <span class="muted">— {{ draft.email_source }}</span>{% endif %}<br><b>Temat:</b> {{ draft.subject }}</p>
+  <div class="ai-text">{{ draft.body }}</div>
+</section>
+{% endif %}
+{% if site.kind == 'lead' and site.lead_score is not none %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("chart") }}<h2>Potencjał sprzedażowy: {{ site.lead_score }}/100</h2><span class="spacer"></span>
+    {% if site.source %}<span class="small muted">znaleziona: {{ site.source }}</span>{% endif %}</div>
+  <p>{{ site.lead_reason }}</p>
+  {% if site.phone %}<p class="small">Telefon: <a href="tel:{{ site.phone }}">{{ site.phone }}</a></p>{% endif %}
+</section>
+{% endif %}
+{% if history|length > 1 %}
+<section class="card">
+  <div class="card-head"><h2>Historia wyników</h2></div>
+  <div class="chips">{% for h in history %}<span class="chip-link"><b>{{ h.score }}</b>/100 · {{ h.ts|dt }}</span>{% endfor %}</div>
+</section>
+{% endif %}

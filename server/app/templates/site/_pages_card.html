@@ -1,0 +1,9 @@
+{% if f.pages %}<section class="card"><div class="card-head">{{ ui.icon("list") }}<h2>Podstrony</h2></div>
+  {% if f.pages %}
+  <h3 class="small">Sprawdzone podstrony ({{ f.pages|length }}{% if f.pages_found and f.pages_found > f.pages|length %} z {{ f.pages_found }}{% endif %})</h3>
+  <div class="table-wrap"><table class="list compact"><thead><tr><th>Adres</th><th>Tytuł</th><th>Opis</th><th>H1</th><th>Słowa</th></tr></thead><tbody>
+    {% for p in f.pages %}<tr><td class="small">{{ p.path }}</td><td class="small">{{ p.title or '—' }}</td>
+      <td>{{ '✓' if p.description else '—' }}</td><td>{{ p.h1 }}</td><td class="num">{{ p.words }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% endif %}
+</section>{% endif %}

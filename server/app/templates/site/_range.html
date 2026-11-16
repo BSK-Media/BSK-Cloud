@@ -1,0 +1,9 @@
+<form method="get" class="range-form card">
+  <input type="hidden" name="tab" value="{{ tab }}">
+  <label>Okres <select name="zakres" data-autosubmit>{% for k, l in sr.PRESETS %}<option value="{{ k }}" {{ 'selected' if rng.preset == k }}>{{ l }}</option>{% endfor %}</select></label>
+  <label>Od <input type="date" name="od" value="{{ rng.cur[0].isoformat() }}"></label>
+  <label>Do <input type="date" name="do" value="{{ rng.cur[1].isoformat() }}"></label>
+  <label>Porównaj <select name="por" data-autosubmit>{% for k, l in sr.COMPARE %}<option value="{{ k }}" {{ 'selected' if rng.compare == k }}>{{ l }}</option>{% endfor %}</select></label>
+  <button class="primary" name="wlasny" value="1">Pokaż</button>
+  <div class="range-label small"><b>{{ rng.label }}</b> ({{ rng.days }} dni){% if rng.cmp %} · porównanie: {{ rng.cmp_label }}{% endif %}</div>
+</form>

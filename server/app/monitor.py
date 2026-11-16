@@ -548,7 +548,7 @@ def audit_and_store(db: Database, site, ai_cfg: ai.Config | None, progress=_noop
         psi = None
         if psi_fn:
             progress(f"Audyt {name}: test PageSpeed — wydajność i skrypty")
-            psi = psi_fn(facts.get("final_url") or site["url"])
+            psi = psi_fn(facts.get("final_url") or site["url"], site["id"])
         if psi and not psi.get("error"):
             facts["psi"] = psi
             result["issues"] += [{**i, "area": "Wydajność"} for i in psi.get("issues", [])]

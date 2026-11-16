@@ -8,7 +8,7 @@ import re
 import urllib.error
 from datetime import datetime, timedelta, timezone
 
-from . import ai, gsc, netmon, review, wpcheck
+from . import ai, gsc, netmon, review, speed, wpcheck
 from .db import Database, now_iso
 from .monitor import event, state_get
 from .secretbox import SecretBox
@@ -58,15 +58,21 @@ class Integrations:
         self.wp_api, self.token_url, self.gsc_url, self.psi_url = wp_api, token_url, gsc_url, psi_url
         self.ga_url = ga_url
 
-    def pagespeed(self, url: str) -> dict | None:
-        """Test PageSpeed (z klucza w ustawieniach) — także w pełnej ocenie nowych firm. None = brak klucza."""
+    def pagespeed(self, url: str, site_id: int | None = None, strategy: str = "mobile") -> dict | None:
+        """Test PageSpeed (z klucza w ustawieniach), zapisany w historii strony. None = brak klucza."""
         key = self.psi_key()
         if not key:
             return None
         try:
-            return gsc.pagespeed(url, key, base=self.psi_url)
+            full = speed.parse(speed.fetch(url, key, strategy, self.psi_url), url)
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)[:200], "issues": []}
+        if site_id:
+            speed.store(self.db, site_id, strategy, full)
+        out = speed.compact(full)
+        if strategy == "desktop":
+            out["issues"] = speed.issues(full, "komputer")
+        return out
 
     # --- klucze z ustawień
     def google_account(self) -> dict | None:
@@ -118,14 +124,14 @@ class Integrations:
                 result["issues"].append({"level": "warn", "area": "Google Analytics", "text": f"Google Analytics: {msg}."})
             except Exception as exc:  # noqa: BLE001
                 result["ga"] = {"error": str(exc)[:200]}
-        key = self.psi_key()
-        if key and site["kind"] == "client":
-            progress(f"{name}: test PageSpeed Insights")
-            try:
-                result["psi"] = gsc.pagespeed(site["url"], key, base=self.psi_url)
-                result["issues"] += [{**i, "area": "PageSpeed"} for i in result["psi"]["issues"]]
-            except Exception as exc:  # noqa: BLE001
-                result["psi"] = {"error": str(exc)[:200]}
+        if self.psi_key() and site["kind"] == "client":
+            progress(f"{name}: test PageSpeed Insights (telefon)")
+            result["psi"] = self.pagespeed(site["url"], site["id"], "mobile")
+            result["issues"] += [{**i, "area": "PageSpeed"} for i in result["psi"].get("issues", [])]
+            progress(f"{name}: test PageSpeed Insights (komputer)")
+            desk = self.pagespeed(site["url"], site["id"], "desktop")
+            if desk and not desk.get("error"):
+                result["psi_desktop"] = {k: desk.get(k) for k in ("performance", "lcp", "tbt", "cls")}
         old = json.loads(site["integ"] or "{}")
         self.db.run("UPDATE sites SET integ = ?, integ_at = ? WHERE id = ?", json.dumps(result, ensure_ascii=False),
                     now_iso(), site["id"])

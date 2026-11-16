@@ -1,0 +1,31 @@
+{% import "_ui.html" as ui with context %}
+{% set errs = issues|selectattr('level', 'equalto', 'error')|list %}{% set warns = issues|selectattr('level', 'equalto', 'warn')|list %}
+{% set shown = errs if poziom == 'bledy' else (warns if poziom == 'uwagi' else issues) %}
+<div class="row mb">
+  <a class="button btn-sm {{ 'primary' if not poziom else 'ghost' }}" href="?tab=bledy">Wszystko ({{ issues|length }})</a>
+  <a class="button btn-sm {{ 'primary' if poziom == 'bledy' else 'ghost' }}" href="?tab=bledy&poziom=bledy">Błędy ({{ errs|length }})</a>
+  <a class="button btn-sm {{ 'primary' if poziom == 'uwagi' else 'ghost' }}" href="?tab=bledy&poziom=uwagi">Uwagi ({{ warns|length }})</a>
+  <span class="spacer"></span><span class="small muted">Źródła: audyt agenta{{ ', integracje' if sv.integ_data.issues }}{{ ', Google PageSpeed (Lighthouse)' if issues|selectattr('source', 'equalto', 'PageSpeed')|list }}</span>
+</div>
+{% if not issues %}<section class="card">{{ ui.empty("Brak wykrytych problemów — albo strona nie była jeszcze oceniona. Kliknij „Audytuj teraz”.", "list") }}</section>{% endif %}
+{% for area, items in shown|groupby('area') %}
+<section class="card">
+  <div class="card-head"><h2>{{ area }}</h2><span class="small muted">{{ items|length }}</span></div>
+  <div class="issues">
+  {% for i in items|sort(attribute='level') %}
+    <details class="issue {{ i.level }}">
+      <summary><span class="tag {{ 'danger' if i.level == 'error' else 'warn' }}">{{ 'błąd' if i.level == 'error' else 'uwaga' }}</span>
+        <span class="issue-text">{{ i.text }}</span>
+        {% if i.gain %}<span class="tag ok">{{ i.gain }}</span>{% endif %}<span class="issue-src">{{ i.source }}</span></summary>
+      <div class="issue-body">
+        {% if i.fix %}<p><b>Jak naprawić:</b> {{ i.fix }}</p>{% endif %}
+        {% if i.rows %}<div class="table-wrap"><table class="list compact"><tbody>
+          {% for x in i.rows %}<tr><td class="small code-cell">{{ x.label }}</td><td class="num small">{{ (x.ms ~ ' ms') if x.ms }}</td><td class="num small">{{ (x.kb ~ ' KB') if x.kb }}</td></tr>{% endfor %}
+        </tbody></table></div>{% endif %}
+        {% if not i.fix and not i.rows %}<p class="muted small">Brak dodatkowych szczegółów.</p>{% endif %}
+      </div>
+    </details>
+  {% endfor %}
+  </div>
+</section>
+{% endfor %}

@@ -1,0 +1,37 @@
+{% import "_ui.html" as ui with context %}{% import "site/_macros.html" as m with context %}
+{% include "site/_range.html" %}
+{% if not site.gsc_property %}
+<section class="card">{{ ui.empty("Podłącz Search Console: zakładka Integracje → „Search Console — nazwa usługi”.", "search") }}</section>
+{% elif not google_ok %}<section class="card"><div class="flash warn">Najpierw wklej klucz konta Google w <a href="/admin/agent/settings">Ustawieniach agenta</a>.</div></section>
+{% elif g_error %}<section class="card"><div class="flash error">{{ g_error }}</div></section>
+{% elif gs %}
+{% set c, p = gs.cur, gs.cmp %}
+<section class="card"><div class="stats">
+  {{ m.stat("Kliknięcia z Google", c.clicks, p.clicks if p else none) }}
+  {{ m.stat("Wyświetlenia w Google", c.impressions, p.impressions if p else none) }}
+  {{ m.stat("CTR", c.ctr, p.ctr if p else none, "%") }}
+  {{ m.stat("Średnia pozycja", c.position, p.position if p else none, invert=true, hint="niżej = lepiej") }}
+</div></section>
+{% for idx, name, color in [(0, "Kliknięcia", rc.BLUE), (1, "Wyświetlenia", rc.ORANGE)] %}
+{% set days, cur, cmp = sr.aligned(rng, gs.daily_cur, gs.daily_cmp, idx) %}
+<section class="card"><div class="card-head"><h2>{{ name }} dziennie</h2></div>
+  {{ rc.time_series(days, [(name ~ " — " ~ rng.label, cur, color, false)] + ([(name ~ " — " ~ rng.cmp_label, cmp, rc.GREY, true)] if rng.cmp else []), name) }}</section>
+{% endfor %}
+<section class="card"><div class="card-head"><h2>Frazy, po których klienci znajdują stronę</h2><span class="spacer"></span><span class="small muted">top {{ gs.queries|length }}</span></div>
+  <div class="table-wrap"><table class="list compact"><thead><tr><th>Fraza</th><th class="num">Kliknięcia</th><th class="num">Zmiana</th><th class="num">Wyświetlenia</th><th class="num">CTR</th><th class="num">Pozycja</th><th class="num">Było</th></tr></thead><tbody>
+  {% for r in gs.queries %}<tr><td>{{ r.name }}</td><td class="num"><b>{{ r.clicks }}</b></td><td class="num">{{ m.delta(r.clicks, r.c.clicks if r.c else none) }}</td>
+    <td class="num">{{ rc.fmt(r.impressions) }}</td><td class="num small">{{ r.ctr }}%</td>
+    <td class="num"><b class="{{ 'good' if r.position <= 3 else ('warning' if r.position <= 10 else '') }}">{{ r.position }}</b></td>
+    <td class="num small muted">{{ (r.c.position|round(1)) if r.c else '—' }}</td></tr>{% endfor %}
+  </tbody></table></div></section>
+<div class="grid g-2">
+  <section class="card"><div class="card-head"><h2>Strony</h2></div>
+    <div class="table-wrap"><table class="list compact"><thead><tr><th>Adres</th><th class="num">Kliknięcia</th><th class="num">Zmiana</th><th class="num">Pozycja</th></tr></thead><tbody>
+    {% for r in gs.pages %}<tr><td class="small code-cell">{{ r.name.split('//')[-1] }}</td><td class="num"><b>{{ r.clicks }}</b></td><td class="num">{{ m.delta(r.clicks, r.c.clicks if r.c else none) }}</td><td class="num">{{ r.position }}</td></tr>{% endfor %}
+    </tbody></table></div></section>
+  <section class="card"><div class="card-head"><h2>Urządzenia i kraje</h2></div>
+    {{ rc.donut(gs.devices|map('gs_pair')|list, 'Urządzenia') }}
+    <dl class="kv-rows small mt">{% for r in gs.countries %}<div><dt>{{ r.name|upper }}</dt><dd>{{ r.clicks }} {{ m.delta(r.clicks, r.c.clicks if r.c else none) }}</dd></div>{% endfor %}</dl></section>
+</div>
+<p class="hint">Dane Google Search Console mają 2–3 dni opóźnienia — ostatnie dni mogą być niepełne.</p>
+{% endif %}
