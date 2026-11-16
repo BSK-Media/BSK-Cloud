@@ -19,7 +19,7 @@
     <ul class="agent-tasks">
       <li><b>Pilnuje {{ ov.sites }} stron</b> — sprawdza co 15 minut, czy działają; awarię zgłasza od razu e-mailem.
         {% if ov.down %}<span class="tag danger">{{ ov.down }} nie działa</span>{% endif %}</li>
-      <li><b>Audyt SEO i wydajności</b> — każda strona raz w tygodniu, z zaleceniami AI.
+      <li><b>Pełna ocena stron</b> — raz w tygodniu: SEO, szybkość, technologia, podstrony, kontakt, wygląd ze zrzutów ekranu; werdykt (np. przebudowa) i usługi do zaproponowania.
         {% if ov.audit_queue %}<span class="tag warn">{{ ov.audit_queue }} w kolejce</span>{% endif %}</li>
       <li><b>Szuka nowych firm</b> — raz na dobę:
         {% if ov.searches %}{% for q in ov.searches %}{{ q.category }} ({{ q.city }}, do {{ q.per_day }}){{ ', ' if not loop.last }}{% endfor %}{% else %}<span class="muted">brak ustawionych wyszukiwań</span>{% endif %}.</li>

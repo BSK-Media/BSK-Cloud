@@ -8,7 +8,7 @@ import re
 import urllib.error
 from datetime import datetime, timedelta, timezone
 
-from . import ai, gsc, netmon, wpcheck
+from . import ai, gsc, netmon, review, wpcheck
 from .db import Database, now_iso
 from .monitor import event, state_get
 from .secretbox import SecretBox
@@ -160,7 +160,14 @@ class Integrations:
         heur = min(100, max(0, round((100 - result.get("score", 100)) * 0.8 + (12 if site["contact_email"] else 0)
                                      + (5 if site["phone"] else 0) + (8 if f.get("ttfb_ms", 0) > 1200 else 0))))
         reason = ""
-        if self.ai_cfg:
+        rv = result.get("review") or {}
+        if rv.get("by_ai") and rv.get("potencjal") is not None:  # pełna ocena AI już to policzyła
+            heur = int(rv["potencjal"])
+            verdict = review.VERDICTS.get(rv.get("werdykt"), "")
+            reason = (f"{verdict}. " if verdict else "") + (rv.get("potencjal_uzasadnienie") or rv.get("podsumowanie", ""))[:600]
+        elif rv:
+            heur = round((heur + int(rv.get("potencjal", heur))) / 2)
+        if self.ai_cfg and not reason:
             progress(f"{site['name'] or site['url']}: model AI ocenia potencjał sprzedażowy")
             prompt = LEAD_PROMPT.format(
                 url=site["url"], name=site["name"] or "", source=site["source"] or "", score=result.get("score", "?"),
@@ -177,7 +184,8 @@ class Integrations:
                     pass
         if not reason:
             top = [i["text"] for i in problems if i["level"] == "error"][:2] or [i["text"] for i in problems][:2]
-            reason = ("Strona ma problemy, które BSK Media może naprawić: " + " ".join(top)) if top else \
+            verdict = review.VERDICTS.get(rv.get("werdykt"), "")
+            reason = (f"{verdict}. " if verdict else "") + ("Strona ma problemy, które BSK Media może naprawić: " + " ".join(top)) if top else \
                 "Strona w dobrym stanie — mniejsza potrzeba zmian."
         self.db.run("UPDATE sites SET lead_score = ?, lead_reason = ? WHERE id = ?", heur, reason, site["id"])
         return heur, reason

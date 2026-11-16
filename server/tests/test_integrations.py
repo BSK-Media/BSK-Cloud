@@ -303,6 +303,12 @@ def test_panel_settings_integrations_network_report(tmp_path, monkeypatch):
         monkeypatch.setattr(ai, "generate", lambda cfg, p, s="": 'Oto ocena: {"ocena": 87, "uzasadnienie": "Wolna strona i brak SEO."}')
         integ.ai_cfg = ai.Config(url="http://x")
         assert integ.score_lead(lead, {"score": 40, "facts": {}, "issues": []}) == (87, "Wolna strona i brak SEO.")
+        # po pełnej ocenie AI potencjał i werdykt są już policzone — bez osobnego zapytania do modelu
+        monkeypatch.setattr(ai, "generate", lambda *a, **k: (_ for _ in ()).throw(AssertionError("zbędne zapytanie")))
+        rv = {"by_ai": True, "potencjal": 91, "werdykt": "przebudowa", "potencjal_uzasadnienie": "Strona z 2012 r."}
+        assert integ.score_lead(lead, {"score": 40, "facts": {}, "issues": [], "review": rv}) == (91, "Przebudowa strony. Strona z 2012 r.")
+        monkeypatch.setattr(ai, "generate", lambda cfg, p, s="": 'Oto ocena: {"ocena": 87, "uzasadnienie": "Wolna strona i brak SEO."}')
+        integ.score_lead(lead, {"score": 40, "facts": {}, "issues": []})
         # raport dzienny: kafelki, problemy (sieć, WordPress), leady z oceną
         monkeypatch.setattr(ai, "generate", lambda cfg, p, s="": None)
         rep = report.build(db, None, "https://cloud.test")
