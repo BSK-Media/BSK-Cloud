@@ -44,10 +44,15 @@
     {% if report %}
     <div><span>Pliki w kolejce na komputerze</span><b>{{ report.pending }}</b></div>
     <div><span>Ostatnia wysyłka (wg komputera)</span><b>{{ report.last_upload|ago if report.last_upload else 'nigdy' }}</b></div>
+    {% if report.started_at %}<div><span>Program działa od</span><b>{{ report.started_at|dt }}</b></div>{% endif %}
+    {% if report.autostart %}<div><span>Autostart</span><b>{% if report.autostart.task.startswith('ok') %}<span class="tag ok">Harmonogram zadań</span>{% else %}<span class="tag danger">zablokowany</span>{% endif %}
+      {% if report.autostart.run_key == 'ok' %}<span class="tag ok">rejestr</span>{% endif %}</b></div>{% endif %}
     {% if report.folders %}<div><span>Obserwowane foldery</span><b class="small">{{ report.folders|join(", ") }}</b></div>{% endif %}
     {% endif %}
   </div>
   {% if report.paused %}<div class="flash warn mt">{{ report.paused }}</div>{% endif %}
+  {% if report.autostart and not report.autostart.task.startswith('ok') %}<div class="flash error mt">Program nie ma autostartu — po restarcie komputera kopia się nie uruchomi.
+    Windows / antywirus odmówił: {{ report.autostart.task or 'brak odpowiedzi' }}. Dodaj folder programu (%LOCALAPPDATA%\Programs\BSKBackup) do wyjątków antywirusa.</div>{% endif %}
   {% if report.update_error %}<div class="flash warn mt">Aktualizacja programu nie powiodła się: {{ report.update_error }}</div>{% endif %}
   {% if report.errors %}
   <h3 class="mt">Pliki, których nie udało się wysłać</h3>

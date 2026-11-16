@@ -124,6 +124,9 @@ def clean_report(body: dict) -> dict:
         "last_upload": when(body.get("last_upload")) if body.get("last_upload") else "", "folders": [s(f, 300) for f in (body.get("folders") or [])[:20]],
         "paused": s(body.get("paused"), 300), "errors": errors, "log": log_items,
         "update_error": s(body.get("update_error"), 300),
+        "autostart": {k: s((body.get("autostart") or {}).get(k), 200) for k in ("task", "run_key", "checked")}
+        if isinstance(body.get("autostart"), dict) else {},
+        "started_at": when(body.get("started_at")) if body.get("started_at") else "",
     }
 
 

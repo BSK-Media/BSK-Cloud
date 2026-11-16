@@ -34,7 +34,7 @@ import requests
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 CONFIG_REFRESH_S = 120  # co tyle sprawdza ustawienia z panelu (foldery, „Synchronizuj teraz”, aktualizacja)
 UPDATE_RETRY_S = 6 * 3600  # nieudana aktualizacja do tej samej wersji — kolejna próba najwcześniej po 6 h
 CHUNK_THRESHOLD = 50 * 1024 * 1024  # większe pliki idą w kawałkach (limit Cloudflare: 100 MB na żądanie)
@@ -317,6 +317,8 @@ class Agent:
         self._sync_token = ""  # zlecona synchronizacja, czeka na zakończenie skanu
         self._sync_done = ""
         self.update_error = ""
+        self.autostart: dict = {}  # stan autostartu (Windows) — widoczny w panelu
+        self.started_at = utc_iso(time.time())
         self.restart_for_update = False
 
     # --- filtrowanie
@@ -610,6 +612,7 @@ class Agent:
             "folders": [str(r) for r, _ in self.roots],
             "paused": self.pause_reason if time.time() < self.paused_until else "",
             "sync_done": self._sync_done, "update_error": self.update_error,
+            "autostart": self.autostart, "started_at": self.started_at,
         }
         try:
             self.http.post(self.base() + "/api/agent/report", json=body, timeout=15)
@@ -780,6 +783,117 @@ class _Handler(FileSystemEventHandler):
             self.agent.on_change(raw)
 
 
+# ---------------------------------------------------------------- autostart (Windows)
+# Wpis „Uruchom” w rejestrze i skrót w Autostarcie bywają blokowane przez antywirusy (np. Avast) — wtedy program
+# działał tylko do wyłączenia komputera. Dlatego program przy każdym starcie sam zakłada zadanie w Harmonogramie
+# zadań Windows (bez uprawnień administratora): uruchom przy logowaniu i co 10 minut, jeśli nie działa
+# (druga kopia programu od razu się zamyka). Zadanie działa też na baterii i nie ma limitu czasu pracy.
+
+TASK_NAME = "BSK Backup"
+
+
+def _xml_escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def task_xml(exe: str, user: str = "", logon: bool = True) -> str:
+    logon_trigger = (f"<LogonTrigger><Enabled>true</Enabled><UserId>{_xml_escape(user)}</UserId></LogonTrigger>"
+                     if logon and user else "")
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>BSK Backup: kopia plików na serwer BSK Media. Uruchamia program, jeśli nie działa.</Description></RegistrationInfo>
+  <Triggers>
+    {logon_trigger}
+    <TimeTrigger>
+      <Repetition><Interval>PT10M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
+      <StartBoundary>2024-01-01T00:00:00</StartBoundary><Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals><Principal id="Author"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author"><Exec><Command>{_xml_escape(exe)}</Command><Arguments>run</Arguments></Exec></Actions>
+</Task>
+"""
+
+
+def _quiet_run(cmd: list[str]) -> subprocess.CompletedProcess:
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # bez migającego okna konsoli
+    return subprocess.run(cmd, capture_output=True, timeout=60, creationflags=flags, stdin=subprocess.DEVNULL)
+
+
+def _decode(raw: bytes) -> str:
+    """Wyjście schtasks: UTF-16 (XML) albo strona kodowa konsoli."""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff") or raw[1:2] == b"\x00":
+        return raw.decode("utf-16", errors="ignore")
+    for enc in ("utf-8", "cp852", "cp1250"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1")
+
+
+def _out_text(cp: subprocess.CompletedProcess) -> str:
+    return (_decode(cp.stderr or b"") + " " + _decode(cp.stdout or b"")).strip()[:200]
+
+
+def ensure_autostart(base: Path, exe: Path | None = None, runner=_quiet_run) -> dict:
+    """Zadanie w Harmonogramie zadań + wpis w rejestrze. Zwraca stan dla panelu: {"task": "ok"/błąd, "run_key": …}."""
+    exe = exe or Path(sys.executable).resolve()
+    out: dict = {"task": "", "run_key": "", "checked": utc_iso(time.time())}
+    try:
+        q = runner(["schtasks", "/Query", "/TN", TASK_NAME, "/XML"])
+        existing = _decode(q.stdout or b"") if q.returncode == 0 else ""
+        if str(exe).lower() in existing.lower() and "PT10M" in existing and "PT0S" in existing:
+            out["task"] = "ok"
+        else:
+            user = f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}".strip("\\")
+            xml_path = base / "zadanie.xml"
+            for logon in (True, False):  # wyzwalacz „przy logowaniu” bywa niedostępny bez administratora
+                xml_path.write_text(task_xml(str(exe), user, logon), encoding="utf-16")
+                cp = runner(["schtasks", "/Create", "/F", "/TN", TASK_NAME, "/XML", str(xml_path)])
+                if cp.returncode == 0:
+                    out["task"] = "ok" if logon else "ok (co 10 minut, bez wyzwalacza przy logowaniu)"
+                    break
+                out["task"] = _out_text(cp) or f"kod {cp.returncode}"
+            xml_path.unlink(missing_ok=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        out["task"] = str(exc)[:200]
+    try:
+        import winreg  # noqa: PLC0415 — tylko Windows
+        value = f'"{exe}" run'
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0,
+                            winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
+            try:
+                existing = winreg.QueryValueEx(key, "BSKBackup")[0]
+            except OSError:
+                existing = ""
+            if existing != value:
+                winreg.SetValueEx(key, "BSKBackup", 0, winreg.REG_SZ, value)
+        out["run_key"] = "ok"
+    except ImportError:
+        out["run_key"] = "nie dotyczy"
+    except OSError as exc:
+        out["run_key"] = f"zablokowany: {exc}"[:200]
+    if out["task"].startswith("ok"):
+        log.info("Autostart: zadanie w Harmonogramie zadań działa")
+    else:
+        log.warning("Autostart: nie udało się założyć zadania w Harmonogramie zadań: %s", out["task"])
+    return out
+
+
 # ---------------------------------------------------------------- uruchamianie
 
 def setup_logging(directory: Path, console: bool) -> None:
@@ -912,6 +1026,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "status":
         return cmd_status(cfg, state, base)
 
+    if args.cmd == "run":
+        base.mkdir(parents=True, exist_ok=True)
+        try:  # uruchomiony z Harmonogramu zadań, gdy już działa — po cichu kończy
+            _lock = SingleInstance(base / "agent.lock")  # noqa: F841 — trzyma blokadę do końca procesu
+        except SystemExit:
+            return 0
     setup_logging(base, console=sys.stdout is not None and sys.stdout.isatty())
     if not (cfg.server and cfg.token and cfg.folders):
         log.error("Brak konfiguracji (%s). Uruchom: bsk-backup configure ...", cfg.path)
@@ -920,8 +1040,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "scan":
         out(f"Dodano do kolejki: {agent.scan()} plików")
         return 0
-    _lock = SingleInstance(base / "agent.lock")  # noqa: F841 — trzyma blokadę do końca procesu
     log.info("BSK Backup %s start, serwer %s", VERSION, cfg.server)
+    if Agent.can_self_update():  # zbudowany program w Windows
+        try:
+            agent.autostart = ensure_autostart(base)
+        except Exception as exc:  # noqa: BLE001 — autostart nie może zatrzymać kopii
+            agent.autostart = {"task": f"błąd: {exc}"[:200], "run_key": ""}
     try:
         agent.run()
     except KeyboardInterrupt:

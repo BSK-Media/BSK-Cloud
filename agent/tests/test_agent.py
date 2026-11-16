@@ -298,3 +298,42 @@ def test_updater_script_quotes_paths(tmp_path, monkeypatch):
     text = data.decode("utf-8-sig")
     assert "O''Brien Łukasz" in text and f"Wait-Process -Id {os.getpid()}" in text
     assert calls and calls[0][-1] == str(script)
+
+
+def test_autostart_task_and_quiet_second_instance(tmp_path, monkeypatch):
+    import subprocess
+    xml = bsk_backup.task_xml(r"C:\Users\Jan & Co\AppData\Local\Programs\BSKBackup\bsk-backup-agent.exe", "PC\\Jan")
+    assert "<LogonTrigger>" in xml and "PC\\Jan" in xml and "Jan &amp; Co" in xml
+    for must in ("<Interval>PT10M</Interval>", "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
+                 "<DisallowStartIfOnBatteries>false", "<StopIfGoingOnBatteries>false", "IgnoreNew", "<Arguments>run"):
+        assert must in xml
+    assert "<LogonTrigger>" not in bsk_backup.task_xml("x.exe", "PC\\Jan", logon=False)
+
+    calls = []
+
+    def runner(cmd):
+        calls.append(cmd)
+        if cmd[1] == "/Query":
+            return subprocess.CompletedProcess(cmd, 1, b"", b"BLAD: zadanie nie istnieje")
+        if "/XML" in cmd and "LogonTrigger" in (tmp_path / "zadanie.xml").read_text(encoding="utf-16"):
+            return subprocess.CompletedProcess(cmd, 1, b"", "Odmowa dostępu.".encode("cp852"))
+        return subprocess.CompletedProcess(cmd, 0, b"SUKCES", b"")
+    exe = tmp_path / "bsk-backup-agent.exe"
+    monkeypatch.setenv("USERDOMAIN", "PC")
+    monkeypatch.setenv("USERNAME", "Jan")
+    st = bsk_backup.ensure_autostart(tmp_path, exe, runner)
+    assert st["task"].startswith("ok (co 10 minut") and len(calls) == 3 and not (tmp_path / "zadanie.xml").exists()
+
+    def blocked(cmd):
+        return subprocess.CompletedProcess(cmd, 1, b"", "Odmowa dostępu.".encode("cp852"))
+    assert bsk_backup.ensure_autostart(tmp_path, exe, blocked)["task"] == "Odmowa dostępu."
+
+    good = bsk_backup.task_xml(str(exe), "PC\\Jan").encode("utf-16")
+    calls.clear()
+    assert bsk_backup.ensure_autostart(tmp_path, exe, lambda cmd: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, good, b""))["task"] == "ok"
+    assert len(calls) == 1  # zadanie już jest — bez ponownego zakładania
+
+    # druga kopia programu (np. z Harmonogramu zadań) kończy się po cichu, gdy pierwsza działa
+    lock = bsk_backup.SingleInstance(tmp_path / "agent.lock")
+    assert bsk_backup.main(["--dir", str(tmp_path), "run"]) == 0
+    del lock
