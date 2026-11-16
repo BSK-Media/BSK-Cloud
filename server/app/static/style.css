@@ -824,3 +824,18 @@ details.issue summary::-webkit-details-marker { display: none; }
 b.good { color: #0a7a0a; }
 .mini-bar { vertical-align: middle; }
 @media (max-width: 900px) { .metric-mini { grid-template-columns: 1fr; margin-left: 0; } .stat { border-left: 0; } .phase { grid-template-columns: 1fr auto; } .phase svg { display: none; } }
+
+/* zakładka Sieć (Network) */
+.net-summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px 18px; }
+.net-summary span { display: block; font-size: .78rem; color: var(--muted); }
+.net-summary b { font-size: 1.2rem; }
+.t-blue { color: #2a78d6; } .t-red { color: var(--critical); }
+.net-filters { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; padding: 12px 16px; }
+.net-filters input[name=q] { flex: 1 1 260px; }
+.chip-link.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.net-table td { vertical-align: middle; }
+.net-name { max-width: 420px; }
+.net-table tr.err td { background: #fdf0f0; }
+.wf-row { display: block; }
+.net-filters .chip-link { padding: 4px 10px; font-size: .82rem; border-radius: 99px; }
+.net-filters select { width: auto; flex: 0 0 auto; }

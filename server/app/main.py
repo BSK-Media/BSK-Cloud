@@ -1759,6 +1759,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ctx["psi"] = sitereport.latest_psi(db, site_id, strategy)
             ctx["psi_hist"] = sitereport.psi_history(db, site_id, strategy)
             ctx["psi_other"] = sitereport.latest_psi(db, site_id, "mobile" if strategy == "desktop" else "desktop")
+        elif tab == "siec":
+            ctx["psi"] = sitereport.latest_psi(db, site_id, strategy)
+            q = request.query_params
+            ctx["nf"] = {"typ": q.get("typ", ""), "q": q.get("q", "")[:100], "sort": q.get("sort", "start"), "zew": q.get("zew") == "1"}
+            net = (ctx["psi"] or {}).get("network") or {}
+            ctx["net"] = net
+            ctx["net_rows"] = sitereport.filter_network(net.get("rows", []), ctx["nf"]["typ"], ctx["nf"]["q"],
+                                                        ctx["nf"]["sort"], ctx["nf"]["zew"])
         elif tab in ("analityka", "google"):
             rng = sitereport.date_range("wlasny" if wlasny else zakres, od, do, por)
             ctx["rng"] = rng
