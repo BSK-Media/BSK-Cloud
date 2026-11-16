@@ -1,0 +1,62 @@
+{% import "_ui.html" as ui with context %}
+{% if not audit or audit.data.facts.og is not defined %}
+<section class="card">{{ ui.empty("Podgląd udostępniania i dane SEO pojawią się po pełnej ocenie strony — kliknij „Audytuj teraz” (u góry).", "link") }}</section>
+{% else %}
+{% set f = audit.data.facts %}{% set og = f.og %}
+{% set host = (f.final_url or site.url).split('/')[2] if '//' in (f.final_url or site.url) else site.url %}
+{% set sh_title = og['og:title'] or f.title %}{% set sh_desc = og['og:description'] or f.description %}
+<section class="card" id="podglad">
+  <div class="card-head">{{ ui.icon("link") }}<h2>Podgląd przy udostępnianiu i w Google</h2><span class="spacer"></span>
+    <span class="small muted">tak widzą stronę klienci</span></div>
+  <div class="grid g-2">
+    <div>
+      <h3 class="small">Facebook, Messenger, LinkedIn, WhatsApp</h3>
+      <div class="og-card">
+        {% if og_img %}<img src="/admin/agent/sites/{{ site.id }}/og-obraz" alt="Obrazek podglądu" loading="lazy">
+        {% else %}<div class="og-noimg">{{ ui.icon("img") }}<span>{{ 'Obrazek og:image nie wczytuje się' if og['og:image'] else 'Brak obrazka (og:image) — Facebook pokaże losowe zdjęcie ze strony albo nic' }}</span></div>{% endif %}
+        <div class="og-body"><div class="og-host">{{ host|upper }}</div>
+          <div class="og-title">{{ sh_title or host }}</div>
+          {% if sh_desc %}<div class="og-desc">{{ sh_desc }}</div>{% endif %}</div>
+      </div>
+      <dl class="kv-rows mt small">
+        <div><dt>og:title</dt><dd>{{ og['og:title'] or '— (użyto tytułu strony)' }}</dd></div>
+        <div><dt>og:description</dt><dd>{{ og['og:description'] or ('— (użyto opisu meta)' if f.description else '—') }}</dd></div>
+        <div><dt>og:image</dt><dd>{% if f.og_image and f.og_image.ok %}{{ f.og_image.w ~ '×' ~ f.og_image.h ~ ' px, ' if f.og_image.w }}{{ f.og_image.kb }} KB{% elif og['og:image'] %}nie wczytuje się{% else %}—{% endif %}</dd></div>
+        <div><dt>twitter:card</dt><dd>{{ og['twitter:card'] or '—' }}</dd></div>
+      </dl>
+    </div>
+    <div>
+      <h3 class="small">Wynik w wyszukiwarce Google</h3>
+      <div class="serp">
+        <div class="serp-host">{{ host }}</div>
+        <div class="serp-title">{{ (f.title or host)|truncate(62, true, '…') }}</div>
+        <div class="serp-desc">{{ (f.description or 'Brak opisu meta — Google pokaże przypadkowy fragment tekstu ze strony.')|truncate(160, true, '…') }}</div>
+      </div>
+      <p class="hint">Tytuł: {{ f.title|length }} znaków (zalecane 30–60) · opis: {{ f.description|length }} znaków (zalecane 70–160).</p>
+      {% if not (og['og:title'] and og['og:description'] and og['og:image']) %}
+      {% set tags = '<meta property="og:title" content="' ~ sh_title ~ '">\n'
+        ~ '<meta property="og:description" content="' ~ (sh_desc or 'Krótki opis firmy, 1–2 zdania') ~ '">\n'
+        ~ '<meta property="og:image" content="' ~ (og['og:image'] or 'https://' ~ host ~ '/podglad-1200x630.jpg') ~ '">\n'
+        ~ '<meta property="og:url" content="' ~ (f.final_url or site.url) ~ '">\n'
+        ~ '<meta property="og:type" content="website">\n<meta name="twitter:card" content="summary_large_image">' %}
+      <h3 class="small mt">Brakujące znaczniki — gotowe do wklejenia w &lt;head&gt;</h3>
+      <pre class="code-snippet">{{ tags }}</pre>
+      <button type="button" class="btn-sm" data-copy-text="{{ tags }}">{{ ui.icon("copy") }}Kopiuj</button>
+      {% endif %}
+    </div>
+  </div>
+</section>
+<section class="card">
+  <div class="card-head">{{ ui.icon("search") }}<h2>Podstawy SEO strony głównej</h2></div>
+  <dl class="kv-rows">
+    <div><dt>Tytuł</dt><dd class="small">{{ f.title or '—' }} <span class="muted">({{ f.title|length }} zn.)</span></dd></div>
+    <div><dt>Opis meta</dt><dd class="small">{{ f.description or '—' }} <span class="muted">({{ f.description|length }} zn.)</span></dd></div>
+    <div><dt>Nagłówki H1</dt><dd class="small">{{ f.h1|join(' · ') or '—' }}</dd></div>
+    <div><dt>robots.txt / mapa strony</dt><dd class="small">{{ 'jest' if f.robots else 'brak' }} / {{ f.sitemap or 'brak' }}</dd></div>
+    {% set t = f.tech or {} %}
+    <div><dt>Dane strukturalne</dt><dd class="small">{{ (t.schema or [])|join(', ') or 'brak' }}</dd></div>
+    <div><dt>Tekst / śródtytuły H2</dt><dd class="small">{{ t.words }} słów / {{ t.h2 }}</dd></div>
+  </dl>
+</section>
+{% include "site/_pages_card.html" %}
+{% endif %}

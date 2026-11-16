@@ -234,15 +234,26 @@ def test_agent_flow(env, monkeypatch):
     assert not any("Oceń potencjał" in p for p in Ollama.prompts)  # ocena potencjału bez osobnego zapytania
     site_page = c.get(f"/admin/agent/sites/{site['id']}").text
     assert "Ocena i rekomendacja" in site_page and "Nowa strona internetowa" in site_page and "Wygląd strony" in site_page
-    assert "Strona wygląda na sprzed dekady." in site_page and "Sprawdzone podstrony" in site_page
+    assert "Strona wygląda na sprzed dekady." in site_page
+    for tab in ("Przegląd", "Błędy i zalecenia", "Szybkość", "SEO i udostępnianie", "Technologia"):
+        assert f"<span>{tab}</span>" in site_page
+    assert "?tab=analityka" not in site_page  # nowa firma: bez zakładek Analityka / Google / Integracje
+    seo_page = c.get(f"/admin/agent/sites/{site['id']}?tab=seo").text
+    assert "Podstrony" in seo_page and "Sprawdzone podstrony" in seo_page
+    errors_page = c.get(f"/admin/agent/sites/{site['id']}?tab=bledy").text
+    assert "Jak naprawić:" in errors_page and "og:image (1200×630" in errors_page
+    assert "Błędy (" in c.get(f"/admin/agent/sites/{site['id']}?tab=bledy&poziom=bledy").text
+    speed_page = c.get(f"/admin/agent/sites/{site['id']}?tab=szybkosc").text
+    assert "Dodaj klucz PageSpeed" in speed_page or "Brak testu szybkości" in speed_page
+    tech_page = c.get(f"/admin/agent/sites/{site['id']}?tab=technologia").text
+    assert "Pliki JavaScript" in tech_page and "/app.js" in tech_page and "12 KB" in tech_page
+    site_page = seo_page
     # podgląd udostępniania: obrazek og:image pobrany przez portal, za mały; gotowe znaczniki do wklejenia
     assert "Podgląd przy udostępnianiu i w Google" in site_page and "300×200 px" in site_page
     assert 'property="og:title"' in site_page.replace("&lt;", "<").replace("&#34;", '"').replace("&quot;", '"')
     og = c.get(f"/admin/agent/sites/{site['id']}/og-obraz")
     assert og.headers["content-type"] == "image/png" and og.content == OG_PNG
     assert "tylko 300×200 px" in " ".join(i["text"] for i in json.loads(audit["report"])["issues"])
-    # bez klucza PageSpeed: rozmiary skryptów
-    assert "Skrypty i obciążenie strony" in site_page and "/app.js" in site_page and "12 KB" in site_page
     assert c.get(f"/admin/agent/sites/{site['id']}/zrzut/telefon.jpg").content.startswith(b"\xff\xd8")
     assert c.get(f"/admin/agent/sites/{site['id']}/zrzut/..%2Fx.jpg").status_code == 404
     assert "Przebudowa strony" in c.get("/admin/agent/firmy").text

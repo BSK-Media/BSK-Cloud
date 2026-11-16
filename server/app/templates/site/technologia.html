@@ -1,0 +1,43 @@
+{% import "_ui.html" as ui with context %}
+{% if not audit %}<section class="card">{{ ui.empty("Brak oceny — kliknij „Audytuj teraz”.", "cpu") }}</section>{% else %}
+{% set d = audit.data %}
+<section class="card">
+  <div class="card-head">{{ ui.icon("cpu") }}<h2>Technologia i serwer</h2><span class="spacer"></span><span class="small muted">audyt {{ audit.ts|dt }}</span></div>
+  {% set f = d.facts %}
+  <dl class="kv-rows mt">
+    {% if f.title is defined %}<div><dt>Tytuł</dt><dd class="small">{{ f.title or '—' }}</dd></div>{% endif %}
+    {% if f.description is defined %}<div><dt>Opis</dt><dd class="small">{{ f.description or '—' }}</dd></div>{% endif %}
+    {% if f.ttfb_ms is defined %}<div><dt>Odpowiedź serwera</dt><dd>{{ f.ttfb_ms }} ms</dd></div>{% endif %}
+    {% if f.html_kb is defined %}<div><dt>Rozmiar HTML</dt><dd>{{ f.html_kb }} KB · kompresja: {{ f.compression or '—' }}</dd></div>{% endif %}
+    {% if f.images is defined %}<div><dt>Obrazy / skrypty / style</dt><dd>{{ f.images }} / {{ f.scripts }} / {{ f.styles }}</dd></div>{% endif %}
+    {% set t = f.tech or {} %}
+    {% if t.cms %}<div><dt>System strony</dt><dd>{{ t.cms }}{% if t.page_builder %} + {{ t.page_builder }}{% endif %}{% if t.wp_version %} {{ t.wp_version }}{% endif %}</dd></div>{% endif %}
+    {% if t.jquery or t.bootstrap %}<div><dt>Biblioteki</dt><dd>{% if t.jquery %}jQuery {{ t.jquery }}{% endif %}{% if t.jquery and t.bootstrap %}, {% endif %}{% if t.bootstrap %}Bootstrap {{ t.bootstrap }}{% endif %}</dd></div>{% endif %}
+    {% if t.copyright_year %}<div><dt>Rok w stopce</dt><dd>{{ t.copyright_year }}</dd></div>{% endif %}
+    {% if t.words is defined %}<div><dt>Tekst na stronie głównej</dt><dd>{{ t.words }} słów, {{ t.h2 }} śródtytułów</dd></div>{% endif %}
+    {% if t.analytics is defined %}<div><dt>Analityka</dt><dd>{{ t.analytics|join(", ") or "brak" }}</dd></div>{% endif %}
+    {% if t.schema is defined %}<div><dt>Dane strukturalne</dt><dd>{{ t.schema|join(", ") or "brak" }}</dd></div>{% endif %}
+    {% if t.social is defined %}<div><dt>Media społecznościowe</dt><dd>{{ t.social|join(", ") or "brak" }}</dd></div>{% endif %}
+    {% if t.phone_link is defined %}<div><dt>Kontakt</dt><dd>{{ 'telefon klikalny' if t.phone_link else 'telefon nieklikalny' }} · {{ 'formularz' if t.form else 'bez formularza' }}</dd></div>{% endif %}
+  </dl>
+</section>
+<section class="card">
+  <div class="card-head">{{ ui.icon("list") }}<h2>Wszystkie uwagi audytu</h2><span class="spacer"></span><a class="button btn-sm" href="?tab=bledy">Z instrukcją naprawy</a></div>
+  {% if d.issues %}
+  <div class="table-wrap"><table class="list compact"><tbody>
+    {% for area, items in d.issues|groupby('area') %}
+    <tr class="group"><td colspan="2"><b>{{ area }}</b> <span class="small muted">{{ items|length }}</span></td></tr>
+    {% for i in items|sort(attribute='level') %}<tr>
+      <td class="nowrap"><span class="tag {{ 'danger' if i.level == 'error' else 'warn' }}">{{ 'błąd' if i.level == 'error' else 'uwaga' }}</span></td>
+      <td class="small">{{ i.text }}</td></tr>{% endfor %}{% endfor %}
+  </tbody></table></div>
+  {% else %}<p><span class="tag ok">● bez uwag</span></p>{% endif %}
+</section>
+{% if d.facts.scripts_static %}{% set f = d.facts %}
+<section class="card"><div class="card-head">{{ ui.icon("cpu") }}<h2>Pliki JavaScript</h2></div>
+  <div class="table-wrap"><table class="list compact"><thead><tr><th>Skrypt</th><th></th><th class="num">Rozmiar</th></tr></thead><tbody>
+    {% for x in f.scripts_static %}<tr><td class="small">{{ x.url }}</td><td>{% if x.third %}<span class="tag">zewnętrzny</span>{% endif %}</td><td class="num"><b>{{ x.kb }} KB</b></td></tr>{% endfor %}
+  </tbody></table></div>
+  <p class="hint mt">{% if f.psi_error %}Test PageSpeed nie powiódł się: {{ f.psi_error }}. {% endif %}Czas wykonania każdego skryptu, blokowanie strony i usługi zewnętrzne pokazuje test PageSpeed — wymaga klucza w <a href="/admin/agent/settings">Ustawieniach</a>.</p>
+</section>{% endif %}
+{% endif %}

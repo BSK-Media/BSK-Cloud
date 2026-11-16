@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import shutil
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
@@ -26,7 +27,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import agents, ai, backup, charts, chunks, gsc, integrations, leads, monitor, office, report, review, security, storage, sysinfo, thumbs, transfers
+from . import agents, ai, backup, charts, chunks, gsc, integrations, leads, monitor, office, report, reportcharts, review, security, sitereport, speed, storage, sysinfo, thumbs, transfers
 from .secretbox import SecretBox, mask
 from .config import Settings
 from .db import Database, iso_in, now_iso
@@ -137,6 +138,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     monitor.init(db)
     leads.init(db)
     integrations.init(db)
+    speed.init(db)
     box = SecretBox(settings.secret_key)
     ai_cfg = ai.Config(url=settings.ai_url, model=monitor.state_get(db, "ai_model") or settings.ai_model)
     # zrzuty ekranu stron do oceny wyglądu (kontener „zrzuty”, profil „ai”); obrazy obok bazy, na SSD
@@ -170,7 +172,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     integ = integrations.Integrations(db, box, ai_cfg, notify_alert=agent_alert,
                                       psi_url=os.environ.get("BSK_PSI_URL", gsc.PSI_URL),
                                       token_url=os.environ.get("BSK_GOOGLE_TOKEN_URL", gsc.TOKEN_URL),
-                                      ga_url=os.environ.get("BSK_GA_URL", gsc.GA_URL))
+                                      ga_url=os.environ.get("BSK_GA_URL", gsc.GA_URL),
+                                      gsc_url=os.environ.get("BSK_GSC_URL", gsc.GSC_URL))
     review.CONFIG["pagespeed"] = integ.pagespeed  # pełna ocena: skrypty i wydajność z PageSpeed (gdy jest klucz)
     site_agent = monitor.Agent(
         db, ai_cfg,
@@ -196,6 +199,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     templates.env.filters["ftype"] = _file_kind
     templates.env.globals["charts"] = charts
     templates.env.filters["fromjson"] = lambda v: json.loads(v) if v else {}
+    templates.env.filters["todate"] = lambda v: datetime.fromisoformat(v).date() if v else None
+    templates.env.filters["ms_to_s"] = lambda v: round(v / 1000, 2) if v is not None else None
+    templates.env.filters["type_kb"] = lambda row: (row[0], row[2])
+    templates.env.filters["ga_pair"] = lambda r: (sitereport.pl_name(r["name"]), r["v"][0])
+    templates.env.filters["gs_pair"] = lambda r: (sitereport.pl_name(r["name"]), r["clicks"])
     templates.env.globals["office_enabled"] = bool(settings.office_url and settings.office_secret)
     templates.env.globals["doc_type"] = office.doc_type
     templates.env.globals["nas_host"] = urllib.parse.urlsplit(settings.lan_url).hostname or "IP-NAS"
@@ -1719,27 +1727,81 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         require_user(request, "admin")
         return render(request, "_agent_now.html", ov=site_agent.overview(), ai_model=ai_cfg.model)
 
+    report_cache = sitereport.Cache()
+
     @app.get("/admin/agent/sites/{site_id}", response_class=HTMLResponse)
-    def agent_site(request: Request, site_id: int):
+    def agent_site(request: Request, site_id: int, tab: str = "przeglad", zakres: str = "28", od: str = "", do: str = "",
+                   por: str = "poprzedni", s: str = "mobile", wlasny: str = ""):
         require_user(request, "admin")
         site = site_or_404(site_id)
+        tabs = sitereport.tabs_for(site["kind"])
+        tab = tab if tab in {t[0] for t in tabs} else "przeglad"
         audit = db.one("SELECT * FROM site_audits WHERE site_id = ? ORDER BY ts DESC LIMIT 1", site_id)
-        history = db.all("SELECT ts, score FROM site_audits WHERE site_id = ? ORDER BY ts DESC LIMIT 12", site_id)
-        since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-        week = db.one("SELECT COUNT(*) AS n, SUM(ok) AS ok, AVG(CASE WHEN ok = 1 THEN ms END) AS ms"
-                      " FROM site_checks WHERE site_id = ? AND ts > ?", site_id, since)
-        recent = db.all("SELECT * FROM site_checks WHERE site_id = ? ORDER BY ts DESC LIMIT 96", site_id)
-        draft = db.one("SELECT * FROM mail_drafts WHERE site_id = ? AND status = 'new' ORDER BY ts DESC LIMIT 1", site_id)
+        audit_d = dict(audit) | {"data": json.loads(audit["report"]),
+                                 "rv": json.loads(audit["review"]) if audit["review"] else None} if audit else None
+        sv = integrations.site_view(site, box)
+        strategy = "desktop" if s == "desktop" else "mobile"
+        ctx: dict = {"tab": tab, "tabs": tabs, "strategy": strategy}
+        if tab == "przeglad":
+            since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+            ctx["week"] = db.one("SELECT COUNT(*) AS n, SUM(ok) AS ok, AVG(CASE WHEN ok = 1 THEN ms END) AS ms"
+                                 " FROM site_checks WHERE site_id = ? AND ts > ?", site_id, since)
+            ctx["recent"] = list(reversed(db.all("SELECT * FROM site_checks WHERE site_id = ? ORDER BY ts DESC LIMIT 96", site_id)))
+            ctx["history"] = db.all("SELECT ts, score FROM site_audits WHERE site_id = ? ORDER BY ts DESC LIMIT 12", site_id)
+            ctx["draft"] = db.one("SELECT * FROM mail_drafts WHERE site_id = ? AND status = 'new' ORDER BY ts DESC LIMIT 1", site_id)
+            ctx["shots"] = [k for k in review.SHOTS if (p := review.shot_path(site_id, k)) and p.exists()]
+            ctx["psi_m"] = sitereport.latest_psi(db, site_id, "mobile")
+        elif tab == "bledy":
+            psi_full = sitereport.latest_psi(db, site_id, "mobile")
+            ctx["issues"] = sitereport.all_issues(audit_d["data"] if audit_d else None, sv["integ_data"], psi_full)
+            ctx["poziom"] = request.query_params.get("poziom", "")
+        elif tab == "szybkosc":
+            ctx["psi"] = sitereport.latest_psi(db, site_id, strategy)
+            ctx["psi_hist"] = sitereport.psi_history(db, site_id, strategy)
+            ctx["psi_other"] = sitereport.latest_psi(db, site_id, "mobile" if strategy == "desktop" else "desktop")
+        elif tab in ("analityka", "google"):
+            rng = sitereport.date_range("wlasny" if wlasny else zakres, od, do, por)
+            ctx["rng"] = rng
+            sa = integ.google_account()
+            prop = site["ga_property"] if tab == "analityka" else site["gsc_property"]
+            if sa and prop:
+                key = (tab, site_id, prop, rng["cur"], rng["cmp"])
+                try:
+                    if tab == "analityka":
+                        ctx["ga"] = report_cache.get(key, lambda: gsc.ga_report(sa, prop, rng["cur"], rng["cmp"],
+                                                                                token_url=integ.token_url, base=integ.ga_url))
+                    else:
+                        ctx["gs"] = report_cache.get(key, lambda: gsc.gsc_report(sa, prop, rng["cur"], rng["cmp"],
+                                                                                 token_url=integ.token_url, base=integ.gsc_url))
+                except urllib.error.HTTPError as exc:
+                    ctx["g_error"] = (f"Google odmówił dostępu (HTTP {exc.code}) — sprawdź, czy konto usługi jest dodane do tej "
+                                      "usługi i czy w Google Cloud jest włączone odpowiednie API.") if exc.code in (401, 403) \
+                        else f"Google zwrócił błąd HTTP {exc.code}."
+                except Exception as exc:  # noqa: BLE001
+                    ctx["g_error"] = f"Nie udało się pobrać danych: {str(exc)[:200]}"
+        elif tab == "seo":
+            ctx["og_img"] = bool((p := review.shot_path(site_id, "og")) and p.exists())
         return agent_render(request, "admin_agent_site.html", "agent-leads" if site["kind"] == "lead" else "agent-sites",
-                      site=site, sv=integrations.site_view(site, box),
-                      google_ok=bool(integ.google_account()), psi_ok=bool(integ.psi_key()),
-                      audit=dict(audit) | {"data": json.loads(audit["report"]),
-                                           "rv": json.loads(audit["review"]) if audit["review"] else None} if audit else None,
-                      areas=review.AREAS, verdicts=review.VERDICTS,
-                      shots=[k for k in review.SHOTS if (p := review.shot_path(site_id, k)) and p.exists()],
-                      og_img=bool((p := review.shot_path(site_id, "og")) and p.exists()),
-                      history=history, week=week, recent=list(reversed(recent)), site_ssl_days=_ssl_days(site["ssl_expires"]),
-                      draft=draft)
+                            site=site, sv=sv, google_ok=bool(integ.google_account()), psi_ok=bool(integ.psi_key()),
+                            audit=audit_d, areas=review.AREAS, verdicts=review.VERDICTS, rc=reportcharts,
+                            sr=sitereport, site_ssl_days=_ssl_days(site["ssl_expires"]), **ctx)
+
+    @app.post("/admin/agent/sites/{site_id}/szybkosc")
+    def agent_site_speed_now(request: Request, site_id: int, csrf: str = Form("")):
+        check_csrf(request, csrf)
+        require_user(request, "admin")
+        site = site_or_404(site_id)
+        if not integ.psi_key():
+            flash(request, "Najpierw wpisz klucz PageSpeed w Ustawieniach agenta.", "error")
+        else:
+            def run():
+                for strategy in ("mobile", "desktop"):
+                    site_agent.progress(f"{site['name'] or site['url']}: test PageSpeed ({'telefon' if strategy == 'mobile' else 'komputer'})")
+                    integ.pagespeed(site["url"], site_id, strategy)
+                site_agent._set("work", None)
+            in_background("pagespeed", run)
+            flash(request, "Test szybkości (telefon i komputer) trwa w tle — wynik za 1–2 minuty, odśwież stronę.")
+        return RedirectResponse(f"/admin/agent/sites/{site_id}?tab=szybkosc", 303)
 
     @app.get("/admin/agent/sites/{site_id}/zrzut/{kind}.jpg")
     def agent_site_shot(request: Request, site_id: int, kind: str):

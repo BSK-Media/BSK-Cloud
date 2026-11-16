@@ -89,6 +89,27 @@ class Google(Base):
         if self.path.endswith(":runReport"):  # Google Analytics 4
             Google.ga.append((self.path, req))
             dims = [d["name"] for d in req.get("dimensions", [])]
+            ranges = req["dateRanges"]
+            if ranges[0].get("name"):  # raport z zakresem dat: wiersze dla każdego zakresu + wymiar „dateRange”
+                rows = []
+                for ri, rg in enumerate(ranges):
+                    k = 2 if ri == 0 else 1  # bieżący okres ma 2x więcej
+                    tag = [{"value": rg["name"]}]
+                    n_metrics = len(req["metrics"])
+                    if not dims:
+                        vals = [100 * k, 40 * k, 150 * k, 90 * k, 600 * k, 6 * k, 0.55, 80, 0.4, k, 500.5 * k][:n_metrics]
+                        rows.append({"dimensionValues": tag, "metricValues": [{"value": str(v)} for v in vals]})
+                    elif dims == ["date"]:
+                        start = __import__("datetime").date.fromisoformat(rg["startDate"])
+                        for d in range(3):
+                            day = (start + __import__("datetime").timedelta(days=d)).strftime("%Y%m%d")
+                            rows.append({"dimensionValues": [{"value": day}] + tag,
+                                         "metricValues": [{"value": str(10 * k + d)} for _ in range(n_metrics)]})
+                    else:
+                        for i, nm in enumerate(["Organic Search", "Direct", "mobile"]):
+                            rows.append({"dimensionValues": [{"value": nm}] + tag,
+                                         "metricValues": [{"value": str((50 - i) * k)} for _ in range(n_metrics)]})
+                return self.send({"rows": rows})
             if not dims:
                 cur = req["dateRanges"][0]["startDate"] == "7daysAgo"
                 vals = ["120", "200", "540", "3", "0.61", "95"] if cur else ["150", "400", "900", "12", "0.6", "80"]
@@ -100,8 +121,10 @@ class Google(Base):
                      "deviceCategory": ["mobile", "desktop"]}[dims[0]]
             return self.send({"rows": [{"dimensionValues": [{"value": n}], "metricValues": [{"value": str(100 - i)}]}
                                        for i, n in enumerate(names)]})
+        if req.get("dimensions") == ["date"]:
+            return self.send({"rows": [{"keys": [req["startDate"]], "clicks": 7, "impressions": 70, "position": 5.0}]})
         if "dimensions" in req:
-            return self.send({"rows": [{"keys": ["dentysta wrocław"], "clicks": 40, "position": 3.2}]})
+            return self.send({"rows": [{"keys": ["dentysta wrocław"], "clicks": 40, "impressions": 400, "ctr": 0.1, "position": 3.2}]})
         old = req["startDate"] < "2026-01-01" or Google.prev_marker == req["startDate"]
         Google.prev_marker = Google.prev_marker or req["startDate"]
         clicks = 100 if Google.calls % 2 else 50
@@ -109,8 +132,14 @@ class Google(Base):
         return self.send({"rows": [{"clicks": clicks, "impressions": 2000, "ctr": 0.03, "position": 8.4}]})
 
     def do_GET(self):  # PageSpeed
-        return self.send({"lighthouseResult": {"categories": {"performance": {"score": 0.42}, "seo": {"score": 0.9},
-                                                              "accessibility": {"score": 0.8}},
+        return self.send({"loadingExperience": {"metrics": {
+                              "LARGEST_CONTENTFUL_PAINT_MS": {"percentile": 3900, "category": "AVERAGE"},
+                              "INTERACTION_TO_NEXT_PAINT": {"percentile": 180, "category": "FAST"},
+                              "CUMULATIVE_LAYOUT_SHIFT_SCORE": {"percentile": 5, "category": "FAST"}}},
+                          "lighthouseResult": {"lighthouseVersion": "12.3.0", "categories": {
+                              "performance": {"score": 0.42, "auditRefs": [{"id": "largest-contentful-paint", "group": "metrics"},
+                                                                          {"id": "render-blocking-resources", "group": "load-opportunities"}]},
+                              "seo": {"score": 0.9}, "accessibility": {"score": 0.8}, "best-practices": {"score": 0.96}},
                                                "audits": PSI_AUDITS}})
 
 
@@ -118,22 +147,40 @@ Google.calls = 0
 Google.prev_marker = ""
 Google.ga = []
 PSI_AUDITS = {
-    "largest-contentful-paint": {"displayValue": "5,1 s"}, "cumulative-layout-shift": {"displayValue": "0,02"},
+    "largest-contentful-paint": {"displayValue": "5,1 s", "numericValue": 5100},
+    "cumulative-layout-shift": {"displayValue": "0,02", "numericValue": 0.02},
+    "first-contentful-paint": {"displayValue": "1,2 s", "numericValue": 1200},
+    "speed-index": {"displayValue": "4,0 s", "numericValue": 4000},
     "total-blocking-time": {"displayValue": "1 340 ms", "numericValue": 1340},
+    "largest-contentful-paint-element": {"details": {"type": "list", "items": [
+        {"type": "table", "items": [{"node": {"snippet": '<img class="hero" src="/baner.jpg">', "nodeLabel": "Baner główny"}}]},
+        {"type": "table", "items": [{"phase": "TTFB", "timing": 600}, {"phase": "Load Delay", "timing": 2900},
+                                    {"phase": "Load Time", "timing": 1400}, {"phase": "Render Delay", "timing": 200}]}]}},
+    "render-blocking-resources": {"title": "Wyeliminuj zasoby blokujące renderowanie", "score": 0.2,
+        "description": "Zasoby blokują pierwsze wyrenderowanie. [Więcej informacji](https://developer.chrome.com/x).",
+        "displayValue": "Potencjalne oszczędności: 820 ms",
+        "details": {"overallSavingsMs": 820, "items": [{"url": "https://klient.pl/style.css", "wastedMs": 820, "totalBytes": 90000}]}},
+    "screenshot-thumbnails": {"details": {"items": [{"timing": 300, "data": "data:image/jpeg;base64,AAAA"},
+                                                    {"timing": 600, "data": "data:image/jpeg;base64,BBBB"}]}},
+    "resource-summary": {"details": {"items": [
+        {"resourceType": "total", "requestCount": 40, "transferSize": 3145728},
+        {"resourceType": "script", "label": "Skrypt", "requestCount": 22, "transferSize": 1500000},
+        {"resourceType": "image", "label": "Obraz", "requestCount": 12, "transferSize": 1200000}]}},
     "total-byte-weight": {"numericValue": 3 * 1024 * 1024},
     "bootup-time": {"details": {"items": [
         {"url": "https://klient.pl/wp-content/plugins/slider/slider.min.js", "total": 1820.4, "scripting": 1500, "scriptParseCompile": 120},
         {"url": "https://www.googletagmanager.com/gtm.js?id=GTM-X", "total": 640, "scripting": 600, "scriptParseCompile": 30},
         {"url": "Unattributable", "total": 0}]}},
     "network-requests": {"details": {"items": [
-        {"url": "https://klient.pl/wp-content/plugins/slider/slider.min.js", "resourceType": "Script", "transferSize": 420000},
-        {"url": "https://klient.pl/style.css", "resourceType": "Stylesheet", "transferSize": 900000}]}},
+        {"url": "https://klient.pl/", "resourceType": "Document", "transferSize": 40000, "networkRequestTime": 1000, "networkEndTime": 1600},
+        {"url": "https://klient.pl/wp-content/plugins/slider/slider.min.js", "resourceType": "Script", "transferSize": 420000,
+         "networkRequestTime": 1700, "networkEndTime": 2900},
+        {"url": "https://klient.pl/style.css", "resourceType": "Stylesheet", "transferSize": 900000, "networkRequestTime": 1650, "networkEndTime": 2400}]}},
     "unused-javascript": {"details": {"items": [
         {"url": "https://klient.pl/wp-content/plugins/slider/slider.min.js", "wastedBytes": 300000}]}},
     "third-party-summary": {"details": {"items": [
         {"entity": {"text": "Google Tag Manager", "type": "link"}, "transferSize": 120000, "blockingTime": 310, "mainThreadTime": 700},
         {"entity": "Facebook", "transferSize": 80000, "blockingTime": 0, "mainThreadTime": 150}]}},
-    "render-blocking-resources": {"details": {"items": [{"url": "https://klient.pl/style.css", "wastedMs": 820, "totalBytes": 90000}]}},
     "mainthread-work-breakdown": {"details": {"items": [{"group": "scriptEvaluation", "groupLabel": "Wykonanie skryptów", "duration": 2400}]}},
 }
 
@@ -247,6 +294,21 @@ def test_search_console_and_pagespeed():
         assert "Spadek kliknięć z Google o 50%" in r["issues"][0]["text"] and r["queries"][0]["query"] == "dentysta wrocław"
         p = gsc.pagespeed("https://klient.pl/", "AIzaTEST", base=g_url + "/psi")
         assert p["performance"] == 42 and p["seo"] == 90 and p["lcp"] == "5,1 s" and p["issues"][0]["level"] == "error"
+        assert "Pierwszy" not in p["issues"][0]["text"] and "Główna treść 5,1 s" in p["issues"][0]["text"]
+        from app import speed
+        full = speed.parse(speed.fetch("https://klient.pl/", "k", "mobile", g_url + "/psi"), "https://klient.pl/")
+        assert full["scores"] == {"performance": 42, "accessibility": 80, "best-practices": 96, "seo": 90}
+        assert {m["id"]: m["rating"] for m in full["metrics"]}["largest-contentful-paint"] == "poor"
+        assert full["field"][0]["name"] == "Główna treść (LCP)" and full["field"][0]["rating"] == "do poprawy"
+        assert full["lcp_element"]["selector"] == "Baner główny" and full["lcp_element"]["phases"][1] == {"phase": "Opóźnienie startu pobierania", "ms": 2900}
+        opp = full["opportunities"][0]
+        assert opp["title"] == "Wyeliminuj zasoby blokujące renderowanie" and opp["save_ms"] == 820
+        assert "Więcej informacji" not in opp["desc"] and opp["rows"][0] == {"label": "klient.pl/style.css", "ms": 820, "kb": 88}
+        assert full["waterfall"][0] == {"url": "klient.pl/", "type": "Document", "start": 0, "end": 600, "kb": 39}
+        assert len(full["filmstrip"]) == 2 and full["by_type"][0] == ["Skrypt", 22, 1465]
+        detail = " ".join(i["text"] for i in speed.issues(full))
+        assert "Baner główny" in detail and "Opóźnienie startu pobierania 2900 ms" in detail and "Google Tag Manager 310 ms" in detail
+        assert "style.css (820 ms)" in detail
         sc = p["scripts"]
         assert sc["bootup"][0]["url"] == "klient.pl/wp-content/plugins/slider/slider.min.js" and sc["bootup"][0]["total"] == 1820
         assert sc["heavy"] == [{"url": "klient.pl/wp-content/plugins/slider/slider.min.js",
@@ -254,8 +316,8 @@ def test_search_console_and_pagespeed():
         assert sc["third_party"][0] == {"entity": "Google Tag Manager", "kb": 117, "blocking": 310, "main": 700}
         assert sc["render_blocking"][0]["ms"] == 820 and sc["main_thread"][0]["group"] == "Wykonanie skryptów"
         texts = " ".join(i["text"] for i in p["issues"])
-        assert "blokują stronę na telefonie przez 1 340 ms" in texts and "slider.min.js (1.8 s)" in texts
-        assert "293 KB kodu JavaScript" in texts and p["weight_kb"] == 3072
+        assert "Skrypty blokują stronę przez 1 340 ms" in texts and "slider.min.js — 1820 ms (wykonanie 1500 ms" in texts
+        assert "293 KB JavaScriptu" in texts and p["weight_kb"] == 3072
         assert gsc.pagespeed("https://klient.pl/", "k", base=g_url + "/psi")["tbt_ms"] == 1340
         # Google Analytics 4: tydzień do tygodnia, kanały, strony, urządzenia, wykres
         Google.ga.clear()
@@ -280,6 +342,9 @@ def test_panel_settings_integrations_network_report(tmp_path, monkeypatch):
                           netmon.IF_DESCR + ".1": "LAN0", netmon.IF_OPER + ".1": 1})
     monkeypatch.setenv("BSK_AGENT_SCHEDULER", "0")
     monkeypatch.setenv("BSK_PSI_URL", g_url + "/psi")
+    monkeypatch.setenv("BSK_GOOGLE_TOKEN_URL", g_url + "/token")
+    monkeypatch.setenv("BSK_GA_URL", g_url)
+    monkeypatch.setenv("BSK_GSC_URL", g_url)
     app = create_app(Settings(data_dir=tmp_path, secret_key="x" * 40, cookie_secure=False, admin_username="admin",
                               admin_password="AdminHaslo123", ai_url="http://127.0.0.1:1"))
     db = app.state.db
@@ -315,7 +380,33 @@ def test_panel_settings_integrations_network_report(tmp_path, monkeypatch):
         texts = " ".join(i["text"] for i in res["issues"])
         assert "Akismet" in texts and "PHP 7.4" in texts and "Spadek kliknięć" in texts and "PageSpeed" in texts
         assert "Spadek odwiedzin" in texts and res["ga"]["current"]["users"] == 120
-        page = c.get(f"/admin/agent/sites/{site['id']}").text
+        # zakładki z zakresem dat: Analityka (GA4) i Wyniki w Google (Search Console) z porównaniem okresów
+        Google.ga.clear()
+        ga_page = c.get(f"/admin/agent/sites/{site['id']}?tab=analityka&zakres=wlasny&od=2026-10-01&do=2026-10-03&por=poprzedni&wlasny=1").text
+        req = Google.ga[0][1]
+        assert req["dateRanges"] == [{"startDate": "2026-10-01", "endDate": "2026-10-03", "name": "0"},
+                                     {"startDate": "2026-09-28", "endDate": "2026-09-30", "name": "1"}]
+        assert "1 października 2026 – 3 października 2026" in ga_page and "Użytkownicy" in ga_page
+        assert "Wyszukiwanie bezpłatne" in ga_page and "▲ 100" in ga_page and "Sesje dziennie" in ga_page
+        assert "<svg" in ga_page and "rchart" in ga_page and "Transakcje" in ga_page
+        n_calls = len(Google.ga)
+        c.get(f"/admin/agent/sites/{site['id']}?tab=analityka&zakres=wlasny&od=2026-10-01&do=2026-10-03&wlasny=1")
+        assert len(Google.ga) == n_calls  # 15 minut w pamięci podręcznej
+        g_page = c.get(f"/admin/agent/sites/{site['id']}?tab=google&zakres=7&por=rok").text
+        assert "Frazy, po których klienci znajdują stronę" in g_page and "dentysta wrocław" in g_page
+        assert "Kliknięcia z Google" in g_page
+        # zakładka Szybkość: pełny wynik z historii (telefon i komputer), wykresy, klatki, kolejność plików
+        sp = c.get(f"/admin/agent/sites/{site['id']}?tab=szybkosc").text
+        for phrase in ("Wyniki Google PageSpeed (telefon)", "Prawdziwi użytkownicy", "Jak wczytuje się strona",
+                       "Baner główny", "Wyeliminuj zasoby blokujące renderowanie", "Najdłużej wykonujące się skrypty",
+                       "Google Tag Manager", "Kolejność wczytywania plików", "Z czego składa się strona", "data:image/jpeg"):
+            assert phrase in sp, phrase
+        assert "Wyniki Google PageSpeed (komputer)" in c.get(f"/admin/agent/sites/{site['id']}?tab=szybkosc&s=desktop").text
+        assert db.one("SELECT COUNT(*) AS n FROM psi_runs")["n"] == 2
+        bl = c.get(f"/admin/agent/sites/{site['id']}?tab=bledy").text
+        assert "Szybkość (Google)" in bl and "do zyskania 0,8 s" in bl and "Zasoby blokują pierwsze wyrenderowanie" in bl
+        assert "Testuj teraz" in sp and c.post(f"/admin/agent/sites/{site['id']}/szybkosc", data={"csrf": tok}).status_code == 200
+        page = c.get(f"/admin/agent/sites/{site['id']}?tab=integracje").text
         assert "Google Analytics 4" in page and "Organic Search" in page and "telefon" in page and 'value="312345678"' in page
         assert "Integracje" in page and "WordPress + WooCommerce" in page and "dentysta wrocław" in page
         assert "abcd efgh" not in page and "cs_1" not in page

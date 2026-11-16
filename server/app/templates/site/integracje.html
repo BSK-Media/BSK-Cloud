@@ -1,0 +1,62 @@
+{% import "_ui.html" as ui with context %}
+{% set it = sv.integ_data %}
+<section class="card" id="integracje">
+  <div class="card-head">{{ ui.icon("key") }}<h2>Integracje</h2><span class="spacer"></span>
+    {% if site.integ_at %}<span class="small muted">sprawdzono {{ site.integ_at|ago }}</span>{% endif %}
+    <form method="post" action="/admin/agent/sites/{{ site.id }}/integrations" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}">
+      <button name="action" value="run" class="btn-sm">{{ ui.icon("refresh") }}Sprawdź teraz</button></form></div>
+  {% if it.issues %}
+  <div class="table-wrap"><table class="list compact"><tbody>
+    {% for i in it.issues %}<tr><td class="nowrap"><span class="tag {{ 'danger' if i.level == 'error' else 'warn' }}">{{ 'błąd' if i.level == 'error' else 'uwaga' }}</span></td>
+      <td class="small muted nowrap">{{ i.area }}</td><td class="small">{{ i.text }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% elif site.integ_at %}<p><span class="tag ok">● bez uwag</span></p>{% endif %}
+  <div class="grid g-2 mt">
+    {% if it.wp %}<div><h3>WordPress{{ ' + WooCommerce' if it.wp.woo }}</h3><dl class="kv-rows">
+      <div><dt>Wersja WordPress</dt><dd>{{ it.wp.version or 'ukryta' }}{% if it.wp.latest %} <span class="small muted">(najnowsza {{ it.wp.latest }})</span>{% endif %}</dd></div>
+      {% if it.wp.php %}<div><dt>PHP</dt><dd>{{ it.wp.php }}</dd></div>{% endif %}
+      {% if it.wp.plugins %}<div><dt>Wtyczki</dt><dd>{{ it.wp.plugins|length }}, nieaktualnych: {{ it.wp.outdated|length }}</dd></div>{% endif %}
+      {% if it.wp.orders %}<div><dt>Zamówienia (doba / średnio)</dt><dd>{{ it.wp.orders.day }} / {{ it.wp.orders.avg_week|round(1) }}{% if it.wp.orders.failed %} · <span class="danger">nieudane: {{ it.wp.orders.failed }}</span>{% endif %}</dd></div>{% endif %}
+    </dl></div>{% endif %}
+    {% if it.gsc and not it.gsc.error %}<div><h3>Google Search Console</h3><dl class="kv-rows">
+      <div><dt>Kliknięcia (7 dni)</dt><dd>{{ it.gsc.current.clicks }} <span class="small muted">poprzednio {{ it.gsc.previous.clicks }}{% if it.gsc.change is defined %}, {{ '+' if it.gsc.change > 0 }}{{ it.gsc.change }}%{% endif %}</span></dd></div>
+      <div><dt>Wyświetlenia</dt><dd>{{ it.gsc.current.impressions }}</dd></div>
+      <div><dt>CTR / średnia pozycja</dt><dd>{{ it.gsc.current.ctr }}% / {{ it.gsc.current.position }}</dd></div>
+      {% if it.gsc.queries %}<div><dt>Najważniejsze frazy</dt><dd class="small">{% for q in it.gsc.queries[:5] %}{{ q.query }} ({{ q.clicks }}){{ ', ' if not loop.last }}{% endfor %}</dd></div>{% endif %}
+    </dl></div>{% elif it.gsc and it.gsc.error %}<div><h3>Google Search Console</h3><p class="small danger">{{ it.gsc.error }}</p></div>{% endif %}
+    {% if it.ga and not it.ga.error %}{% set g = it.ga %}<div class="full"><h3>Google Analytics 4 <span class="small muted">ostatnie 7 dni</span></h3>
+      <div class="kpis kpis-sm">
+        {{ ui.kpi("Użytkownicy", g.current.users, "poprzednio " ~ g.previous.users, "users") }}
+        {{ ui.kpi("Sesje", g.current.sessions, ("poprzednio " ~ g.previous.sessions) ~ ((", " ~ ("+" if g.change > 0 else "") ~ g.change ~ "%") if g.change is defined else ""), "chart") }}
+        {{ ui.kpi("Kluczowe zdarzenia", g.current.key_events, "konwersje · poprzednio " ~ g.previous.key_events, "shield") }}
+        {{ ui.kpi("Zaangażowanie", g.current.engagement ~ "%", "śr. sesja " ~ (g.current.duration_s // 60) ~ " min " ~ (g.current.duration_s % 60) ~ " s", "clock") }}
+      </div>
+      {% if g.daily|length > 1 %}{{ charts.line_chart([("Sesje dziennie", g.daily, "#2a78d6")], "Sesje — ostatnie 28 dni", "sesje", start="28 dni temu", end="wczoraj") }}{% endif %}
+      <div class="grid g-3 mt">
+        {% if g.channels %}<div><h3 class="small">Skąd przychodzą</h3><dl class="kv-rows small">{% for c in g.channels %}<div><dt>{{ c.name }}</dt><dd>{{ c.value }}</dd></div>{% endfor %}</dl></div>{% endif %}
+        {% if g.pages %}<div><h3 class="small">Najczęściej oglądane</h3><dl class="kv-rows small">{% for c in g.pages %}<div><dt>{{ c.name|truncate(40, true, '…') }}</dt><dd>{{ c.value }}</dd></div>{% endfor %}</dl></div>{% endif %}
+        {% if g.devices %}<div><h3 class="small">Urządzenia</h3><dl class="kv-rows small">{% for c in g.devices %}<div><dt>{{ {'mobile': 'telefon', 'desktop': 'komputer', 'tablet': 'tablet'}.get(c.name, c.name) }}</dt><dd>{{ c.value }}</dd></div>{% endfor %}</dl></div>{% endif %}
+      </div>
+    </div>{% elif it.ga and it.ga.error %}<div><h3>Google Analytics 4</h3><p class="small danger">{{ it.ga.error }}</p></div>{% endif %}
+    {% if it.psi and not it.psi.error %}<div><h3>PageSpeed (telefon)</h3><dl class="kv-rows">
+      <div><dt>Wydajność</dt><dd>{{ it.psi.performance }}/100</dd></div><div><dt>SEO</dt><dd>{{ it.psi.seo }}/100</dd></div>
+      <div><dt>Dostępność</dt><dd>{{ it.psi.accessibility }}/100</dd></div><div><dt>LCP / CLS</dt><dd>{{ it.psi.lcp }} / {{ it.psi.cls }}</dd></div>
+    </dl></div>{% endif %}
+  </div>
+  <form method="post" action="/admin/agent/sites/{{ site.id }}/integrations" class="form-grid mt">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Search Console — nazwa usługi <input name="gsc_property" value="{{ site.gsc_property }}" placeholder="sc-domain:klient.pl lub https://www.klient.pl/">
+      <span class="hint">{% if google_ok %}Konto Google jest podłączone.{% else %}Najpierw podłącz konto Google w <a href="/admin/agent/settings">Ustawieniach</a>.{% endif %}</span></label>
+    <label>Google Analytics 4 — identyfikator usługi <input name="ga_property" value="{{ site.ga_property }}" inputmode="numeric" placeholder="np. 312345678">
+      <span class="hint">GA4 → Administracja → Szczegóły usługi → „Identyfikator usługi” (same cyfry, nie „G-…”).</span></label>
+    <label>E-mail kontaktowy klienta <input name="contact_email" type="email" value="{{ site.contact_email }}" placeholder="do gotowych e-maili"></label>
+    <label>WordPress — login administratora <input name="wp_user" value="{{ site.wp_user }}" autocomplete="off"></label>
+    <label>WordPress — hasło aplikacji <input name="wp_pass" type="password" autocomplete="new-password" placeholder="{{ sv.wp_pass_masked or 'xxxx xxxx xxxx xxxx xxxx xxxx' }}">
+      <span class="hint">Puste pole = bez zmian</span></label>
+    <label>WooCommerce — Consumer key <input name="wc_key" type="password" autocomplete="new-password" placeholder="{{ sv.wc_key_masked or 'ck_…' }}"></label>
+    <label>WooCommerce — Consumer secret <input name="wc_secret" type="password" autocomplete="new-password" placeholder="{{ sv.wc_secret_masked or 'cs_…' }}"></label>
+    <div class="row"><button name="action" value="save" class="primary">Zapisz</button>
+      {% if sv.wp_pass_masked or sv.wc_key_masked %}<button name="action" value="clear" class="ghost danger">Usuń dane WordPress/WooCommerce</button>{% endif %}
+      <a class="small" href="/admin/agent/settings">Jak zdobyć klucze?</a></div>
+  </form>
+</section>
