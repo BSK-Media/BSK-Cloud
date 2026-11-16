@@ -69,13 +69,106 @@
   {% elif shots %}<p class="hint mt">Model AI nie ocenił wyglądu — wybrany model nie rozpoznaje obrazów albo był niedostępny.</p>{% endif %}
 </section>
 {% endif %}
+{% if audit and audit.data.facts.og is defined %}
+{% set f = audit.data.facts %}{% set og = f.og %}
+{% set host = (f.final_url or site.url).split('/')[2] if '//' in (f.final_url or site.url) else site.url %}
+{% set sh_title = og['og:title'] or f.title %}{% set sh_desc = og['og:description'] or f.description %}
+<section class="card" id="podglad">
+  <div class="card-head">{{ ui.icon("link") }}<h2>Podgląd przy udostępnianiu i w Google</h2><span class="spacer"></span>
+    <span class="small muted">tak widzą stronę klienci</span></div>
+  <div class="grid g-2">
+    <div>
+      <h3 class="small">Facebook, Messenger, LinkedIn, WhatsApp</h3>
+      <div class="og-card">
+        {% if og_img %}<img src="/admin/agent/sites/{{ site.id }}/og-obraz" alt="Obrazek podglądu" loading="lazy">
+        {% else %}<div class="og-noimg">{{ ui.icon("img") }}<span>{{ 'Obrazek og:image nie wczytuje się' if og['og:image'] else 'Brak obrazka (og:image) — Facebook pokaże losowe zdjęcie ze strony albo nic' }}</span></div>{% endif %}
+        <div class="og-body"><div class="og-host">{{ host|upper }}</div>
+          <div class="og-title">{{ sh_title or host }}</div>
+          {% if sh_desc %}<div class="og-desc">{{ sh_desc }}</div>{% endif %}</div>
+      </div>
+      <dl class="kv-rows mt small">
+        <div><dt>og:title</dt><dd>{{ og['og:title'] or '— (użyto tytułu strony)' }}</dd></div>
+        <div><dt>og:description</dt><dd>{{ og['og:description'] or ('— (użyto opisu meta)' if f.description else '—') }}</dd></div>
+        <div><dt>og:image</dt><dd>{% if f.og_image and f.og_image.ok %}{{ f.og_image.w ~ '×' ~ f.og_image.h ~ ' px, ' if f.og_image.w }}{{ f.og_image.kb }} KB{% elif og['og:image'] %}nie wczytuje się{% else %}—{% endif %}</dd></div>
+        <div><dt>twitter:card</dt><dd>{{ og['twitter:card'] or '—' }}</dd></div>
+      </dl>
+    </div>
+    <div>
+      <h3 class="small">Wynik w wyszukiwarce Google</h3>
+      <div class="serp">
+        <div class="serp-host">{{ host }}</div>
+        <div class="serp-title">{{ (f.title or host)|truncate(62, true, '…') }}</div>
+        <div class="serp-desc">{{ (f.description or 'Brak opisu meta — Google pokaże przypadkowy fragment tekstu ze strony.')|truncate(160, true, '…') }}</div>
+      </div>
+      <p class="hint">Tytuł: {{ f.title|length }} znaków (zalecane 30–60) · opis: {{ f.description|length }} znaków (zalecane 70–160).</p>
+      {% if not (og['og:title'] and og['og:description'] and og['og:image']) %}
+      {% set tags = '<meta property="og:title" content="' ~ sh_title ~ '">\n'
+        ~ '<meta property="og:description" content="' ~ (sh_desc or 'Krótki opis firmy, 1–2 zdania') ~ '">\n'
+        ~ '<meta property="og:image" content="' ~ (og['og:image'] or 'https://' ~ host ~ '/podglad-1200x630.jpg') ~ '">\n'
+        ~ '<meta property="og:url" content="' ~ (f.final_url or site.url) ~ '">\n'
+        ~ '<meta property="og:type" content="website">\n<meta name="twitter:card" content="summary_large_image">' %}
+      <h3 class="small mt">Brakujące znaczniki — gotowe do wklejenia w &lt;head&gt;</h3>
+      <pre class="code-snippet">{{ tags }}</pre>
+      <button type="button" class="btn-sm" data-copy-text="{{ tags }}">{{ ui.icon("copy") }}Kopiuj</button>
+      {% endif %}
+    </div>
+  </div>
+</section>
+{% set psi = f.psi %}
+{% if psi or f.scripts_static %}
+<section class="card" id="skrypty">
+  <div class="card-head">{{ ui.icon("cpu") }}<h2>Skrypty i obciążenie strony</h2><span class="spacer"></span>
+    <span class="small muted">{{ 'test PageSpeed (telefon), ' ~ audit.ts|dt if psi else 'rozmiary plików — czasy wykonania pokaże test PageSpeed' }}</span></div>
+  {% if psi %}
+  <div class="kpis kpis-sm">
+    {{ ui.kpi("Wydajność (telefon)", (psi.performance ~ "/100") if psi.performance is not none else "—", "PageSpeed", "chart") }}
+    {{ ui.kpi("Blokowanie przez skrypty", psi.tbt or "—", "dobrze < 200 ms", "clock") }}
+    {{ ui.kpi("Główna treść (LCP)", psi.lcp or "—", "dobrze < 2,5 s", "img") }}
+    {{ ui.kpi("Waga strony", ((psi.weight_kb / 1024)|round(1) ~ " MB") if psi.weight_kb else "—", "wszystkie pliki", "download") }}
+  </div>
+  {% set sc = psi.scripts or {} %}
+  <div class="grid g-2">
+    {% if sc.bootup %}<div><h3 class="small">Najdłużej wykonujące się skrypty</h3>
+      <div class="table-wrap"><table class="list compact"><thead><tr><th>Skrypt</th><th class="num">Razem</th><th class="num">Wykonanie</th><th class="num">Wczytanie</th></tr></thead><tbody>
+      {% for b in sc.bootup %}<tr><td class="small" title="{{ b.full }}">{{ b.url }}</td>
+        <td class="num"><b class="{{ 'danger' if b.total >= 1000 else ('warning' if b.total >= 300 else '') }}">{{ b.total }} ms</b></td>
+        <td class="num small">{{ b.scripting }} ms</td><td class="num small">{{ b.parse }} ms</td></tr>{% endfor %}
+      </tbody></table></div></div>{% endif %}
+    {% if sc.heavy %}<div><h3 class="small">Najcięższe skrypty</h3>
+      <div class="table-wrap"><table class="list compact"><thead><tr><th>Skrypt</th><th class="num">Rozmiar</th><th class="num">Nieużywane</th></tr></thead><tbody>
+      {% for h in sc.heavy %}<tr><td class="small" title="{{ h.full }}">{{ h.url }}</td><td class="num"><b>{{ h.kb }} KB</b></td>
+        <td class="num small">{{ (h.unused_kb ~ ' KB') if h.unused_kb else '—' }}</td></tr>{% endfor %}
+      </tbody></table></div></div>{% endif %}
+    {% if sc.third_party %}<div><h3 class="small">Usługi zewnętrzne (wtyczki, reklamy, czaty, statystyki)</h3>
+      <div class="table-wrap"><table class="list compact"><thead><tr><th>Usługa</th><th class="num">Rozmiar</th><th class="num">Praca procesora</th><th class="num">Blokuje</th></tr></thead><tbody>
+      {% for t3 in sc.third_party %}<tr><td class="small">{{ t3.entity }}</td><td class="num small">{{ t3.kb }} KB</td>
+        <td class="num small">{{ t3.main }} ms</td><td class="num"><b class="{{ 'danger' if t3.blocking >= 250 else '' }}">{{ t3.blocking }} ms</b></td></tr>{% endfor %}
+      </tbody></table></div></div>{% endif %}
+    {% if sc.render_blocking or sc.main_thread %}<div>
+      {% if sc.render_blocking %}<h3 class="small">Pliki blokujące wyświetlenie strony</h3>
+      <div class="table-wrap"><table class="list compact"><tbody>
+      {% for r in sc.render_blocking %}<tr><td class="small">{{ r.url }}</td><td class="num small">{{ r.kb }} KB</td><td class="num"><b>{{ r.ms }} ms</b></td></tr>{% endfor %}
+      </tbody></table></div>{% endif %}
+      {% if sc.main_thread %}<h3 class="small mt">Na co procesor telefonu traci czas</h3>
+      <dl class="kv-rows small">{% for m in sc.main_thread %}<div><dt>{{ m.group }}</dt><dd>{{ m.ms }} ms</dd></div>{% endfor %}</dl>{% endif %}
+    </div>{% endif %}
+  </div>
+  {% else %}
+  <div class="table-wrap"><table class="list compact"><thead><tr><th>Skrypt</th><th></th><th class="num">Rozmiar</th></tr></thead><tbody>
+    {% for x in f.scripts_static %}<tr><td class="small">{{ x.url }}</td><td>{% if x.third %}<span class="tag">zewnętrzny</span>{% endif %}</td><td class="num"><b>{{ x.kb }} KB</b></td></tr>{% endfor %}
+  </tbody></table></div>
+  <p class="hint mt">{% if f.psi_error %}Test PageSpeed nie powiódł się: {{ f.psi_error }}. {% endif %}Czas wykonania każdego skryptu, blokowanie strony i usługi zewnętrzne pokazuje test PageSpeed — wymaga klucza w <a href="/admin/agent/settings">Ustawieniach</a>.</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endif %}
 {% if not audit %}
 <section class="card">{{ ui.empty("Agent jeszcze nie ocenił tej strony — strony czekają w kolejce (najpierw te bez żadnej oceny). Kliknij „Audytuj teraz”, żeby zacząć od razu: pełna ocena z AI na procesorze NAS może potrwać nawet godzinę.", "bot") }}</section>
 {% endif %}
 {% if recent|length > 1 %}
 <section class="card">
   <div class="card-head"><h2>Czas odpowiedzi — ostatnie sprawdzenia</h2></div>
-  {{ charts.line_chart([("Czas odpowiedzi", recent|map(attribute='ms')|list, "#2a78d6")], "Czas odpowiedzi strony", "ms") }}
+  {{ charts.line_chart([("Czas odpowiedzi", recent|map(attribute='ms')|list, "#2a78d6")], "Czas odpowiedzi strony", "ms", start=(recent[0].ts|ago), end="teraz") }}
 </section>
 {% endif %}
 {% if draft %}
@@ -121,6 +214,20 @@
       <div><dt>CTR / średnia pozycja</dt><dd>{{ it.gsc.current.ctr }}% / {{ it.gsc.current.position }}</dd></div>
       {% if it.gsc.queries %}<div><dt>Najważniejsze frazy</dt><dd class="small">{% for q in it.gsc.queries[:5] %}{{ q.query }} ({{ q.clicks }}){{ ', ' if not loop.last }}{% endfor %}</dd></div>{% endif %}
     </dl></div>{% elif it.gsc and it.gsc.error %}<div><h3>Google Search Console</h3><p class="small danger">{{ it.gsc.error }}</p></div>{% endif %}
+    {% if it.ga and not it.ga.error %}{% set g = it.ga %}<div class="full"><h3>Google Analytics 4 <span class="small muted">ostatnie 7 dni</span></h3>
+      <div class="kpis kpis-sm">
+        {{ ui.kpi("Użytkownicy", g.current.users, "poprzednio " ~ g.previous.users, "users") }}
+        {{ ui.kpi("Sesje", g.current.sessions, ("poprzednio " ~ g.previous.sessions) ~ ((", " ~ ("+" if g.change > 0 else "") ~ g.change ~ "%") if g.change is defined else ""), "chart") }}
+        {{ ui.kpi("Kluczowe zdarzenia", g.current.key_events, "konwersje · poprzednio " ~ g.previous.key_events, "shield") }}
+        {{ ui.kpi("Zaangażowanie", g.current.engagement ~ "%", "śr. sesja " ~ (g.current.duration_s // 60) ~ " min " ~ (g.current.duration_s % 60) ~ " s", "clock") }}
+      </div>
+      {% if g.daily|length > 1 %}{{ charts.line_chart([("Sesje dziennie", g.daily, "#2a78d6")], "Sesje — ostatnie 28 dni", "sesje", start="28 dni temu", end="wczoraj") }}{% endif %}
+      <div class="grid g-3 mt">
+        {% if g.channels %}<div><h3 class="small">Skąd przychodzą</h3><dl class="kv-rows small">{% for c in g.channels %}<div><dt>{{ c.name }}</dt><dd>{{ c.value }}</dd></div>{% endfor %}</dl></div>{% endif %}
+        {% if g.pages %}<div><h3 class="small">Najczęściej oglądane</h3><dl class="kv-rows small">{% for c in g.pages %}<div><dt>{{ c.name|truncate(40, true, '…') }}</dt><dd>{{ c.value }}</dd></div>{% endfor %}</dl></div>{% endif %}
+        {% if g.devices %}<div><h3 class="small">Urządzenia</h3><dl class="kv-rows small">{% for c in g.devices %}<div><dt>{{ {'mobile': 'telefon', 'desktop': 'komputer', 'tablet': 'tablet'}.get(c.name, c.name) }}</dt><dd>{{ c.value }}</dd></div>{% endfor %}</dl></div>{% endif %}
+      </div>
+    </div>{% elif it.ga and it.ga.error %}<div><h3>Google Analytics 4</h3><p class="small danger">{{ it.ga.error }}</p></div>{% endif %}
     {% if it.psi and not it.psi.error %}<div><h3>PageSpeed (telefon)</h3><dl class="kv-rows">
       <div><dt>Wydajność</dt><dd>{{ it.psi.performance }}/100</dd></div><div><dt>SEO</dt><dd>{{ it.psi.seo }}/100</dd></div>
       <div><dt>Dostępność</dt><dd>{{ it.psi.accessibility }}/100</dd></div><div><dt>LCP / CLS</dt><dd>{{ it.psi.lcp }} / {{ it.psi.cls }}</dd></div>
@@ -130,6 +237,8 @@
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label>Search Console — nazwa usługi <input name="gsc_property" value="{{ site.gsc_property }}" placeholder="sc-domain:klient.pl lub https://www.klient.pl/">
       <span class="hint">{% if google_ok %}Konto Google jest podłączone.{% else %}Najpierw podłącz konto Google w <a href="/admin/agent/settings">Ustawieniach</a>.{% endif %}</span></label>
+    <label>Google Analytics 4 — identyfikator usługi <input name="ga_property" value="{{ site.ga_property }}" inputmode="numeric" placeholder="np. 312345678">
+      <span class="hint">GA4 → Administracja → Szczegóły usługi → „Identyfikator usługi” (same cyfry, nie „G-…”).</span></label>
     <label>E-mail kontaktowy klienta <input name="contact_email" type="email" value="{{ site.contact_email }}" placeholder="do gotowych e-maili"></label>
     <label>WordPress — login administratora <input name="wp_user" value="{{ site.wp_user }}" autocomplete="off"></label>
     <label>WordPress — hasło aplikacji <input name="wp_pass" type="password" autocomplete="new-password" placeholder="{{ sv.wp_pass_masked or 'xxxx xxxx xxxx xxxx xxxx xxxx' }}">

@@ -86,6 +86,20 @@ class Google(Base):
             return self.send({"access_token": "tok", "expires_in": 3600})
         assert self.headers["Authorization"] == "Bearer tok"
         req = json.loads(body)
+        if self.path.endswith(":runReport"):  # Google Analytics 4
+            Google.ga.append((self.path, req))
+            dims = [d["name"] for d in req.get("dimensions", [])]
+            if not dims:
+                cur = req["dateRanges"][0]["startDate"] == "7daysAgo"
+                vals = ["120", "200", "540", "3", "0.61", "95"] if cur else ["150", "400", "900", "12", "0.6", "80"]
+                return self.send({"rows": [{"metricValues": [{"value": v} for v in vals]}]})
+            if dims == ["date"]:
+                return self.send({"rows": [{"dimensionValues": [{"value": f"202611{d:02d}"}], "metricValues": [{"value": str(d)}]}
+                                           for d in range(1, 29)]})
+            names = {"sessionDefaultChannelGroup": ["Organic Search", "Direct"], "pagePath": ["/", "/oferta"],
+                     "deviceCategory": ["mobile", "desktop"]}[dims[0]]
+            return self.send({"rows": [{"dimensionValues": [{"value": n}], "metricValues": [{"value": str(100 - i)}]}
+                                       for i, n in enumerate(names)]})
         if "dimensions" in req:
             return self.send({"rows": [{"keys": ["dentysta wrocław"], "clicks": 40, "position": 3.2}]})
         old = req["startDate"] < "2026-01-01" or Google.prev_marker == req["startDate"]
@@ -97,12 +111,31 @@ class Google(Base):
     def do_GET(self):  # PageSpeed
         return self.send({"lighthouseResult": {"categories": {"performance": {"score": 0.42}, "seo": {"score": 0.9},
                                                               "accessibility": {"score": 0.8}},
-                                               "audits": {"largest-contentful-paint": {"displayValue": "5,1 s"},
-                                                          "cumulative-layout-shift": {"displayValue": "0,02"}}}})
+                                               "audits": PSI_AUDITS}})
 
 
 Google.calls = 0
 Google.prev_marker = ""
+Google.ga = []
+PSI_AUDITS = {
+    "largest-contentful-paint": {"displayValue": "5,1 s"}, "cumulative-layout-shift": {"displayValue": "0,02"},
+    "total-blocking-time": {"displayValue": "1 340 ms", "numericValue": 1340},
+    "total-byte-weight": {"numericValue": 3 * 1024 * 1024},
+    "bootup-time": {"details": {"items": [
+        {"url": "https://klient.pl/wp-content/plugins/slider/slider.min.js", "total": 1820.4, "scripting": 1500, "scriptParseCompile": 120},
+        {"url": "https://www.googletagmanager.com/gtm.js?id=GTM-X", "total": 640, "scripting": 600, "scriptParseCompile": 30},
+        {"url": "Unattributable", "total": 0}]}},
+    "network-requests": {"details": {"items": [
+        {"url": "https://klient.pl/wp-content/plugins/slider/slider.min.js", "resourceType": "Script", "transferSize": 420000},
+        {"url": "https://klient.pl/style.css", "resourceType": "Stylesheet", "transferSize": 900000}]}},
+    "unused-javascript": {"details": {"items": [
+        {"url": "https://klient.pl/wp-content/plugins/slider/slider.min.js", "wastedBytes": 300000}]}},
+    "third-party-summary": {"details": {"items": [
+        {"entity": {"text": "Google Tag Manager", "type": "link"}, "transferSize": 120000, "blockingTime": 310, "mainThreadTime": 700},
+        {"entity": "Facebook", "transferSize": 80000, "blockingTime": 0, "mainThreadTime": 150}]}},
+    "render-blocking-resources": {"details": {"items": [{"url": "https://klient.pl/style.css", "wastedMs": 820, "totalBytes": 90000}]}},
+    "mainthread-work-breakdown": {"details": {"items": [{"group": "scriptEvaluation", "groupLabel": "Wykonanie skryptów", "duration": 2400}]}},
+}
 
 
 def make_sa():
@@ -214,6 +247,25 @@ def test_search_console_and_pagespeed():
         assert "Spadek kliknięć z Google o 50%" in r["issues"][0]["text"] and r["queries"][0]["query"] == "dentysta wrocław"
         p = gsc.pagespeed("https://klient.pl/", "AIzaTEST", base=g_url + "/psi")
         assert p["performance"] == 42 and p["seo"] == 90 and p["lcp"] == "5,1 s" and p["issues"][0]["level"] == "error"
+        sc = p["scripts"]
+        assert sc["bootup"][0]["url"] == "klient.pl/wp-content/plugins/slider/slider.min.js" and sc["bootup"][0]["total"] == 1820
+        assert sc["heavy"] == [{"url": "klient.pl/wp-content/plugins/slider/slider.min.js",
+                                "full": "https://klient.pl/wp-content/plugins/slider/slider.min.js", "kb": 410, "unused_kb": 293}]
+        assert sc["third_party"][0] == {"entity": "Google Tag Manager", "kb": 117, "blocking": 310, "main": 700}
+        assert sc["render_blocking"][0]["ms"] == 820 and sc["main_thread"][0]["group"] == "Wykonanie skryptów"
+        texts = " ".join(i["text"] for i in p["issues"])
+        assert "blokują stronę na telefonie przez 1 340 ms" in texts and "slider.min.js (1.8 s)" in texts
+        assert "293 KB kodu JavaScript" in texts and p["weight_kb"] == 3072
+        assert gsc.pagespeed("https://klient.pl/", "k", base=g_url + "/psi")["tbt_ms"] == 1340
+        # Google Analytics 4: tydzień do tygodnia, kanały, strony, urządzenia, wykres
+        Google.ga.clear()
+        a = gsc.analytics(sa, "properties/312345678", token_url=g_url + "/token", base=g_url)
+        assert Google.ga[0][0] == "/properties/312345678:runReport"
+        assert a["current"]["sessions"] == 200 and a["previous"]["sessions"] == 400 and a["change"] == -50
+        assert a["current"]["engagement"] == 61.0 and a["channels"][0] == {"name": "Organic Search", "value": 100}
+        assert len(a["daily"]) == 28 and a["devices"][0]["name"] == "mobile"
+        ga_texts = " ".join(i["text"] for i in a["issues"])
+        assert "Spadek odwiedzin (Google Analytics) o 50%" in ga_texts and "Spadek konwersji" in ga_texts
         with pytest.raises(ValueError):
             gsc.parse_service_account('{"type": "authorized_user"}')
     finally:
@@ -249,20 +301,22 @@ def test_panel_settings_integrations_network_report(tmp_path, monkeypatch):
         c.post("/admin/agent/sites", data={"url": wp_url + "/", "name": "Sklep", "kind": "client", "csrf": tok})
         site = db.one("SELECT * FROM sites")
         c.post(f"/admin/agent/sites/{site['id']}/integrations", data={
-            "gsc_property": "sc-domain:sklep.test", "wp_user": "admin", "wp_pass": "abcd efgh", "wc_key": "ck_1",
+            "gsc_property": "sc-domain:sklep.test", "ga_property": "G-ABC / 312345678", "wp_user": "admin", "wp_pass": "abcd efgh", "wc_key": "ck_1",
             "wc_secret": "cs_1", "contact_email": "", "csrf": tok})
         site = db.one("SELECT * FROM sites")
         assert site["wp_pass"].startswith("enc1:") and site["wc_secret"].startswith("enc1:")
         assert SecretBox("x" * 40).open(site["wp_pass"]) == "abcdefgh"  # spacje z hasła aplikacji usunięte
         box = SecretBox("x" * 40)
         integ = integrations.Integrations(db, box, None, wp_api=org_url, token_url=g_url + "/token", gsc_url=g_url,
-                                          psi_url=g_url + "/psi")
+                                          psi_url=g_url + "/psi", ga_url=g_url)
         db.run("UPDATE sites SET wp_pass = ? WHERE id = ?", box.seal("abcd efgh"), site["id"])
         Google.calls = 0
         res = integ.run_site(db.one("SELECT * FROM sites"))
         texts = " ".join(i["text"] for i in res["issues"])
         assert "Akismet" in texts and "PHP 7.4" in texts and "Spadek kliknięć" in texts and "PageSpeed" in texts
+        assert "Spadek odwiedzin" in texts and res["ga"]["current"]["users"] == 120
         page = c.get(f"/admin/agent/sites/{site['id']}").text
+        assert "Google Analytics 4" in page and "Organic Search" in page and "telefon" in page and 'value="312345678"' in page
         assert "Integracje" in page and "WordPress + WooCommerce" in page and "dentysta wrocław" in page
         assert "abcd efgh" not in page and "cs_1" not in page
         # puste pole = klucz bez zmian

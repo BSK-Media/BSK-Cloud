@@ -38,6 +38,7 @@ SITE_COLUMNS = [
     ("wp_pass", "TEXT NOT NULL DEFAULT ''"), ("wc_key", "TEXT NOT NULL DEFAULT ''"),
     ("wc_secret", "TEXT NOT NULL DEFAULT ''"), ("integ", "TEXT NOT NULL DEFAULT '{}'"), ("integ_at", "TEXT"),
     ("lead_score", "INTEGER"), ("lead_reason", "TEXT NOT NULL DEFAULT ''"),
+    ("ga_property", "TEXT NOT NULL DEFAULT ''"),  # identyfikator usługi Google Analytics 4 (same cyfry)
 ]
 
 
@@ -52,9 +53,20 @@ def init(db: Database) -> None:
 class Integrations:
     def __init__(self, db: Database, box: SecretBox, ai_cfg: ai.Config | None, notify_alert=None,
                  wp_api: str = wpcheck.WP_API, token_url: str = gsc.TOKEN_URL, gsc_url: str = gsc.GSC_URL,
-                 psi_url: str = gsc.PSI_URL):
+                 psi_url: str = gsc.PSI_URL, ga_url: str = gsc.GA_URL):
         self.db, self.box, self.ai_cfg, self.notify_alert = db, box, ai_cfg, notify_alert
         self.wp_api, self.token_url, self.gsc_url, self.psi_url = wp_api, token_url, gsc_url, psi_url
+        self.ga_url = ga_url
+
+    def pagespeed(self, url: str) -> dict | None:
+        """Test PageSpeed (z klucza w ustawieniach) — także w pełnej ocenie nowych firm. None = brak klucza."""
+        key = self.psi_key()
+        if not key:
+            return None
+        try:
+            return gsc.pagespeed(url, key, base=self.psi_url)
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)[:200], "issues": []}
 
     # --- klucze z ustawień
     def google_account(self) -> dict | None:
@@ -94,6 +106,18 @@ class Integrations:
                 result["issues"].append({"level": "warn", "area": "Google", "text": f"Search Console: {msg}."})
             except Exception as exc:  # noqa: BLE001
                 result["gsc"] = {"error": str(exc)[:200]}
+        if sa and site["ga_property"]:
+            progress(f"{name}: pobieram dane z Google Analytics")
+            try:
+                result["ga"] = gsc.analytics(sa, site["ga_property"], token_url=self.token_url, base=self.ga_url)
+                result["issues"] += [{**i, "area": "Google Analytics"} for i in result["ga"]["issues"]]
+            except urllib.error.HTTPError as exc:
+                msg = ("brak dostępu — dodaj konto usługi w Google Analytics klienta (rola „Wyświetlający”) i włącz "
+                       "Google Analytics Data API w Google Cloud") if exc.code in (403, 401) else f"HTTP {exc.code}"
+                result["ga"] = {"error": msg}
+                result["issues"].append({"level": "warn", "area": "Google Analytics", "text": f"Google Analytics: {msg}."})
+            except Exception as exc:  # noqa: BLE001
+                result["ga"] = {"error": str(exc)[:200]}
         key = self.psi_key()
         if key and site["kind"] == "client":
             progress(f"{name}: test PageSpeed Insights")
@@ -110,12 +134,14 @@ class Integrations:
         for i in new_errors:
             if i["text"] not in old_texts:
                 event(self.db, "problem", f"{name}: {i['text']}", site["id"])
-        if result.get("wp") or result.get("gsc") or result.get("psi"):
+        if result.get("wp") or result.get("gsc") or result.get("ga") or result.get("psi"):
             parts = []
             if result.get("wp"):
                 parts.append("WordPress" + (" + WooCommerce" if result["wp"].get("orders") else ""))
             if result.get("gsc") and "error" not in result["gsc"]:
                 parts.append("Search Console")
+            if result.get("ga") and "error" not in result["ga"]:
+                parts.append("Google Analytics")
             if result.get("psi") and "error" not in result["psi"]:
                 parts.append("PageSpeed")
             event(self.db, "integ", f"{name}: sprawdzono {', '.join(parts)} — {len(result['issues'])} uwag.", site["id"])

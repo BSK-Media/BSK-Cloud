@@ -25,7 +25,7 @@ from pathlib import Path
 from . import ai
 
 # ustawiane przy starcie portalu (main.py)
-CONFIG: dict = {"screenshot_url": "", "dir": None}
+CONFIG: dict = {"screenshot_url": "", "dir": None, "pagespeed": None}
 
 AREAS = [("seo", "SEO"), ("wydajnosc", "Szybkość"), ("wyglad", "Wygląd i nowoczesność"), ("mobilnosc", "Telefony"),
          ("tresc", "Treść"), ("konwersja", "Kontakt i sprzedaż"), ("technologia", "Technologia i bezpieczeństwo"),
@@ -426,6 +426,79 @@ def take_screenshots(site_id: int, url: str) -> dict[str, bytes]:
     return out
 
 
+# ------------------------------------------------------------------ podgląd udostępniania (Open Graph) i skrypty
+
+IMAGE_TYPES = {b"\xff\xd8": "image/jpeg", b"\x89P": "image/png", b"GI": "image/gif", b"RI": "image/webp"}
+
+
+def image_type(data: bytes) -> str:
+    t = IMAGE_TYPES.get(data[:2], "")
+    return "" if t == "image/webp" and data[8:12] != b"WEBP" else t
+
+
+def og_image(site_id: int, facts: dict, add) -> dict | None:
+    """Pobiera obrazek podglądu (og:image / twitter:image) do panelu i sprawdza jego wymiary (zalecane 1200×630)."""
+    from . import monitor
+    og = facts.get("og") or {}
+    path = shot_path(site_id, "og")
+    raw = og.get("og:image") or og.get("twitter:image") or ""
+    if path and path.exists():
+        path.unlink()
+    if not raw:
+        return None
+    url = urllib.parse.urljoin(facts.get("final_url") or facts.get("url") or "", raw)
+    info: dict = {"url": url[:400], "ok": False}
+    facts["og_image"] = info
+    if not url.startswith(("http://", "https://")):
+        add("warn", "Adres obrazka og:image jest nieprawidłowy — podgląd przy udostępnianiu będzie bez zdjęcia.", "SEO")
+        return info
+    try:
+        r = monitor.fetch(url, limit=8 * 1024 * 1024, timeout=20)
+    except (OSError, urllib.error.URLError, ValueError) as exc:
+        add("warn", f"Obrazek podglądu (og:image) nie wczytuje się: {monitor._err(exc)}.", "SEO")
+        return info
+    kind = image_type(r.body)
+    if r.code >= 400 or not kind:
+        add("warn", f"Obrazek podglądu (og:image) nie wczytuje się (HTTP {r.code}).", "SEO")
+        return info
+    info.update(ok=True, kb=len(r.body) // 1024, type=kind)
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+        with Image.open(BytesIO(r.body)) as im:
+            info["w"], info["h"] = im.size
+    except Exception:  # noqa: BLE001 — brak Pillow albo nietypowy plik: bez wymiarów
+        pass
+    if path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(r.body)
+    if info.get("w") and (info["w"] < 600 or info["h"] < 315):
+        add("warn", f"Obrazek podglądu ma tylko {info['w']}×{info['h']} px — Facebook pokaże go jako małą miniaturę "
+            "(zalecane 1200×630).", "SEO")
+    if info["kb"] > 1024:
+        add("warn", f"Obrazek podglądu waży {info['kb']} KB — przy udostępnianiu może się nie wczytać (zalecane < 1 MB).", "SEO")
+    return info
+
+
+def script_sizes(srcs: list[str], page_url: str, limit: int = 25) -> list[dict]:
+    """Bez testu PageSpeed: rozmiary plików JavaScript (bez czasu wykonania), od największego."""
+    from . import gsc, monitor
+    host = urllib.parse.urlsplit(page_url).netloc
+    out = []
+    for src in list(dict.fromkeys(srcs))[:limit]:
+        if not src.startswith(("http://", "https://")):
+            continue
+        try:
+            r = monitor.fetch(src, limit=6 * 1024 * 1024, timeout=15)
+        except (OSError, urllib.error.URLError, ValueError):
+            continue
+        if r.code < 400:
+            out.append({"url": gsc._short(src), "kb": round(len(r.body) / 1024),
+                        "third": urllib.parse.urlsplit(src).netloc != host})
+    return sorted(out, key=lambda x: -x["kb"])[:15]
+
+
 # ------------------------------------------------------------------ ocena wyglądu (model AI z obrazami)
 
 VISION_PROMPT = """Jesteś doświadczonym projektantem stron WWW i specjalistą od wizerunku marki w agencji BSK Media.
@@ -619,8 +692,18 @@ def build_review(cfg: ai.Config | None, site, result: dict, visual: dict | None,
         g = it["gsc"]
         integ += f"Google Search Console (7 dni): kliknięcia {g['current']['clicks']} (poprzednio {g['previous']['clicks']}), " \
                  f"średnia pozycja {g['current']['position']}.\n"
-    if it.get("psi") and not it["psi"].get("error"):
-        integ += f"PageSpeed (telefon): wydajność {it['psi'].get('performance')}/100, LCP {it['psi'].get('lcp')}.\n"
+    if it.get("ga") and not it["ga"].get("error"):
+        g = it["ga"]
+        integ += (f"Google Analytics (7 dni): {g['current']['sessions']} sesji (poprzednio {g['previous']['sessions']}), "
+                  f"{g['current']['users']} użytkowników, kluczowe zdarzenia {g['current']['key_events']} "
+                  f"(poprzednio {g['previous']['key_events']}), zaangażowanie {g['current']['engagement']}%. Kanały: "
+                  + ", ".join(f"{c['name']} {c['value']}" for c in g.get("channels", [])[:5]) + ".\n")
+    psi = f.get("psi") or (it.get("psi") if it.get("psi") and not it["psi"].get("error") else None)
+    if psi:
+        sc = psi.get("scripts") or {}
+        integ += (f"PageSpeed (telefon): wydajność {psi.get('performance')}/100, LCP {psi.get('lcp')}, blokowanie "
+                  f"{psi.get('tbt', '')}. Najdłużej wykonujące się skrypty: "
+                  + (", ".join(f"{b['url']} {b['total']} ms" for b in sc.get("bootup", [])[:4]) or "brak danych") + ".\n")
     kind = site["kind"] if site is not None else "lead"
     prompt = REVIEW_PROMPT.format(
         kind_text="potencjalnego klienta (firmy, z którą jeszcze nie współpracujemy)" if kind == "lead"

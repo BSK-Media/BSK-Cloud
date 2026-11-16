@@ -5,11 +5,13 @@
 
 {% block content %}
 <section class="card">
-  <div class="card-head">{{ ui.icon("chart") }}<h2>Google Search Console</h2>
+  <div class="card-head">{{ ui.icon("chart") }}<h2>Google Search Console i Google Analytics</h2>
     <span class="spacer"></span>{% if google_email %}<span class="tag ok">● podłączone</span>{% else %}<span class="tag off">niepodłączone</span>{% endif %}</div>
-  <p>Agent co dobę porównuje kliknięcia, wyświetlenia i średnią pozycję w Google z poprzednim tygodniem i zgłasza spadki.</p>
+  <p>Agent co dobę porównuje kliknięcia, wyświetlenia i średnią pozycję w Google oraz odwiedziny i konwersje
+    z Google Analytics 4 z poprzednim tygodniem i zgłasza spadki. Jedno konto usługi obsługuje obie usługi.</p>
   {% if google_email %}<p>Konto usługi: <code>{{ google_email }}</code> — dodaj ten adres w Search Console każdego klienta
-    (<i>Ustawienia → Użytkownicy i uprawnienia → Dodaj użytkownika</i>, uprawnienie „Ograniczone”).</p>{% endif %}
+    (<i>Ustawienia → Użytkownicy i uprawnienia → Dodaj użytkownika</i>, uprawnienie „Ograniczone”)
+    i w Google Analytics 4 (<i>Administracja → Zarządzanie dostępem do usługi → + → Dodaj użytkowników</i>, rola „Wyświetlający”).</p>{% endif %}
   <details {{ 'open' if not google_email }}><summary class="small">Jak zdobyć klucz (jednorazowo, ok. 10 minut)</summary>
     <ol class="steps small">
       <li>Wejdź na <b>console.cloud.google.com</b> i utwórz projekt, np. „BSK Agent”.</li>
@@ -18,6 +20,12 @@
       <li>Otwórz konto usługi → <i>Klucze → Dodaj klucz → JSON</i>. Pobierze się plik — otwórz go w Notatniku i wklej całą zawartość poniżej.</li>
       <li>Adres e-mail konta usługi (kończy się na <code>.iam.gserviceaccount.com</code>) dodaj w Search Console klientów.</li>
       <li>Przy każdej stronie klienta w agencie wpisz nazwę usługi z Search Console, np. <code>sc-domain:klient.pl</code> albo <code>https://www.klient.pl/</code>.</li>
+    </ol>
+    <p class="small"><b>Google Analytics 4</b> (to samo konto usługi):</p>
+    <ol class="steps small">
+      <li>W Google Cloud: <i>Biblioteka</i> → włącz <b>Google Analytics Data API</b>.</li>
+      <li>W Google Analytics klienta: <i>Administracja → Zarządzanie dostępem do usługi → + → Dodaj użytkowników</i> — adres konta usługi, rola <b>Wyświetlający</b>.</li>
+      <li>Tam też: <i>Administracja → Szczegóły usługi</i> — skopiuj <b>Identyfikator usługi</b> (same cyfry) i wpisz go przy stronie klienta w agencie (sekcja Integracje).</li>
     </ol></details>
   <form method="post" action="/admin/agent/settings" class="stack mt">
     <input type="hidden" name="csrf" value="{{ csrf }}">

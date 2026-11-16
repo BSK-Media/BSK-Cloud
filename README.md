@@ -322,6 +322,15 @@ odświeżenie wyglądu / optymalizacja / drobne poprawki), szacowany wiek strony
 zaproponowania z priorytetem, argumenty do rozmowy i szybkie poprawki. Zrzuty robi kontener `zrzuty`
 (Chromium, Gotenberg) z profilu `ai`.
 
+Na stronie każdej firmy i klienta jest też **podgląd przy udostępnianiu** (karta jak na Facebooku / Messengerze /
+LinkedInie z obrazkiem og:image, sprawdzenie jego wymiarów) i **wynik w Google**, z gotowymi brakującymi
+znacznikami do wklejenia, oraz sekcja **Skrypty i obciążenie strony**: z kluczem PageSpeed — skrypty, które
+wykonują się najdłużej, najcięższe pliki i nieużywany kod, usługi zewnętrzne (Tag Manager, czaty, piksele)
+z czasem blokowania i pliki blokujące wyświetlenie; bez klucza — rozmiary plików JavaScript.
+**Google Analytics 4** (to samo konto usługi, rola „Wyświetlający”, włączone Google Analytics Data API):
+użytkownicy, sesje, kluczowe zdarzenia, zaangażowanie, wykres 28 dni, kanały, strony i urządzenia; spadki
+odwiedzin i konwersji trafiają do alarmów i raportu.
+
 Panel agenta ma w menu bocznym podzakładki: *Przegląd* (co robi teraz, model, podsumowanie),
 *Gotowe e-maile*, *Strony klientów*, *Nowe firmy*, *Sieć biurowa*, *Dziennik* i *Ustawienia i klucze*.
 

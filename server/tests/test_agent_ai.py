@@ -12,10 +12,22 @@ from app.config import Settings
 from app.main import create_app
 
 HOME = """<!doctype html><html><head><title>Sklep</title>
-<meta name="viewport" content="width=device-width"></head><body>
+<meta name="viewport" content="width=device-width"><meta property="og:image" content="/og.png">
+<script src="/app.js"></script></head><body>
 <h1>Witamy</h1><h1>Drugi</h1><img src="/a.jpg"><a href="/kontakt">Kontakt</a><a href="/zepsuty">x</a>
 <a href="/ok">ok</a></body></html>"""
 CONTACT = """<html><body>Napisz: <a href="mailto:biuro@sklep.test">biuro@sklep.test</a> logo@2x.png</body></html>"""
+
+
+def _png(w, h):
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), (200, 30, 30)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+OG_PNG = _png(300, 200)
 
 
 class Site(BaseHTTPRequestHandler):
@@ -38,14 +50,14 @@ class Site(BaseHTTPRequestHandler):
             self.send_response(503)
             self.end_headers()
             return
-        pages = {"/": HOME, "/kontakt": CONTACT, "/ok": "<html>ok</html>",
+        pages = {"/": HOME, "/kontakt": CONTACT, "/ok": "<html>ok</html>", "/og.png": OG_PNG, "/app.js": "x=1;" * 3000,
                  "/robots.txt": "User-agent: *\nDisallow:\n"}
         body = pages.get(self.path)
         if body is None:
             self.send_response(404)
             self.end_headers()
             return
-        data = body.encode()
+        data = body if isinstance(body, bytes) else body.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/plain" if self.path.endswith(".txt") else "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
@@ -223,6 +235,14 @@ def test_agent_flow(env, monkeypatch):
     site_page = c.get(f"/admin/agent/sites/{site['id']}").text
     assert "Ocena i rekomendacja" in site_page and "Nowa strona internetowa" in site_page and "Wygląd strony" in site_page
     assert "Strona wygląda na sprzed dekady." in site_page and "Sprawdzone podstrony" in site_page
+    # podgląd udostępniania: obrazek og:image pobrany przez portal, za mały; gotowe znaczniki do wklejenia
+    assert "Podgląd przy udostępnianiu i w Google" in site_page and "300×200 px" in site_page
+    assert 'property="og:title"' in site_page.replace("&lt;", "<").replace("&#34;", '"').replace("&quot;", '"')
+    og = c.get(f"/admin/agent/sites/{site['id']}/og-obraz")
+    assert og.headers["content-type"] == "image/png" and og.content == OG_PNG
+    assert "tylko 300×200 px" in " ".join(i["text"] for i in json.loads(audit["report"])["issues"])
+    # bez klucza PageSpeed: rozmiary skryptów
+    assert "Skrypty i obciążenie strony" in site_page and "/app.js" in site_page and "12 KB" in site_page
     assert c.get(f"/admin/agent/sites/{site['id']}/zrzut/telefon.jpg").content.startswith(b"\xff\xd8")
     assert c.get(f"/admin/agent/sites/{site['id']}/zrzut/..%2Fx.jpg").status_code == 404
     assert "Przebudowa strony" in c.get("/admin/agent/firmy").text
