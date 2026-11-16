@@ -228,6 +228,9 @@ Jak działa program:
   sprawdza sumę kontrolną, podmienia pliki i uruchamia się ponownie. Nie trzeba nic robić u pracownika.
 - **Raport z komputera**: liczba plików w kolejce, ostatnia wysyłka, obserwowane foldery, pliki,
   których nie udało się wysłać (np. otwarta skrzynka Outlooka), ostatnie ostrzeżenia i błędy z dziennika.
+- **Autostart** (od 1.4.0): program przy każdym starcie sam zakłada zadanie „BSK Backup” w Harmonogramie
+  zadań Windows (przy logowaniu i co 10 minut, jeśli nie działa; także na baterii) oraz wpis w rejestrze,
+  bez uprawnień administratora. Panel pokazuje stan autostartu i ostrzega, gdy antywirus go zablokował.
 - **Alert e-mail** do administratora (`BSK_NOTIFY_EMAIL`), gdy komputer nie łączy się z serwerem
   od 3 dni (`BSK_DEVICE_ALERT_DAYS`, 0 = wyłączone). Jeden e-mail na każdą przerwę.
 

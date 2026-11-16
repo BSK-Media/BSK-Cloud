@@ -1216,6 +1216,16 @@ def test_agent_remote_control(app, admin):
     page = admin.get(f"/admin/devices/{dev['id']}").text
     assert "wykonana" in page and "a.pst" in page and "&lt;b&gt;Coś&lt;/b&gt;" in page and "Pliki w kolejce" in page
     assert anon.post("/api/agent/report", headers={"Authorization": "Bearer zly"}, json=report).status_code == 401
+    # autostart zablokowany przez antywirus — wyraźne ostrzeżenie w panelu
+    report |= {"autostart": {"task": "Odmowa dostępu.", "run_key": "zablokowany: [WinError 5]", "x": "y"},
+               "started_at": "2026-11-09T08:00:00+00:00"}
+    anon.post("/api/agent/report", headers=h, json=report)
+    page = admin.get(f"/admin/devices/{dev['id']}").text
+    assert "Program nie ma autostartu" in page and "Odmowa dostępu." in page and "Program działa od" in page
+    report["autostart"] = {"task": "ok", "run_key": "ok"}
+    anon.post("/api/agent/report", headers=h, json=report)
+    page = admin.get(f"/admin/devices/{dev['id']}").text
+    assert "Program nie ma autostartu" not in page and "Harmonogram zadań" in page
 
     # aktualizacja: nowsza wersja w bsk-dane/instalator
     inst = app.state.settings.installer_dir

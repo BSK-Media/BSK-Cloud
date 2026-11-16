@@ -1,5 +1,6 @@
 ﻿# Usuwa BSK Backup z komputera (kopie na NAS pozostają nienaruszone).
 $ErrorActionPreference = "SilentlyContinue"
+cmd /c 'schtasks /Delete /TN "BSK Backup" /F >nul 2>&1'
 Get-Process -Name "bsk-backup-agent" | Stop-Process -Force
 Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "BSKBackup"
 Remove-Item (Join-Path ([Environment]::GetFolderPath("Startup")) "BSK Backup.lnk")

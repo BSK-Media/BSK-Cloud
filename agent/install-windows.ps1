@@ -52,31 +52,17 @@ if ($LASTEXITCODE -ne 0) {
   Write-Warning "Brak połączenia z serwerem teraz — agent i tak zacznie działać i wyśle pliki, gdy połączenie wróci."
 }
 
-# autostart przy logowaniu użytkownika: wpis w rejestrze, a gdy antywirus go zablokuje (np. Avast),
-# skrót w folderze Autostart — brak autostartu nie przerywa instalacji
+# autostart: program sam zakłada przy każdym starcie zadanie w Harmonogramie zadań Windows (przy logowaniu
+# i co 10 minut, jeśli nie działa) oraz wpis w rejestrze — antywirus blokujący jedno z nich nie wyłącza kopii
 $agent = Join-Path $dest "bsk-backup-agent.exe"
-$autostart = $false
-try {
-  Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "BSKBackup" -Value "`"$agent`" run" -ErrorAction Stop
-  $autostart = $true
-} catch {
-  try {
-    $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path ([Environment]::GetFolderPath("Startup")) "BSK Backup.lnk"))
-    $lnk.TargetPath = $agent
-    $lnk.Arguments = "run"
-    $lnk.WindowStyle = 7
-    $lnk.Save()
-    $autostart = $true
-  } catch {
-    Write-Warning "Nie udało się ustawić autostartu (blokuje go program antywirusowy). Dodaj BSK Backup do wyjątków antywirusa i uruchom instalację ponownie."
-  }
-}
-
 Start-Process -FilePath $agent -ArgumentList "run" -WindowStyle Hidden
 Write-Host ""
-if ($autostart) {
-  Write-Host "BSK Backup zainstalowany w $dest i uruchomiony. Startuje automatycznie po zalogowaniu." -ForegroundColor Green
+Start-Sleep -Seconds 8
+cmd /c 'schtasks /Query /TN "BSK Backup" >nul 2>&1'
+if ($LASTEXITCODE -eq 0) {
+  Write-Host "BSK Backup zainstalowany w $dest i uruchomiony. Startuje automatycznie (Harmonogram zadań Windows)." -ForegroundColor Green
 } else {
-  Write-Host "BSK Backup zainstalowany w $dest i uruchomiony (bez autostartu — patrz ostrzeżenie wyżej)." -ForegroundColor Yellow
+  Write-Host "BSK Backup zainstalowany w $dest i uruchomiony, ale Windows nie pozwolił założyć autostartu." -ForegroundColor Yellow
+  Write-Host "Dodaj folder $dest do wyjątków programu antywirusowego i uruchom instalację ponownie." -ForegroundColor Yellow
 }
 Write-Host "Podgląd stanu: & `"$cli`" status"
