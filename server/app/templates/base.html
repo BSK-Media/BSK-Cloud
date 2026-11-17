@@ -56,8 +56,11 @@
         <a href="/admin/log" class="{{ 'active' if nav == 'log' }}">{{ ui.icon("list") }}Dziennik zdarzeń</a>
         <a href="/account" class="{{ 'active' if nav == 'account' }}">{{ ui.icon("user") }}Moje konto</a>
       {% elif user.role == 'staff' %}
+        {% if my_clients %}{% set in_clients = nav == 'staff-clients' or (nav or '').startswith('client-') %}
+        <a href="/klienci" class="{{ 'active' if nav == 'staff-clients' else ('open' if in_clients) }}">{{ ui.icon("users") }}Klienci{% set n_cl = my_clients_unread or 0 %}{% if n_cl and not in_clients %}<span class="badge">{{ n_cl }}</span>{% endif %}</a>
+        <div class="subnav">{% for c in my_clients %}{% set n = unread_clients.get(c.id, 0) if unread_clients else 0 %}<a href="/admin/clients/{{ c.id }}" class="{{ 'active' if nav == 'client-' ~ c.id }}">{{ ui.icon("user") }}{{ (c.company or c.display_name or c.username)|truncate(24, true, '…') }}{% if n %}<span class="badge">{{ n }}</span>{% endif %}</a>{% endfor %}</div>{% endif %}
         {% set in_sites = nav == 'staff-sites' or (nav or '').startswith('site-') %}
-        {% if my_sites %}<a href="/strony" class="{{ 'active' if nav == 'staff-sites' else ('open' if in_sites) }}">{{ ui.icon("chart") }}Strony klientów</a>
+    {% if my_sites %}<a href="/strony" class="{{ 'active' if nav == 'staff-sites' else ('open' if in_sites) }}">{{ ui.icon("chart") }}Strony klientów</a>
         <div class="subnav">{% for st in my_sites %}<a href="/admin/agent/sites/{{ st.id }}" class="{{ 'active' if nav == 'site-' ~ st.id }}">{{ ui.icon("link") }}{{ (st.name or st.url.split('//')[-1].rstrip('/'))|truncate(24, true, '…') }}{% if st.status == 'down' %}<span class="badge">!</span>{% endif %}</a>{% endfor %}</div>{% endif %}
         <a href="/team" class="{{ 'active' if nav == 'team' }}">{{ ui.icon("folder") }}Wspólne pliki<span class="badge" data-unread-badge {{ 'hidden' if not unread_total }}>{{ unread_total }}</span></a>
         <a href="/search" class="{{ 'active' if nav == 'search' }}">{{ ui.icon("search") }}Szukaj</a>
@@ -98,6 +101,7 @@
     <a href="/team" class="{{ 'active' if nav == 'team' }}">{{ ui.icon("folder") }}<span>Wspólne</span></a>
     <a href="/search" class="{{ 'active' if nav == 'search' }}">{{ ui.icon("search") }}<span>Szukaj</span></a>
   {% elif user.role == 'staff' %}
+    {% if my_clients %}<a href="/klienci" class="{{ 'active' if nav == 'staff-clients' or (nav or '').startswith('client-') }}">{{ ui.icon("users") }}<span>Klienci</span></a>{% endif %}
     {% if my_sites %}<a href="/strony" class="{{ 'active' if nav == 'staff-sites' or (nav or '').startswith('site-') }}">{{ ui.icon("chart") }}<span>Strony</span></a>{% endif %}
     <a href="/team" class="{{ 'active' if nav == 'team' }}">{{ ui.icon("folder") }}<span>Wspólne</span><b class="badge" data-unread-badge {{ 'hidden' if not unread_total }}>{{ unread_total }}</b></a>
     <a href="/search" class="{{ 'active' if nav == 'search' }}">{{ ui.icon("search") }}<span>Szukaj</span></a>

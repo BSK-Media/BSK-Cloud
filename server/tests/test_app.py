@@ -1462,3 +1462,75 @@ def test_site_report_shared_with_staff(app, admin):
     assert olaf.get("/admin/agent/strony").status_code == 403
     julek = staff_client(app, "julek", julek_pw)  # już nie jest opiekunem
     assert julek.get(f"/admin/agent/sites/{s1}").status_code == 404 and "Amazfit" not in julek.get("/team").text
+
+
+def test_client_profile_shared_with_staff(app, admin):
+    """Admin udostępnia cały profil klienta pracownikowi: pliki, katalogi, czat, dokumenty — bez danych konta."""
+    db = app.state.db
+    create_client_account(admin, "derclinic", "KlientHaslo1")
+    create_client_account(admin, "inny", "KlientHaslo2")
+    cid = db.one("SELECT id FROM users WHERE username = 'derclinic'")["id"]
+    other = db.one("SELECT id FROM users WHERE username = 'inny'")["id"]
+    pw = add_staff(admin, "olaf", "Olaf Tomaszek")
+    olaf_id = db.one("SELECT id FROM users WHERE username = 'olaf'")["id"]
+    olaf = staff_client(app, "olaf", pw)
+    assert olaf.get(f"/admin/clients/{cid}").status_code == 404  # jeszcze nie udostępniony
+    # plik od klienta i wiadomość od admina, zanim pracownik dostanie dostęp
+    klient = TestClient(app)
+    login(klient, "derclinic", "KlientHaslo1")
+    change_pw(klient, "KlientHaslo1")
+    ktok = csrf_of(klient, "/files")
+    klient.post("/files/upload", data={"csrf": ktok, "note": ""}, files={"files": ("brief.pdf", b"%PDF-1.4 brief", "application/pdf")})
+    fid = db.one("SELECT id FROM files WHERE client_id = ?", cid)["id"]
+    tok = csrf_of(admin, f"/admin/clients/{cid}")
+    page = admin.get(f"/admin/clients/{cid}").text
+    assert "Opiekunowie klienta" in page and "Olaf Tomaszek" in page
+    r = admin.post(f"/admin/clients/{cid}/opiekunowie", data={"user_id": [olaf_id, 12345], "csrf": tok})
+    assert "Opiekunowie klienta: Olaf Tomaszek" in r.text
+    # menu pracownika: Klienci -> DerClinic (z licznikiem nowych rzeczy od klienta)
+    team = olaf.get("/team").text
+    assert 'href="/klienci"' in team and f'href="/admin/clients/{cid}"' in team and "ACME" in team
+    assert "Moi klienci" in olaf.get("/klienci").text
+    prof = olaf.get(f"/admin/clients/{cid}").text
+    assert "brief.pdf" in prof and "Wiadomości" in prof and "Udostępnij pliki klientowi" in prof
+    assert "opiekun: Olaf Tomaszek" in prof
+    assert team.count('href="/klienci"') == 2  # menu boczne + dolny pasek na telefonie
+    for admin_only in ("Dane i dostęp", "Osoby z dostępem", "Opiekunowie klienta", "Nadaj nowe hasło", "Import z NAS"):
+        assert admin_only not in prof, admin_only
+    otok = csrf_of(olaf, f"/admin/clients/{cid}")
+    # pliki klienta: pobieranie, podgląd, komentarz
+    assert olaf.get(f"/files/{fid}/download").content == b"%PDF-1.4 brief"
+    assert olaf.post(f"/api/files/{fid}/comments", json={"body": "Poprawię to", "x": 0.5, "y": 0.5},
+                     headers={"X-CSRF-Token": otok}).status_code == 200
+    # wysyłka plików do klienta, katalog, wiadomość, dokument
+    r = olaf.post(f"/admin/clients/{cid}/upload", data={"csrf": otok, "note": "Nowa wersja logo", "review": "1"},
+                  files={"files": ("logo.png", _png(), "image/png")})
+    assert r.status_code == 200
+    logo = db.one("SELECT * FROM files WHERE client_id = ? AND original_name = 'logo.png'", cid)
+    assert logo and logo["uploaded_by"] == olaf_id and logo["review_status"] == "review"
+    assert (app.state.settings.clients_dir / "derclinic" / "od BSK Media" / "logo.png").exists()
+    assert olaf.post(f"/spaces/{cid}/folders", data={"name": "Projekty", "csrf": otok}).status_code == 200
+    assert db.one("SELECT 1 FROM folders WHERE owner_id = ? AND name = 'Projekty'", cid)
+    olaf.post(f"/admin/clients/{cid}/message", data={"body": "Dzień dobry, jestem opiekunem", "csrf": otok})
+    h = {"X-CSRF-Token": otok}
+    up = olaf.post("/api/uploads", json={"name": "big.bin", "size": 3, "dest": {"kind": "client", "client_id": cid}}, headers=h).json()
+    assert olaf.put(f"/api/uploads/{up['id']}", params={"offset": 0}, content=b"abc", headers=h).json()["status"] == "stored"
+    th = olaf.get(f"/api/thread/{cid}").json()["messages"]
+    assert any(m["body"] == "Dzień dobry, jestem opiekunem" and m["agency"] and m["mine"] for m in th)
+    # klient widzi wiadomość od BSK Media i ma ją jako nieprzeczytaną
+    kth = klient.get(f"/api/thread/{cid}", params={"visible": 0}).json()
+    assert any(m["body"] == "Dzień dobry, jestem opiekunem" and m["agency"] for m in kth["messages"]) and kth["unread"] >= 1
+    assert "logo.png" in klient.get("/files").text
+    # bez dostępu: inny klient, dane konta, opiekunowie, usuwanie z kosza
+    assert olaf.get(f"/admin/clients/{other}").status_code == 404
+    assert olaf.get(f"/api/thread/{other}").status_code == 403
+    assert olaf.post(f"/admin/clients/{other}/message", data={"body": "x", "csrf": otok}).status_code == 404
+    assert olaf.post(f"/spaces/{other}/folders", data={"name": "X", "csrf": otok}).status_code == 403
+    assert olaf.post("/api/uploads", json={"name": "x", "size": 1, "dest": {"kind": "client", "client_id": other}}, headers=h).status_code == 403
+    for path in (f"/admin/clients/{cid}/edit", f"/admin/clients/{cid}/reset-password", f"/admin/clients/{cid}/toggle",
+                 f"/admin/clients/{cid}/opiekunowie"):
+        assert olaf.post(path, data={"csrf": otok}).status_code in (403, 422), path
+    assert olaf.get("/admin/clients").status_code == 403
+    # odebranie dostępu
+    admin.post(f"/admin/clients/{cid}/opiekunowie", data={"csrf": tok})
+    assert olaf.get(f"/admin/clients/{cid}").status_code == 404 and olaf.get(f"/files/{fid}/download").status_code == 404

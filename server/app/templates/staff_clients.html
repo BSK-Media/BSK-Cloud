@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Klienci — {{ site_name }}{% endblock %}
+{% block heading %}Moi klienci{% endblock %}
+{% block subtitle %}<div class="subtitle">Klienci, których jesteś opiekunem — pliki, katalogi, wiadomości i dokumenty jak u administratora.</div>{% endblock %}
+{% block content %}
+<section class="card">
+  {% if clients %}
+  <div class="table-wrap"><table class="list">
+    <thead><tr><th>Klient</th><th class="num">Pliki</th><th>Ostatnia aktywność</th><th></th></tr></thead>
+    <tbody>{% for c in clients %}<tr>
+      <td><a href="/admin/clients/{{ c.id }}" class="row"><span class="avatar">{{ (c.company or c.display_name or c.username)|initials }}</span>
+        <b>{{ c.company or c.display_name or c.username }}</b>{% if c.unread %}<span class="badge">{{ c.unread }}</span>{% endif %}</a>
+        <div class="small muted">{{ c.display_name }}{{ ' · ' if c.display_name }}{{ c.username }}</div></td>
+      <td class="num">{{ c.files }}</td>
+      <td class="small muted">{{ c.last|ago if c.last else '—' }}</td>
+      <td class="actions"><a class="button btn-sm" href="/admin/clients/{{ c.id }}#wiadomosci">{{ ui.icon("message") }}Wiadomości</a></td>
+    </tr>{% endfor %}</tbody></table></div>
+  {% else %}{{ ui.empty("Administrator nie udostępnił Ci jeszcze żadnego klienta.", "users") }}{% endif %}
+</section>
+{% endblock %}

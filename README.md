@@ -342,6 +342,11 @@ Code Snippets (preload LCP, defer skryptów, asynchroniczny CSS, opóźniony Tag
 WooCommerce, czcionki), `.htaccess` (pamięć podręczna, kompresja) i HTML; całość do pobrania jako jeden plik PHP,
 plus podsumowanie lokalnego modelu AI (diagnoza, kolejność prac z czasem, cel).
 
+**Opiekunowie klientów**: na karcie klienta (Klienci → klient → „Opiekunowie klienta”) administrator udostępnia cały
+profil wybranym pracownikom. Pracownik ma w menu „Klienci” swoich klientów jako podzakładki i pracuje jak administrator:
+pliki i katalogi, wysyłanie (także do akceptacji), komentarze, wiadomości, nowe dokumenty; dostaje e-maile o nowych
+plikach i wiadomościach od klienta. Danych konta klienta (hasło, blokada, limit, osoby z dostępem) nie zmienia.
+
 **Opiekunowie stron**: na stronie klienta (zakładka Przegląd → „Opiekunowie strony”) administrator udostępnia raport
 wybranym pracownikom. Pracownik widzi w menu „Strony klientów” swoje strony jako podzakładki i cały raport (wszystkie
 zakładki, audyt, test szybkości, plan optymalizacji, podsumowanie AI) — bez kluczy dostępowych i bez innych stron.
