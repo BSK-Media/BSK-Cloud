@@ -311,6 +311,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if ctx["user"]["role"] == "admin":
                 ctx.setdefault("team_new", team_unread(ctx["user"]))
             elif ctx["user"]["role"] == "staff":
+                ctx.setdefault("my_clients", staff_clients(ctx["user"]["id"]))
+                ctx.setdefault("unread_clients", unread_by_client(ctx["user"]["id"]))
+                ctx.setdefault("my_clients_unread", sum(ctx["unread_clients"].get(c["id"], 0) for c in ctx["my_clients"]))
                 ctx.setdefault("my_sites", db.all(
                     "SELECT s.id, s.name, s.url, s.status FROM site_staff ss JOIN sites s ON s.id = ss.site_id"
                     " WHERE ss.user_id = ? AND s.active = 1 ORDER BY s.name, s.url", ctx["user"]["id"]))
@@ -365,6 +368,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not c:
             raise HTTPException(404, "Nie ma takiego klienta.")
         return c
+
+    def manages(user, client_id: int) -> bool:
+        """Administrator albo pracownik-opiekun tego klienta (pliki, wiadomości, dokumenty jak administrator)."""
+        if user["role"] == "admin":
+            return True
+        return user["role"] == "staff" and bool(
+            db.one("SELECT 1 FROM client_staff WHERE client_id = ? AND user_id = ?", client_id, user["id"]))
+
+    def client_access(request: Request, client_id: int):
+        user = require_user(request)
+        client = client_or_404(client_id)
+        if not manages(user, client_id):
+            raise HTTPException(404, "Nie ma takiego klienta.")
+        return user, client
+
+    def staff_clients(user_id: int):
+        return db.all("SELECT u.id, u.username, u.company, u.display_name FROM client_staff cs JOIN users u ON u.id = cs.client_id"
+                      " WHERE cs.user_id = ? ORDER BY u.company, u.display_name, u.username", user_id)
+
+    def is_agency(user) -> bool:
+        return user["role"] in ("admin", "staff")
+
+    def notify_client_team(client_id: int, subject: str, body: str, link: str = "", throttle_key: str | None = None) -> None:
+        """Powiadomienie o działaniu klienta: administrator i opiekunowie tego klienta."""
+        notify_admin(settings, subject, body, link, throttle_key)
+        for person in db.all("SELECT u.* FROM client_staff cs JOIN users u ON u.id = cs.user_id"
+                             " WHERE cs.client_id = ? AND u.active = 1 AND u.email != ''", client_id):
+            notify.send(settings, person["email"], subject, body.split("\n\n"), link or settings.public_url,
+                        "Otwórz w panelu", f"{throttle_key}:{person['id']}" if throttle_key else None)
 
     def client_dir(client) -> Path:
         """Przestrzeń na NAS: klient -> klienci/<login>, administrator (Mój dysk) -> klienci/_prywatne/<login>."""
@@ -462,6 +494,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             base = "/team"
         elif user["role"] == "admin":
             base = "/admin/my" if owner_id == user["id"] else f"/admin/clients/{owner_id}"
+        elif user["role"] == "staff" and owner_id != tid(create=False):
+            base = f"/admin/clients/{owner_id}"
         else:
             base = "/files"
         return base + (f"?folder={folder_id}" if folder_id else "") + "#pliki"
@@ -538,8 +572,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, "Nieprawidłowy katalog.")
         if kind == "my" and user["role"] == "admin":
             owner = user
-        elif kind == "client" and user["role"] == "admin":
+        elif kind == "client" and is_agency(user):
             owner = client_or_404(int(dest.get("client_id") or 0))
+            if not manages(user, owner["id"]):
+                raise HTTPException(403, "Brak dostępu do tej przestrzeni.")
         elif kind == "self" and user["role"] == "client":
             owner = space_of(user)
         elif kind == "team" and is_team(user):
@@ -547,7 +583,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else:
             raise HTTPException(403, "Brak dostępu do tej przestrzeni.")
         folder_row(owner["id"], folder_id)  # sprawdza, czy katalog należy do przestrzeni
-        return owner, folder_id, str(dest.get("note", ""))[:500], bool(dest.get("review")) and user["role"] == "admin"
+        return owner, folder_id, str(dest.get("note", ""))[:500], bool(dest.get("review")) and is_agency(user)
 
     def finalize_upload(user, row) -> int | None:
         """Ostatni kawałek dotarł: plik od razu trafia na swoje miejsce (wysyłka przerwana później nic nie traci)."""
@@ -607,7 +643,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if folder:
             target_dir = folder_dir(client, folder)
         else:
-            target_dir = client_dir(client) / ("od BSK Media" if uploader["role"] == "admin" and client["role"] == "client" else "")
+            target_dir = client_dir(client) / ("od BSK Media" if is_agency(uploader) and client["role"] == "client" else "")
         tmp_dest = storage.unique_path(settings.tmp_dir, f"in-{secrets.token_hex(6)}")
         try:
             size, sha = place(upload, tmp_dest, limit)
@@ -654,7 +690,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def file_for(user, file_id: int):
         f = db.one("SELECT * FROM files WHERE id = ? AND deleted_at IS NULL", file_id)
-        if not f or (user["role"] != "admin" and f["client_id"] != sid(user)):
+        if not f or (user["role"] != "admin" and f["client_id"] != sid(user)
+                     and not (user["role"] == "staff" and manages(user, f["client_id"]))):
             raise HTTPException(404, "Nie znaleziono pliku.")
         if user["role"] == "admin" and f["client_id"] != user["id"]:
             owner = db.one("SELECT role FROM users WHERE id = ?", f["client_id"])
@@ -694,12 +731,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def unread_for(user) -> int:
         if user["role"] == "admin":
             return sum(unread_by_client(user["id"]).values())
+        if user["role"] == "staff":
+            mine = {c["id"] for c in staff_clients(user["id"])}
+            from_clients = sum(n for cid, n in unread_by_client(user["id"]).items() if cid in mine)
+            return team_unread(user) + from_clients
         space_id = sid(user)
         seen = db.one("SELECT seen_at FROM seen WHERE user_id = ? AND client_id = ?", user["id"], space_id)
         since = seen["seen_at"] if seen else ""
         return db.one(
             "SELECT (SELECT COUNT(*) FROM messages m JOIN users a ON a.id = m.author_id"
-            "        WHERE m.client_id = ? AND a.role = 'admin' AND m.created_at > ?)"
+            "        WHERE m.client_id = ? AND a.role IN ('admin', 'staff') AND m.created_at > ?)"
             " + (SELECT COUNT(*) FROM files f WHERE f.client_id = ? AND f.uploaded_by != ? AND f.uploaded_at > ?"
             "    AND f.deleted_at IS NULL) AS n",
             space_id, since, space_id, user["id"], since,
@@ -708,7 +749,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def message_json(m, user) -> dict:
         name = m["display_name"] or m["username"]
         return {"id": m["id"], "mine": m["author_id"] == user["id"], "author": name, "initials": _initials(name),
-                "agency": m["role"] == "admin", "time": _local_dt(m["created_at"]), "body": m["body"]}
+                "agency": m["role"] in ("admin", "staff"), "time": _local_dt(m["created_at"]), "body": m["body"]}
 
     def notify_client(client, subject: str, lines: list[str]) -> None:
         """E-mail do klienta i osób z jego firmy (każda z podanym e-mailem i włączonymi powiadomieniami)."""
@@ -752,7 +793,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         start = (date.today() - timedelta(days=days - 1)).isoformat()
         sql = ("SELECT substr(f.uploaded_at, 1, 10) AS d,"
                " SUM(CASE WHEN u.role = 'client' THEN 1 ELSE 0 END) AS c,"
-               " SUM(CASE WHEN u.role = 'admin' THEN 1 ELSE 0 END) AS a"
+               " SUM(CASE WHEN u.role IN ('admin', 'staff') THEN 1 ELSE 0 END) AS a"
                " FROM files f JOIN users u ON u.id = f.uploaded_by JOIN users c ON c.id = f.client_id"
                " WHERE c.role = 'client' AND substr(f.uploaded_at, 1, 10) >= ?")
         args: list = [start]
@@ -999,8 +1040,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             add_message(owner["id"], user, note)
         if names:
             flash(request, f"Wysłano plików: {len(names)}.")
-            notify_admin(
-                settings,
+            notify_client_team(
+                owner["id"],
                 f"Nowe pliki od {owner['company'] or user['display_name'] or user['username']}",
                 f"{user['display_name'] or user['username']} wysłał(a) pliki: " + ", ".join(names)
                 + (f"\n\nKomentarz: {note}" if note.strip() else ""),
@@ -1016,8 +1057,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if body.strip():
             add_message(owner["id"], user, body)
             mark_seen(user, owner["id"])
-            notify_admin(
-                settings,
+            notify_client_team(
+                owner["id"],
                 f"Wiadomość od {owner['company'] or user['display_name'] or user['username']}",
                 f"{user['display_name'] or user['username']}: " + body.strip()[:1500],
                 link=f"{settings.public_url}/admin/clients/{owner['id']}", throttle_key=f"admin:{owner['id']}",
@@ -1186,9 +1227,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         pracownik — tylko wspólna przestrzeń zespołu."""
         owner = db.one("SELECT * FROM users WHERE id = ?", owner_id)
         if admin["role"] == "staff":
-            if not owner or owner["id"] != tid():
-                raise HTTPException(403, "Brak dostępu.")
-            return owner
+            if owner and (owner["id"] == tid() or (owner["role"] == "client" and manages(admin, owner["id"]))):
+                return owner
+            raise HTTPException(403, "Brak dostępu.")
         if admin["role"] != "admin" or not owner or (owner["role"] == "admin" and owner["id"] != admin["id"]):
             raise HTTPException(404, "Nie ma takiej przestrzeni.")
         return owner
@@ -1849,6 +1890,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         flash(request, f"Opiekunowie strony: {', '.join(names)}." if names else "Strona nie jest udostępniona żadnemu pracownikowi.")
         return RedirectResponse(f"/admin/agent/sites/{site_id}", 303)
 
+    @app.get("/klienci", response_class=HTMLResponse)
+    def staff_clients_page(request: Request):
+        """Pracownik: klienci, których jest opiekunem."""
+        user = require_user(request)
+        if user["role"] == "admin":
+            return RedirectResponse("/admin/clients", 303)
+        if user["role"] != "staff":
+            raise HTTPException(403, "Brak dostępu.")
+        unread = unread_by_client(user["id"])
+        rows = [dict(c) | {"unread": unread.get(c["id"], 0),
+                           "files": db.one("SELECT COUNT(*) AS n FROM files WHERE client_id = ? AND deleted_at IS NULL", c["id"])["n"],
+                           "last": db.one("SELECT MAX(ts) AS t FROM (SELECT created_at AS ts FROM messages WHERE client_id = ?"
+                                          " UNION ALL SELECT uploaded_at FROM files WHERE client_id = ? AND deleted_at IS NULL)",
+                                          c["id"], c["id"])["t"]}
+                for c in staff_clients(user["id"])]
+        return render(request, "staff_clients.html", nav="staff-clients", clients=rows)
+
     @app.get("/strony", response_class=HTMLResponse)
     def staff_sites_page(request: Request):
         """Pracownik: strony klientów, których jest opiekunem."""
@@ -2334,15 +2392,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/admin/clients/{client_id}", response_class=HTMLResponse)
     def admin_client(request: Request, client_id: int, folder: int | None = None, show: int = 0):
-        require_user(request, "admin")
-        client = client_or_404(client_id)
+        user, client = client_access(request, client_id)
         space = space_ctx(client, folder, show)
-        creds = request.session.pop("new_credentials", None)
-        mark_seen(require_user(request, "admin"), client_id)
+        creds = request.session.pop("new_credentials", None) if user["role"] == "admin" else None
+        mark_seen(user, client_id)
+        is_admin = user["role"] == "admin"
+        owners = db.all("SELECT u.id, u.display_name, u.username FROM client_staff cs JOIN users u ON u.id = cs.user_id"
+                        " WHERE cs.client_id = ? ORDER BY u.display_name, u.username", client_id)
+        staff_all = db.all("SELECT id, username, display_name FROM users WHERE role = 'staff' AND active = 1"
+                           " ORDER BY display_name, username") if is_admin else []
         return render(
-            request, "admin_client.html", client=client, files=client_files(client_id),
+            request, "admin_client.html", is_admin=is_admin, owners=owners, staff_all=staff_all,
+            owner_ids={o["id"] for o in owners},
+            client=client, files=client_files(client_id),
             messages=thread(client_id), credentials=creds, public_url=settings.public_url,
-            quota=quota_info(client), days=daily_files(client_id), nav="clients", space=space,
+            quota=quota_info(client), days=daily_files(client_id), nav="clients" if is_admin else f"client-{client_id}", space=space,
             members=space_members(client_id), member_credentials=request.session.pop("member_credentials", None),
             base_url=f"/admin/clients/{client_id}", upload_action=f"/admin/clients/{client_id}/upload",
             folder=client_dir(client).as_posix().replace(settings.data_dir.as_posix(), "", 1),
@@ -2414,8 +2478,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         csrf: str = Form(""),
     ):
         check_csrf(request, csrf)
-        admin = require_user(request, "admin")
-        client = client_or_404(client_id)
+        admin, client = client_access(request, client_id)
         count, names = 0, []
         for up in incoming(admin, files, upload_ids):
             fid = save_into(client, admin, up, note, folder_id)
@@ -2438,13 +2501,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/admin/clients/{client_id}/message")
     def admin_message(request: Request, client_id: int, body: str = Form(...), csrf: str = Form("")):
         check_csrf(request, csrf)
-        admin = require_user(request, "admin")
-        client = client_or_404(client_id)
+        admin, client = client_access(request, client_id)
         add_message(client_id, admin, body)
         mark_seen(admin, client_id)
         if body.strip():
             notify_client(client, "Nowa wiadomość od BSK Media", [body.strip()[:1500]])
         return RedirectResponse(f"/admin/clients/{client_id}#wiadomosci", 303)
+
+    @app.post("/admin/clients/{client_id}/opiekunowie")
+    def client_owners(request: Request, client_id: int, user_id: list[int] = Form([]), csrf: str = Form("")):
+        """Administrator udostępnia cały profil klienta (pliki, wiadomości, dokumenty) wybranym pracownikom."""
+        check_csrf(request, csrf)
+        admin = require_user(request, "admin")
+        client = client_or_404(client_id)
+        valid = {r["id"] for r in db.all("SELECT id FROM users WHERE role = 'staff' AND active = 1")}
+        chosen = [u for u in dict.fromkeys(user_id) if u in valid]
+        db.run("DELETE FROM client_staff WHERE client_id = ?", client_id)
+        for uid in chosen:
+            db.run("INSERT INTO client_staff (client_id, user_id, created_at) VALUES (?, ?, ?)", client_id, uid, now_iso())
+        names = [r["display_name"] or r["username"] for r in db.all(
+            f"SELECT display_name, username FROM users WHERE id IN ({','.join('?' * len(chosen))})", *chosen)] if chosen else []
+        db.log(admin["id"], "client_owners", f"{client['username']}: {', '.join(names) or 'brak'}")
+        flash(request, f"Opiekunowie klienta: {', '.join(names)}." if names else "Klient nie jest udostępniony żadnemu pracownikowi.")
+        return RedirectResponse(f"/admin/clients/{client_id}#opiekunowie", 303)
 
     # ------------------------------------------------------------------ osoby z firmy klienta
 
@@ -3125,7 +3204,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         base = storage.safe_name((title.strip() or ("Nowy arkusz" if kind == "xlsx" else "Nowy dokument")))
         if not base.lower().endswith("." + ext):
             base += "." + ext
-        target_dir = client_dir(client) / ("od BSK Media" if author["role"] == "admin" else "")
+        target_dir = client_dir(client) / ("od BSK Media" if is_agency(author) else "")
         target_dir.mkdir(parents=True, exist_ok=True)
         dest = storage.unique_path(target_dir, base)
         dest.write_bytes(content)
@@ -3142,10 +3221,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def admin_new_doc(request: Request, client_id: int, kind: str = Form(...), title: str = Form(""),
                       csrf: str = Form("")):
         check_csrf(request, csrf)
-        admin = require_user(request, "admin")
+        admin, client = client_access(request, client_id)
         if kind not in ("xlsx", "docx"):
             raise HTTPException(400, "Nieznany typ dokumentu.")
-        fid = create_blank(client_or_404(client_id), admin, kind, title)
+        fid = create_blank(client, admin, kind, title)
         return RedirectResponse(f"/files/{fid}/edit" if office_ready() else f"/admin/clients/{client_id}", 303)
 
     @app.post("/files/new-doc")
@@ -3172,14 +3251,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "status": f["review_status"], "label": REVIEW_LABELS.get(f["review_status"], ""),
             "by": (by["display_name"] or by["username"]) if by else "", "at": _local_dt(f["review_at"]),
-            "is_admin": user["role"] == "admin", "version": f["version"],
+            "is_admin": is_agency(user), "version": f["version"],
             "preview": f"/files/{f['id']}/thumb?s=preview&v={f['sha256'][:12]}" if thumbs.can_thumb(f["original_name"]) else "",
             "comments": [{
                 "id": r["id"], "n": numbers.get(r["id"]), "x": r["x"], "y": r["y"], "body": r["body"],
                 "author": r["display_name"] or r["username"], "initials": _initials(r["display_name"] or r["username"]),
-                "agency": r["role"] == "admin", "time": _local_dt(r["created_at"]), "resolved": bool(r["resolved"]),
+                "agency": r["role"] in ("admin", "staff"), "time": _local_dt(r["created_at"]), "resolved": bool(r["resolved"]),
                 "old": r["version"] != f["version"], "version": r["version"],
-                "can_resolve": user["role"] == "admin" or r["author_id"] == user["id"],
+                "can_resolve": is_agency(user) or r["author_id"] == user["id"],
             } for r in rows],
         }
 
@@ -3194,10 +3273,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         owner = db.one("SELECT * FROM users WHERE id = ?", f["client_id"])
         if owner["role"] != "client":
             return
-        if user["role"] == "admin":
+        if is_agency(user):
             notify_client(owner, "Projekt czeka na Ciebie", [text])
         else:
-            notify_admin(settings, f"{owner['company'] or owner['display_name'] or owner['username']}: {REVIEW_LABELS.get(f['review_status'], 'komentarz')}",
+            notify_client_team(owner["id"], f"{owner['company'] or owner['display_name'] or owner['username']}: {REVIEW_LABELS.get(f['review_status'], 'komentarz')}",
                          text, link=f"{settings.public_url}/admin/clients/{owner['id']}", throttle_key=f"admin:{owner['id']}")
 
     @app.get("/api/files/{file_id}/review")
@@ -3230,7 +3309,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def api_resolve(request: Request, file_id: int, comment_id: int):
         user, f = review_file(request, file_id)
         a = db.one("SELECT * FROM annotations WHERE id = ? AND file_id = ?", comment_id, f["id"])
-        if not a or (user["role"] != "admin" and a["author_id"] != user["id"]):
+        if not a or (not is_agency(user) and a["author_id"] != user["id"]):
             raise HTTPException(404, "Nie ma takiego komentarza.")
         db.run("UPDATE annotations SET resolved = 1 - resolved WHERE id = ?", comment_id)
         return review_json(f, user)
@@ -3265,7 +3344,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user = current_user(request)
         if not user or user["must_change_password"]:
             raise HTTPException(401, "Zaloguj się ponownie.")
-        if user["role"] != "admin" and sid(user) != client_id:
+        if user["role"] != "admin" and sid(user) != client_id and not (user["role"] == "staff" and manages(user, client_id)):
             raise HTTPException(403, "Brak dostępu.")
         rows = db.all(
             "SELECT m.*, u.display_name, u.username, u.role FROM messages m JOIN users u ON u.id = m.author_id"
@@ -3396,7 +3475,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if stored and owner["role"] == "client":
             listing = ", ".join(names) + (f" i {stored - len(names)} innych" if stored > len(names) else "")
             if user["role"] == "client":
-                notify_admin(settings, f"Nowe pliki od {owner['company'] or who}",
+                notify_client_team(owner["id"], f"Nowe pliki od {owner['company'] or who}",
                              f"{who} wysłał(a) {stored} plików: {listing}" + (f"\n\nKomentarz: {note}" if note.strip() else ""),
                              link=f"{settings.public_url}/admin/clients/{owner['id']}", throttle_key=f"admin:{owner['id']}")
             else:

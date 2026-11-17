@@ -90,12 +90,12 @@
   <tbody>
   {% for f in files %}
   {% set dt = doc_type(f.original_name) %}
-  <tr data-from="{{ 'agency' if f.uploader_role == 'admin' else 'client' }}">
+  <tr data-from="{{ 'agency' if f.uploader_role in ['admin', 'staff'] else 'client' }}">
     <td><div class="file">{{ ficon(f.original_name) }}<div>
       <a href="/files/{{ f.id }}/download">{{ f.original_name }}</a>
       <div class="meta">{{ f.size|size }}{% if f.note %} · {{ f.note }}{% endif %}{% if f.modified_at %} · edytowano {{ f.modified_at|ago }}{% endif %}</div>
     </div></div></td>
-    <td class="hide-sm">{% if f.uploader_role == 'admin' %}<span class="tag agency">BSK Media</span>{% else %}<span class="tag">Klient</span>{% endif %}</td>
+    <td class="hide-sm">{% if f.uploader_role in ['admin', 'staff'] %}<span class="tag agency">BSK Media</span>{% else %}<span class="tag">Klient</span>{% endif %}</td>
     <td class="hide-sm nowrap muted small" title="{{ f.uploaded_at|dt }}">{{ f.uploaded_at|ago }}</td>
     <td class="actions">
       {% if office_enabled and dt %}<a class="button btn-sm" href="/files/{{ f.id }}/edit">{{ icon("edit") }}{{ 'Edytuj online' if dt[2] else 'Podgląd' }}</a>{% endif %}
@@ -107,7 +107,7 @@
         <button class="ghost btn-sm" title="Utwórz link do pobrania (ważny 7 dni)">{{ icon("link") }}</button>
       </form>
       {% endif %}
-      {% if user.role == 'admin' or f.uploaded_by == user.id %}
+      {% if user.role in ['admin', 'staff'] or f.uploaded_by == user.id %}
       <form method="post" action="/files/{{ f.id }}/delete" class="inline" data-confirm="Usunąć plik {{ f.original_name }}?">
         <input type="hidden" name="csrf" value="{{ csrf }}"><button class="ghost btn-sm danger" title="Usuń">{{ icon("trash") }}</button>
       </form>
@@ -124,8 +124,8 @@
 <div class="thread" data-scroll-end data-thread="{{ client_id }}" data-last="{{ messages[-1].id if messages else 0 }}">
   {% for m in messages %}
   <div class="msg {{ 'mine' if m.author_id == user.id else '' }}">
-    <span class="avatar {{ 'agency' if m.role == 'admin' else '' }}">{{ (m.display_name or m.username)|initials }}</span>
-    <div class="bubble"><div class="meta">{{ m.display_name or m.username }}{% if m.role == 'admin' %} · BSK Media{% endif %} · {{ m.created_at|dt }}</div>
+    <span class="avatar {{ 'agency' if m.role in ['admin', 'staff'] else '' }}">{{ (m.display_name or m.username)|initials }}</span>
+    <div class="bubble"><div class="meta">{{ m.display_name or m.username }}{% if m.role in ['admin', 'staff'] %} · BSK Media{% endif %} · {{ m.created_at|dt }}</div>
       <div class="body">{{ m.body }}</div></div>
   </div>
   {% else %}<div data-empty>{{ empty("Brak wiadomości — napisz pierwszą.", "message") }}</div>{% endfor %}

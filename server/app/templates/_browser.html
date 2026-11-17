@@ -73,7 +73,7 @@
     {% for f in space.files %}
     {% set k = thumb_kind(f.original_name) %}{% set dt = doc_type(f.original_name) %}
     {% set ext = f.original_name.rsplit('.', 1)[-1]|upper if '.' in f.original_name else 'PLIK' %}
-    <article class="gcard" data-file data-from="{{ 'agency' if f.uploader_role == 'admin' else 'client' }}"
+    <article class="gcard" data-file data-from="{{ 'agency' if f.uploader_role in ['admin', 'staff'] else 'client' }}"
       data-id="{{ f.id }}" data-name="{{ f.original_name }}" data-kind="{{ k }}" data-ext="{{ ext }}"
       data-meta="{{ f.size|size }} · {{ f.uploaded_at|dt }}{% if f.version > 1 %} · wersja {{ f.version }}{% endif %}"
       data-thumb="{{ '/files/' ~ f.id ~ '/thumb?v=' ~ f.sha256[:12] if can_thumb(f.original_name) else '' }}"
@@ -92,7 +92,7 @@
       </button>
       <div class="ginfo">
         <div class="gname" title="{{ f.original_name }}">{{ f.original_name }}</div>
-        <div class="gmeta"><span class="src {{ 'agency' if f.uploader_role == 'admin' else '' }}" title="{{ ('Wgrał(a): ' ~ f.uploader_name) if owner.role == 'team' else ('Od BSK Media' if f.uploader_role == 'admin' else 'Od klienta') }}"></span>{{ f.size|size }} · {% if f.modified_at %}edytowano {{ f.modified_at|ago }}{% else %}{{ f.uploaded_at|ago }}{% endif %}</div>
+        <div class="gmeta"><span class="src {{ 'agency' if f.uploader_role in ['admin', 'staff'] else '' }}" title="{{ ('Wgrał(a): ' ~ f.uploader_name) if owner.role == 'team' else ('Od BSK Media' if f.uploader_role in ['admin', 'staff'] else 'Od klienta') }}"></span>{{ f.size|size }} · {% if f.modified_at %}edytowano {{ f.modified_at|ago }}{% else %}{{ f.uploaded_at|ago }}{% endif %}</div>
         {% if f.note %}<div class="gnote" title="{{ f.note }}">{{ f.note }}</div>{% endif %}
       </div>
       <div class="gactions">

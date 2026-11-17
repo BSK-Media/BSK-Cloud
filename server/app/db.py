@@ -144,6 +144,12 @@ CREATE TABLE IF NOT EXISTS import_jobs (
     started_at TEXT NOT NULL,
     finished_at TEXT
 );
+CREATE TABLE IF NOT EXISTS client_staff (   -- opiekunowie klientów: pracownicy z pełnym dostępem do profilu klienta
+    client_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, user_id)
+);
 CREATE TABLE IF NOT EXISTS seen (
     user_id INTEGER NOT NULL REFERENCES users(id),
     client_id INTEGER NOT NULL REFERENCES users(id),
